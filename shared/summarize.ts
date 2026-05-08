@@ -2,70 +2,153 @@
  * Generate a 1-2 sentence summary of what a Claude Code instance is likely
  * working on, based on its working directory and git context.
  *
- * Uses OpenAI's gpt-5.4-nano for cheap, fast inference.
- * Requires OPENAI_API_KEY environment variable.
- * Falls back gracefully if unavailable.
+ * Multi-provider with graceful fallback:
+ *   - "anthropic"     -> Anthropic Messages API (https://api.anthropic.com)
+ *   - "openai-compat" -> any OpenAI-compatible /chat/completions endpoint
+ *                        (LiteLLM, Ollama via /v1, OpenRouter, vLLM, OpenAI...)
+ *   - "none"          -> heuristic only
+ *
+ * Resolution: see shared/config.ts (resolveProvider).
+ *
+ * If the network call fails (no key, HTTP error, timeout, parse error), the
+ * heuristic summary is returned. Never throws, always returns a non-empty string.
  */
 
-export async function generateSummary(context: {
+import { basename } from "node:path";
+
+export interface SummaryContext {
   cwd: string;
   git_root: string | null;
   git_branch?: string | null;
   recent_files?: string[];
-}): Promise<string | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return null;
-  }
+}
 
-  const parts = [`Working directory: ${context.cwd}`];
-  if (context.git_root) {
-    parts.push(`Git repo root: ${context.git_root}`);
-  }
+export interface SummaryProviderConfig {
+  /** Resolved provider. */
+  provider: "anthropic" | "openai-compat" | "none";
+  /** Bearer / x-api-key. */
+  api_key: string | null;
+  /** Model identifier passed to the provider. */
+  model: string;
+  /** Base URL for openai-compat (must include /v1 suffix when applicable). */
+  base_url?: string | null;
+}
+
+const SYSTEM_PROMPT =
+  "You generate brief summaries of what a developer is working on based on their project context. Respond with exactly 1-2 sentences, no more. Be specific about the project name and likely task.";
+
+const HTTP_TIMEOUT_MS = 5000;
+
+export function heuristicSummary(context: SummaryContext): string {
+  const projectName = context.git_root
+    ? basename(context.git_root)
+    : basename(context.cwd) || context.cwd;
+
+  const parts = [`Working on \`${projectName}\``];
   if (context.git_branch) {
-    parts.push(`Branch: ${context.git_branch}`);
+    parts.push(`(branch: ${context.git_branch})`);
   }
+  if (context.recent_files && context.recent_files.length > 0) {
+    const preview = context.recent_files.slice(0, 3).join(", ");
+    parts.push(`-- recent: ${preview}`);
+  }
+  return parts.join(" ");
+}
+
+function buildUserMessage(context: SummaryContext): string {
+  const parts = [`Working directory: ${context.cwd}`];
+  if (context.git_root) parts.push(`Git repo root: ${context.git_root}`);
+  if (context.git_branch) parts.push(`Branch: ${context.git_branch}`);
   if (context.recent_files && context.recent_files.length > 0) {
     parts.push(`Recently modified files: ${context.recent_files.join(", ")}`);
   }
+  return `Based on this context, what is this developer likely working on?\n\n${parts.join("\n")}`;
+}
+
+async function callAnthropic(
+  ctx: SummaryContext,
+  cfg: SummaryProviderConfig
+): Promise<string | null> {
+  const apiKey = cfg.api_key ?? process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
 
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "gpt-5.4-nano",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You generate brief summaries of what a developer is working on based on their project context. Respond with exactly 1-2 sentences, no more. Be specific about the project name and likely task.",
-          },
-          {
-            role: "user",
-            content: `Based on this context, what is this developer likely working on?\n\n${parts.join("\n")}`,
-          },
-        ],
+        model: cfg.model,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: buildUserMessage(ctx) }],
         max_tokens: 100,
-        temperature: 0.3,
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-
-    if (!res.ok) {
-      return null;
-    }
-
-    const data = (await res.json()) as {
-      choices: Array<{ message: { content: string } }>;
-    };
-    return data.choices[0]?.message?.content?.trim() ?? null;
+    if (!res.ok) return null;
+    const data = (await res.json()) as { content?: Array<{ text?: string }> };
+    return data.content?.[0]?.text?.trim() ?? null;
   } catch {
     return null;
   }
+}
+
+async function callOpenAICompat(
+  ctx: SummaryContext,
+  cfg: SummaryProviderConfig
+): Promise<string | null> {
+  if (!cfg.base_url) return null;
+
+  const url = `${cfg.base_url.replace(/\/+$/, "")}/chat/completions`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (cfg.api_key) headers["Authorization"] = `Bearer ${cfg.api_key}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: buildUserMessage(ctx) },
+        ],
+        max_tokens: 100,
+        temperature: 0.3,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return data.choices?.[0]?.message?.content?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Try the configured provider. On any failure, return the heuristic summary.
+ * Never throws, never returns null.
+ */
+export async function generateSummary(
+  ctx: SummaryContext,
+  providerCfg: SummaryProviderConfig
+): Promise<string> {
+  let llm: string | null = null;
+
+  if (providerCfg.provider === "anthropic") {
+    llm = await callAnthropic(ctx, providerCfg);
+  } else if (providerCfg.provider === "openai-compat") {
+    llm = await callOpenAICompat(ctx, providerCfg);
+  }
+
+  return llm ?? heuristicSummary(ctx);
 }
 
 /**
@@ -80,9 +163,7 @@ export async function getGitBranch(cwd: string): Promise<string | null> {
     });
     const text = await new Response(proc.stdout).text();
     const code = await proc.exited;
-    if (code === 0) {
-      return text.trim();
-    }
+    if (code === 0) return text.trim();
   } catch {
     // not a git repo
   }
@@ -97,7 +178,6 @@ export async function getRecentFiles(
   limit = 10
 ): Promise<string[]> {
   try {
-    // Get modified/staged files first
     const diffProc = Bun.spawn(["git", "diff", "--name-only", "HEAD"], {
       cwd,
       stdout: "pipe",
@@ -115,7 +195,6 @@ export async function getRecentFiles(
       return files.slice(0, limit);
     }
 
-    // Also get recently committed files
     const logProc = Bun.spawn(
       ["git", "log", "--oneline", "--name-only", "-5", "--format="],
       {
@@ -137,4 +216,75 @@ export async function getRecentFiles(
   } catch {
     return [];
   }
+}
+
+/**
+ * Compute a normalized "project key" from a directory's git remote URL.
+ * Used for cross-PC repo matching, so that two clones of the same repo on
+ * different machines (with different cwd/git_root paths) can be matched.
+ *
+ * Examples:
+ *   git@github.com:vocsap/claude-peers-mcp.git   -> github.com/vocsap/claude-peers-mcp
+ *   https://github.com/vocsap/claude-peers-mcp.git -> github.com/vocsap/claude-peers-mcp
+ *   ssh://git@gitlab.com:2222/group/proj.git     -> gitlab.com/group/proj
+ *
+ * Returns null if no git remote is configured.
+ */
+export async function computeProjectKey(cwd: string): Promise<string | null> {
+  let remoteUrl: string | null = null;
+  try {
+    const proc = Bun.spawn(["git", "remote", "get-url", "origin"], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const text = await new Response(proc.stdout).text();
+    const code = await proc.exited;
+    if (code === 0) {
+      remoteUrl = text.trim();
+    }
+  } catch {
+    return null;
+  }
+  if (!remoteUrl) return null;
+
+  return normalizeRemoteUrl(remoteUrl);
+}
+
+export function normalizeRemoteUrl(url: string): string | null {
+  let s = url.trim();
+  if (!s) return null;
+
+  // Strip .git suffix
+  s = s.replace(/\.git$/i, "");
+
+  // SCP-like: git@host:owner/repo (no scheme, no slash before colon)
+  const scpMatch = s.match(/^([^@\s:/]+)@([^:\s/]+):(?!\/)(.+)$/);
+  if (scpMatch && !s.includes("://")) {
+    const host = scpMatch[2].toLowerCase();
+    const path = scpMatch[3].replace(/^\/+/, "");
+    return `${host}/${path}`;
+  }
+
+  // Protocol URLs: ssh://, git://, http://, https://
+  const protoMatch = s.match(/^[a-z+]+:\/\/(.+)$/i);
+  if (protoMatch) {
+    let rest = protoMatch[1];
+    const atIdx = rest.indexOf("@");
+    const slashIdx = rest.indexOf("/");
+    if (atIdx !== -1 && (slashIdx === -1 || atIdx < slashIdx)) {
+      rest = rest.slice(atIdx + 1);
+    }
+    const firstSlash = rest.indexOf("/");
+    if (firstSlash === -1) {
+      return rest.toLowerCase();
+    }
+    let host = rest.slice(0, firstSlash);
+    const path = rest.slice(firstSlash + 1);
+    const colonIdx = host.indexOf(":");
+    if (colonIdx !== -1) host = host.slice(0, colonIdx);
+    return `${host.toLowerCase()}/${path}`;
+  }
+
+  return s.toLowerCase();
 }

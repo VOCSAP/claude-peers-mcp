@@ -4,15 +4,22 @@
  *
  * Utility commands for managing the broker and inspecting peers.
  *
+ * Note: this CLI talks to the broker on 127.0.0.1:<port>. Run it on the host
+ * where the broker lives. For a remote broker, use:
+ *   ssh user@broker-host "cd /srv/claude-peers && bun cli.ts status"
+ *
  * Usage:
- *   bun cli.ts status          — Show broker status and all peers
- *   bun cli.ts peers           — List all peers
- *   bun cli.ts send <id> <msg> — Send a message to a peer
- *   bun cli.ts kill-broker     — Stop the broker daemon
+ *   bun cli.ts status          -- Show broker status and all peers
+ *   bun cli.ts peers           -- List all peers
+ *   bun cli.ts send <id> <msg> -- Send a message to a peer
+ *   bun cli.ts kill-broker     -- Stop the broker daemon (Linux/macOS only)
  */
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+import { loadConfig, brokerUrl } from "./shared/config.ts";
+import type { Peer } from "./shared/types.ts";
+
+const config = await loadConfig();
+const BROKER_URL = brokerUrl(config);
 
 async function brokerFetch<T>(path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = body
@@ -32,6 +39,13 @@ async function brokerFetch<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+function formatPeerLine(p: Peer): string {
+  const id = p.host && p.client_pid
+    ? `${p.id}  [${p.host} - PID: ${p.client_pid}]`
+    : `${p.id}  PID:${p.pid}`;
+  return `${id}  ${p.cwd}`;
+}
+
 const cmd = process.argv[2];
 
 switch (cmd) {
@@ -42,17 +56,7 @@ switch (cmd) {
       console.log(`URL: ${BROKER_URL}`);
 
       if (health.peers > 0) {
-        const peers = await brokerFetch<
-          Array<{
-            id: string;
-            pid: number;
-            cwd: string;
-            git_root: string | null;
-            tty: string | null;
-            summary: string;
-            last_seen: string;
-          }>
-        >("/list-peers", {
+        const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope: "machine",
           cwd: "/",
           git_root: null,
@@ -60,31 +64,22 @@ switch (cmd) {
 
         console.log("\nPeers:");
         for (const p of peers) {
-          console.log(`  ${p.id}  PID:${p.pid}  ${p.cwd}`);
+          console.log(`  ${formatPeerLine(p)}`);
           if (p.summary) console.log(`         ${p.summary}`);
+          if (p.project_key) console.log(`         Project: ${p.project_key}`);
           if (p.tty) console.log(`         TTY: ${p.tty}`);
           console.log(`         Last seen: ${p.last_seen}`);
         }
       }
     } catch {
-      console.log("Broker is not running.");
+      console.log(`Broker is not running (or not reachable at ${BROKER_URL}).`);
     }
     break;
   }
 
   case "peers": {
     try {
-      const peers = await brokerFetch<
-        Array<{
-          id: string;
-          pid: number;
-          cwd: string;
-          git_root: string | null;
-          tty: string | null;
-          summary: string;
-          last_seen: string;
-        }>
-      >("/list-peers", {
+      const peers = await brokerFetch<Peer[]>("/list-peers", {
         scope: "machine",
         cwd: "/",
         git_root: null,
@@ -94,13 +89,13 @@ switch (cmd) {
         console.log("No peers registered.");
       } else {
         for (const p of peers) {
-          const parts = [`${p.id}  PID:${p.pid}  ${p.cwd}`];
-          if (p.summary) parts.push(`  Summary: ${p.summary}`);
-          console.log(parts.join("\n"));
+          console.log(formatPeerLine(p));
+          if (p.summary) console.log(`  Summary: ${p.summary}`);
+          if (p.project_key) console.log(`  Project: ${p.project_key}`);
         }
       }
     } catch {
-      console.log("Broker is not running.");
+      console.log(`Broker is not running (or not reachable at ${BROKER_URL}).`);
     }
     break;
   }
@@ -130,11 +125,14 @@ switch (cmd) {
   }
 
   case "kill-broker": {
+    if (process.platform === "win32") {
+      console.error("kill-broker is Linux/macOS only (uses lsof). On Windows, stop the broker process manually.");
+      process.exit(1);
+    }
     try {
       const health = await brokerFetch<{ status: string; peers: number }>("/health");
       console.log(`Broker has ${health.peers} peer(s). Shutting down...`);
-      // Find and kill the broker process on the port
-      const proc = Bun.spawnSync(["lsof", "-ti", `:${BROKER_PORT}`]);
+      const proc = Bun.spawnSync(["lsof", "-ti", `:${config.port}`]);
       const pids = new TextDecoder()
         .decode(proc.stdout)
         .trim()
@@ -157,5 +155,8 @@ Usage:
   bun cli.ts status          Show broker status and all peers
   bun cli.ts peers           List all peers
   bun cli.ts send <id> <msg> Send a message to a peer
-  bun cli.ts kill-broker     Stop the broker daemon`);
+  bun cli.ts kill-broker     Stop the broker daemon (Linux/macOS only)
+
+Configuration: env CLAUDE_PEERS_PORT (default 7899) or settings file.
+Broker URL: ${BROKER_URL}`);
 }

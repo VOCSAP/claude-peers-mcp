@@ -3,13 +3,16 @@ export type PeerId = string;
 
 export interface Peer {
   id: PeerId;
-  pid: number;
+  pid: number; // PID of the bun server process (used for liveness check)
   cwd: string;
   git_root: string | null;
   tty: string | null;
   summary: string;
   registered_at: string; // ISO timestamp
   last_seen: string; // ISO timestamp
+  host: string; // Client hostname (for display)
+  client_pid: number; // Client-side PID (for display, alongside host)
+  project_key: string | null; // Normalized git remote URL, used for cross-PC repo matching
 }
 
 export interface Message {
@@ -21,6 +24,20 @@ export interface Message {
   delivered: boolean;
 }
 
+/**
+ * Metadata sent by the client.ts to server.ts via the JSON handshake on stdin's first line.
+ */
+export interface ClientMeta {
+  host: string;
+  client_pid: number;
+  cwd: string;
+  git_root: string | null;
+  git_branch: string | null;
+  recent_files: string[];
+  project_key: string | null;
+  tty: string | null;
+}
+
 // --- Broker API types ---
 
 export interface RegisterRequest {
@@ -29,6 +46,9 @@ export interface RegisterRequest {
   git_root: string | null;
   tty: string | null;
   summary: string;
+  host: string;
+  client_pid: number;
+  project_key: string | null;
 }
 
 export interface RegisterResponse {
@@ -49,6 +69,7 @@ export interface ListPeersRequest {
   // The requesting peer's context (used for filtering)
   cwd: string;
   git_root: string | null;
+  project_key?: string | null;
   exclude_id?: PeerId;
 }
 

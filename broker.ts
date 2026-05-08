@@ -2,14 +2,19 @@
 /**
  * claude-peers broker daemon
  *
- * A singleton HTTP server on localhost:7899 backed by SQLite.
+ * A singleton HTTP server on 127.0.0.1:<port> backed by SQLite.
  * Tracks all registered Claude Code peers and routes messages between them.
  *
- * Auto-launched by the MCP server if not already running.
+ * Auto-launched by the MCP server.ts if not already running, OR managed via
+ * a systemd unit on the LXC host.
+ *
  * Run directly: bun broker.ts
  */
 
 import { Database } from "bun:sqlite";
+import { dirname } from "node:path";
+import { mkdirSync } from "node:fs";
+import { loadConfig } from "./shared/config.ts";
 import type {
   RegisterRequest,
   RegisterResponse,
@@ -23,8 +28,16 @@ import type {
   Message,
 } from "./shared/types.ts";
 
-const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
+const config = await loadConfig();
+const PORT = config.port;
+const DB_PATH = config.db;
+
+// Ensure DB directory exists (e.g. /var/lib/claude-peers/)
+try {
+  mkdirSync(dirname(DB_PATH), { recursive: true });
+} catch {
+  // best-effort
+}
 
 // --- Database setup ---
 
@@ -41,9 +54,30 @@ db.run(`
     tty TEXT,
     summary TEXT NOT NULL DEFAULT '',
     registered_at TEXT NOT NULL,
-    last_seen TEXT NOT NULL
+    last_seen TEXT NOT NULL,
+    host TEXT NOT NULL DEFAULT '',
+    client_pid INTEGER NOT NULL DEFAULT 0,
+    project_key TEXT
   )
 `);
+
+// Idempotent migration for older DBs that pre-date host/client_pid/project_key.
+function migrateAddColumn(name: string, sql: string) {
+  try {
+    db.run(sql);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes("duplicate column name")) {
+      console.error(`[broker] Migration warning for ${name}: ${msg}`);
+    }
+  }
+}
+migrateAddColumn("host", "ALTER TABLE peers ADD COLUMN host TEXT NOT NULL DEFAULT ''");
+migrateAddColumn(
+  "client_pid",
+  "ALTER TABLE peers ADD COLUMN client_pid INTEGER NOT NULL DEFAULT 0"
+);
+migrateAddColumn("project_key", "ALTER TABLE peers ADD COLUMN project_key TEXT");
 
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
@@ -58,15 +92,15 @@ db.run(`
   )
 `);
 
-// Clean up stale peers (PIDs that no longer exist) on startup
+// Clean up stale peers (PIDs that no longer exist) on startup.
+// The `pid` column refers to the bun server.ts process running on THIS host
+// (the broker host), so process.kill(pid, 0) is meaningful.
 function cleanStalePeers() {
   const peers = db.query("SELECT id, pid FROM peers").all() as { id: string; pid: number }[];
   for (const peer of peers) {
     try {
-      // Check if process is still alive (signal 0 doesn't kill, just checks)
       process.kill(peer.pid, 0);
     } catch {
-      // Process doesn't exist, remove it
       db.run("DELETE FROM peers WHERE id = ?", [peer.id]);
       db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [peer.id]);
     }
@@ -74,15 +108,13 @@ function cleanStalePeers() {
 }
 
 cleanStalePeers();
-
-// Periodically clean stale peers (every 30s)
 setInterval(cleanStalePeers, 30_000);
 
 // --- Prepared statements ---
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen, host, client_pid, project_key)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateLastSeen = db.prepare(`
@@ -97,17 +129,15 @@ const deletePeer = db.prepare(`
   DELETE FROM peers WHERE id = ?
 `);
 
-const selectAllPeers = db.prepare(`
-  SELECT * FROM peers
-`);
+const selectAllPeers = db.prepare(`SELECT * FROM peers`);
 
-const selectPeersByDirectory = db.prepare(`
-  SELECT * FROM peers WHERE cwd = ?
-`);
+const selectPeersByDirectory = db.prepare(`SELECT * FROM peers WHERE cwd = ?`);
 
-const selectPeersByGitRoot = db.prepare(`
-  SELECT * FROM peers WHERE git_root = ?
-`);
+const selectPeersByGitRoot = db.prepare(`SELECT * FROM peers WHERE git_root = ?`);
+
+const selectPeersByProjectKey = db.prepare(
+  `SELECT * FROM peers WHERE project_key = ?`
+);
 
 const insertMessage = db.prepare(`
   INSERT INTO messages (from_id, to_id, text, sent_at, delivered)
@@ -139,13 +169,27 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   const id = generateId();
   const now = new Date().toISOString();
 
-  // Remove any existing registration for this PID (re-registration)
-  const existing = db.query("SELECT id FROM peers WHERE pid = ?").get(body.pid) as { id: string } | null;
+  // Remove any existing registration for this server PID (re-registration)
+  const existing = db.query("SELECT id FROM peers WHERE pid = ?").get(body.pid) as
+    | { id: string }
+    | null;
   if (existing) {
     deletePeer.run(existing.id);
   }
 
-  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.summary, now, now);
+  insertPeer.run(
+    id,
+    body.pid,
+    body.cwd,
+    body.git_root,
+    body.tty,
+    body.summary,
+    now,
+    now,
+    body.host ?? "",
+    body.client_pid ?? 0,
+    body.project_key ?? null
+  );
   return { id };
 }
 
@@ -168,10 +212,13 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
       peers = selectPeersByDirectory.all(body.cwd) as Peer[];
       break;
     case "repo":
-      if (body.git_root) {
+      // Prefer project_key (cross-PC matching) when available; fall back to
+      // git_root, then to cwd if the requester has no git context at all.
+      if (body.project_key) {
+        peers = selectPeersByProjectKey.all(body.project_key) as Peer[];
+      } else if (body.git_root) {
         peers = selectPeersByGitRoot.all(body.git_root) as Peer[];
       } else {
-        // No git root, fall back to directory
         peers = selectPeersByDirectory.all(body.cwd) as Peer[];
       }
       break;
@@ -179,18 +226,16 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
       peers = selectAllPeers.all() as Peer[];
   }
 
-  // Exclude the requesting peer
   if (body.exclude_id) {
     peers = peers.filter((p) => p.id !== body.exclude_id);
   }
 
-  // Verify each peer's process is still alive
+  // Verify each peer's process is still alive (server.ts pid, local to broker)
   return peers.filter((p) => {
     try {
       process.kill(p.pid, 0);
       return true;
     } catch {
-      // Clean up dead peer
       deletePeer.run(p.id);
       return false;
     }
@@ -198,8 +243,9 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
 }
 
 function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
-  // Verify target exists
-  const target = db.query("SELECT id FROM peers WHERE id = ?").get(body.to_id) as { id: string } | null;
+  const target = db.query("SELECT id FROM peers WHERE id = ?").get(body.to_id) as
+    | { id: string }
+    | null;
   if (!target) {
     return { ok: false, error: `Peer ${body.to_id} not found` };
   }
@@ -211,7 +257,6 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   const messages = selectUndelivered.all(body.id) as Message[];
 
-  // Mark them as delivered
   for (const msg of messages) {
     markDelivered.run(msg.id);
   }

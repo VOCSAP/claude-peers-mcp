@@ -10,27 +10,44 @@ Peer discovery and messaging MCP channel for Claude Code instances.
 
 ## Architecture
 
-- `broker.ts` — Singleton HTTP daemon on localhost:7899 + SQLite. Auto-launched by the MCP server.
-- `server.ts` — MCP stdio server, one per Claude Code instance. Connects to broker, exposes tools, pushes channel notifications.
-- `shared/types.ts` — Shared TypeScript types for broker API.
-- `shared/summarize.ts` — Auto-summary generation via gpt-5.4-nano.
-- `cli.ts` — CLI utility for inspecting broker state.
+Three entrypoints. Two deployment modes (local-only vs remote broker over SSH).
+
+- `client.ts` -- Local stdio shim (PC client side). Detects local context (cwd, git_root, branch, recent files, hostname, pid, project_key from `git remote get-url origin` normalized), spawns `ssh user@broker-host bun <remote_server_path>`, forwards stdio between Claude Code and ssh. Sends a JSON handshake `{"client_meta": {...}}` on stdin's first line. Required only for remote-broker mode.
+- `server.ts` -- MCP stdio server (one per session). Reads the handshake via a custom stdin stream (PassThrough) before connecting `StdioServerTransport`. Falls back to local context detection after a 2s timeout if no handshake arrives (legacy single-host mode). Registers with the broker, polls messages, pushes via `claude/channel`.
+- `broker.ts` -- Singleton HTTP daemon on `127.0.0.1:<port>` + SQLite. Schema includes `host`, `client_pid`, `project_key` (idempotent ALTER TABLE migration). Cleanup uses `process.kill(pid, 0)` on the bun server process pid (always local to the broker host).
+- `shared/config.ts` -- Centralized configuration loader. Resolution order: env var > settings file > default. Settings file at `$XDG_CONFIG_HOME/claude-peers/config.json` (Linux/macOS) or `%APPDATA%\claude-peers\config.json` (Windows).
+- `shared/types.ts` -- Shared types for broker API and the `ClientMeta` handshake.
+- `shared/summarize.ts` -- Auto-summary generation. Multi-provider: Anthropic (`api.anthropic.com/v1/messages`) or any OpenAI-compatible `/chat/completions` endpoint (LiteLLM, Ollama via `/v1`, vLLM, OpenAI, OpenRouter). Provider selection via `CLAUDE_PEERS_SUMMARY_PROVIDER` (default `auto` resolves at runtime). Heuristic fallback always returns a non-empty string on any failure. Also hosts `computeProjectKey` and `normalizeRemoteUrl`.
+- `cli.ts` -- CLI utility for inspecting broker state. Talks to the broker on loopback, so run it on the broker host.
 
 ## Running
 
+See `README.md` for full local-mode and remote-mode setup. Quick references:
+
 ```bash
-# Start Claude Code with the channel:
+# Local mode (broker auto-spawned alongside server.ts):
 claude --dangerously-load-development-channels server:claude-peers
 
-# Or just add to .mcp.json and use as regular MCP (no channel push, but tools work):
-# { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
+# Remote mode (broker on a LXC/server, client.ts forwards via ssh):
+#   .mcp.json
+#   {
+#     "claude-peers": {
+#       "command": "bun",
+#       "args": ["./client.ts"],
+#       "env": { "CLAUDE_PEERS_REMOTE": "root@broker-host" }
+#     }
+#   }
 
-# CLI:
+# CLI (run on the broker host):
 bun cli.ts status
 bun cli.ts peers
 bun cli.ts send <peer-id> <message>
-bun cli.ts kill-broker
+bun cli.ts kill-broker        # Linux/macOS only (uses lsof)
 ```
+
+## Smoke check
+
+`bun build --target=bun broker.ts server.ts client.ts cli.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file.
 
 ## Bun
 

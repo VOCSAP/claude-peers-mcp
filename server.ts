@@ -2,42 +2,51 @@
 /**
  * claude-peers MCP server
  *
- * Spawned by Claude Code as a stdio MCP server (one per instance).
- * Connects to the shared broker daemon for peer discovery and messaging.
+ * Runs on the host where the broker daemon lives (typically a LXC reached
+ * via SSH stdio). Spawned by client.ts (or directly by Claude Code in legacy
+ * local-only mode).
+ *
+ * Reads a single JSON handshake line on stdin BEFORE switching to the MCP
+ * stdio transport. The handshake carries the client's local context
+ * (cwd, git_root, branch, recent files, host, pid, project key).
+ *
+ * If no handshake is received within HANDSHAKE_TIMEOUT_MS, falls back to
+ * detecting context locally (legacy single-host mode).
+ *
  * Declares claude/channel capability to push inbound messages immediately.
- *
- * Usage:
- *   claude --dangerously-load-development-channels server:claude-peers
- *
- * With .mcp.json:
- *   { "claude-peers": { "command": "bun", "args": ["./server.ts"] } }
  */
 
+import { PassThrough } from "node:stream";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { hostname } from "node:os";
 import type {
   PeerId,
   Peer,
   RegisterResponse,
   PollMessagesResponse,
-  Message,
+  ClientMeta,
 } from "./shared/types.ts";
 import {
   generateSummary,
+  heuristicSummary,
   getGitBranch,
   getRecentFiles,
+  computeProjectKey,
 } from "./shared/summarize.ts";
+import { loadConfig, brokerUrl, resolveProvider } from "./shared/config.ts";
 
 // --- Configuration ---
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+const config = await loadConfig();
+const BROKER_URL = brokerUrl(config);
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const HANDSHAKE_TIMEOUT_MS = 2000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 
 // --- Broker communication ---
@@ -73,14 +82,9 @@ async function ensureBroker(): Promise<void> {
   log("Starting broker daemon...");
   const proc = Bun.spawn(["bun", BROKER_SCRIPT], {
     stdio: ["ignore", "ignore", "inherit"],
-    // Detach so the broker survives if this MCP server exits
-    // On macOS/Linux, the broker will keep running
   });
-
-  // Unref so this process can exit without waiting for the broker
   proc.unref();
 
-  // Wait for it to come up
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 200));
     if (await isBrokerAlive()) {
@@ -94,7 +98,7 @@ async function ensureBroker(): Promise<void> {
 // --- Utility ---
 
 function log(msg: string) {
-  // MCP stdio servers must only use stderr for logging (stdout is the MCP protocol)
+  // MCP stdio servers must only use stderr for logging.
   console.error(`[claude-peers] ${msg}`);
 }
 
@@ -107,30 +111,77 @@ async function getGitRoot(cwd: string): Promise<string | null> {
     });
     const text = await new Response(proc.stdout).text();
     const code = await proc.exited;
-    if (code === 0) {
-      return text.trim();
-    }
+    if (code === 0) return text.trim();
   } catch {
     // not a git repo
   }
   return null;
 }
 
-function getTty(): string | null {
-  try {
-    // Try to get the parent's tty from the process tree
-    const ppid = process.ppid;
-    if (ppid) {
-      const proc = Bun.spawnSync(["ps", "-o", "tty=", "-p", String(ppid)]);
-      const tty = new TextDecoder().decode(proc.stdout).trim();
-      if (tty && tty !== "?" && tty !== "??") {
-        return tty;
+// --- Handshake ---
+
+/**
+ * Read the first newline-terminated JSON line from stdin, parse it as a
+ * handshake, and return the ClientMeta plus a PassThrough stream that
+ * carries the rest of stdin (forwarded to the MCP transport).
+ *
+ * If no newline arrives before HANDSHAKE_TIMEOUT_MS, resolves to null and
+ * the caller falls back to local context detection.
+ */
+function readHandshake(): Promise<{
+  meta: ClientMeta | null;
+  stream: PassThrough;
+}> {
+  const stream = new PassThrough();
+  let resolved = false;
+  let buffer: Buffer = Buffer.alloc(0);
+
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+
+    const finalize = (meta: ClientMeta | null, leftover: Buffer) => {
+      if (resolved) return;
+      resolved = true;
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      clearTimeout(timer);
+      if (leftover.length > 0) {
+        stream.write(leftover);
       }
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+      // From now on, every chunk goes straight into the passthrough.
+      stdin.on("data", (chunk: Buffer) => stream.write(chunk));
+      stdin.on("end", () => stream.end());
+      resolve({ meta, stream });
+    };
+
+    const onData = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const nl = buffer.indexOf(0x0a); // \n
+      if (nl === -1) return;
+      const line = buffer.subarray(0, nl).toString("utf-8");
+      const rest = buffer.subarray(nl + 1);
+      try {
+        const parsed = JSON.parse(line) as { client_meta?: ClientMeta };
+        if (parsed && parsed.client_meta) {
+          finalize(parsed.client_meta, rest);
+          return;
+        }
+      } catch {
+        // Not a handshake line: this is already MCP traffic. Treat as no-handshake.
+      }
+      // First line wasn't a handshake -- it's MCP. Replay the whole buffer
+      // (including the consumed line) into the passthrough and treat as no
+      // handshake.
+      finalize(null, buffer);
+    };
+
+    const onEnd = () => finalize(null, buffer);
+
+    const timer = setTimeout(() => finalize(null, buffer), HANDSHAKE_TIMEOUT_MS);
+
+    stdin.on("data", onData);
+    stdin.on("end", onEnd);
+  });
 }
 
 // --- State ---
@@ -138,21 +189,22 @@ function getTty(): string | null {
 let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
+let myProjectKey: string | null = null;
 
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.1.0" },
+  { name: "claude-peers", version: "0.2.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine can see you and send you messages.
+    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine (and on other PCs sharing the same broker) can see you and send you messages.
 
-IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder -- answer right away, even if you're in the middle of something.
 
-Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
+Read the from_id, from_summary, from_host, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
 - list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
@@ -170,7 +222,7 @@ const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other Claude Code instances running on this machine. Returns their ID, working directory, git repo, and summary.",
+      "List other Claude Code instances connected to the same broker. Returns their ID, host, working directory, git repo, and summary.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -178,7 +230,7 @@ const TOOLS = [
           type: "string" as const,
           enum: ["machine", "directory", "repo"],
           description:
-            'Scope of peer discovery. "machine" = all instances on this computer. "directory" = same working directory. "repo" = same git repository (including worktrees or subdirectories).',
+            'Scope of peer discovery. "machine" = all instances on the broker. "directory" = same working directory. "repo" = same git repository (matched cross-PC via the normalized git remote URL).',
         },
       },
       required: ["scope"],
@@ -235,6 +287,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS,
 }));
 
+function formatPeer(p: Peer): string {
+  const idLine = p.host && p.client_pid
+    ? `ID: ${p.id}  (${p.host} - PID: ${p.client_pid})`
+    : `ID: ${p.id}`;
+  const parts = [idLine, `CWD: ${p.cwd}`];
+  if (p.git_root) parts.push(`Repo: ${p.git_root}`);
+  if (p.project_key) parts.push(`Project: ${p.project_key}`);
+  if (p.tty) parts.push(`TTY: ${p.tty}`);
+  if (p.summary) parts.push(`Summary: ${p.summary}`);
+  parts.push(`Last seen: ${p.last_seen}`);
+  return parts.join("\n  ");
+}
+
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
@@ -246,6 +311,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           scope,
           cwd: myCwd,
           git_root: myGitRoot,
+          project_key: myProjectKey,
           exclude_id: myId,
         });
 
@@ -260,19 +326,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           };
         }
 
-        const lines = peers.map((p) => {
-          const parts = [
-            `ID: ${p.id}`,
-            `PID: ${p.pid}`,
-            `CWD: ${p.cwd}`,
-          ];
-          if (p.git_root) parts.push(`Repo: ${p.git_root}`);
-          if (p.tty) parts.push(`TTY: ${p.tty}`);
-          if (p.summary) parts.push(`Summary: ${p.summary}`);
-          parts.push(`Last seen: ${p.last_seen}`);
-          return parts.join("\n  ");
-        });
-
+        const lines = peers.map(formatPeer);
         return {
           content: [
             {
@@ -408,25 +462,26 @@ async function pollAndPushMessages() {
     const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
 
     for (const msg of result.messages) {
-      // Look up the sender's info for context
       let fromSummary = "";
       let fromCwd = "";
+      let fromHost = "";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
           scope: "machine",
           cwd: myCwd,
           git_root: myGitRoot,
+          project_key: myProjectKey,
         });
         const sender = peers.find((p) => p.id === msg.from_id);
         if (sender) {
           fromSummary = sender.summary;
           fromCwd = sender.cwd;
+          fromHost = sender.host ?? "";
         }
       } catch {
         // Non-critical, proceed without sender info
       }
 
-      // Push as channel notification — this is what makes it immediate
       await mcp.notification({
         method: "notifications/claude/channel",
         params: {
@@ -435,6 +490,7 @@ async function pollAndPushMessages() {
             from_id: msg.from_id,
             from_summary: fromSummary,
             from_cwd: fromCwd,
+            from_host: fromHost,
             sent_at: msg.sent_at,
           },
         },
@@ -443,7 +499,6 @@ async function pollAndPushMessages() {
       log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
     }
   } catch (e) {
-    // Broker might be down temporarily, don't crash
     log(`Poll error: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -451,41 +506,54 @@ async function pollAndPushMessages() {
 // --- Startup ---
 
 async function main() {
-  // 1. Ensure broker is running
-  await ensureBroker();
+  // 1. Read handshake (or fall back to local detection after timeout)
+  log("Awaiting client handshake on stdin...");
+  const { meta, stream: stdinStream } = await readHandshake();
 
-  // 2. Gather context
-  myCwd = process.cwd();
-  myGitRoot = await getGitRoot(myCwd);
-  const tty = getTty();
+  let host: string;
+  let clientPid: number;
+  let tty: string | null;
+  let gitBranch: string | null;
+  let recentFiles: string[];
+
+  if (meta) {
+    log(`Handshake received from host ${meta.host}, client_pid ${meta.client_pid}`);
+    myCwd = meta.cwd;
+    myGitRoot = meta.git_root;
+    myProjectKey = meta.project_key;
+    host = meta.host;
+    clientPid = meta.client_pid;
+    tty = meta.tty ?? null;
+    gitBranch = meta.git_branch ?? null;
+    recentFiles = meta.recent_files ?? [];
+  } else {
+    log("No handshake received -- falling back to local context detection");
+    myCwd = process.cwd();
+    myGitRoot = await getGitRoot(myCwd);
+    myProjectKey = await computeProjectKey(myCwd);
+    host = hostname();
+    clientPid = process.pid;
+    tty = null;
+    gitBranch = await getGitBranch(myCwd);
+    recentFiles = await getRecentFiles(myCwd);
+  }
 
   log(`CWD: ${myCwd}`);
   log(`Git root: ${myGitRoot ?? "(none)"}`);
-  log(`TTY: ${tty ?? "(unknown)"}`);
+  log(`Project key: ${myProjectKey ?? "(none)"}`);
+  log(`Host: ${host}  client_pid: ${clientPid}`);
 
-  // 3. Generate initial summary via gpt-5.4-nano (non-blocking, best-effort)
-  let initialSummary = "";
-  const summaryPromise = (async () => {
-    try {
-      const branch = await getGitBranch(myCwd);
-      const recentFiles = await getRecentFiles(myCwd);
-      const summary = await generateSummary({
-        cwd: myCwd,
-        git_root: myGitRoot,
-        git_branch: branch,
-        recent_files: recentFiles,
-      });
-      if (summary) {
-        initialSummary = summary;
-        log(`Auto-summary: ${summary}`);
-      }
-    } catch (e) {
-      log(`Auto-summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
-    }
-  })();
+  // 2. Ensure broker is running
+  await ensureBroker();
 
-  // Wait briefly for summary, but don't block startup
-  await Promise.race([summaryPromise, new Promise((r) => setTimeout(r, 3000))]);
+  // 3. Compute initial summary (heuristic immediately, Anthropic in background)
+  const initialSummary = heuristicSummary({
+    cwd: myCwd,
+    git_root: myGitRoot,
+    git_branch: gitBranch,
+    recent_files: recentFiles,
+  });
+  log(`Heuristic summary: ${initialSummary}`);
 
   // 4. Register with broker
   const reg = await brokerFetch<RegisterResponse>("/register", {
@@ -494,32 +562,51 @@ async function main() {
     git_root: myGitRoot,
     tty,
     summary: initialSummary,
+    host,
+    client_pid: clientPid,
+    project_key: myProjectKey,
   });
   myId = reg.id;
   log(`Registered as peer ${myId}`);
 
-  // If summary generation is still running, update it when done
-  if (!initialSummary) {
-    summaryPromise.then(async () => {
-      if (initialSummary && myId) {
-        try {
-          await brokerFetch("/set-summary", { id: myId, summary: initialSummary });
-          log(`Late auto-summary applied: ${initialSummary}`);
-        } catch {
-          // Non-critical
+  // 5. Try Anthropic-powered summary in the background; replace the heuristic
+  //    if it arrives.
+  (async () => {
+    try {
+      const provider = resolveProvider(config);
+      const summary = await generateSummary(
+        {
+          cwd: myCwd,
+          git_root: myGitRoot,
+          git_branch: gitBranch,
+          recent_files: recentFiles,
+        },
+        {
+          provider,
+          api_key: config.summary_api_key ?? process.env.ANTHROPIC_API_KEY ?? null,
+          model: config.summary_model,
+          base_url: config.summary_base_url,
         }
+      );
+      log(`Summary provider: ${provider} (model: ${config.summary_model})`);
+      if (summary && summary !== initialSummary && myId) {
+        await brokerFetch("/set-summary", { id: myId, summary });
+        log(`Anthropic summary applied: ${summary}`);
       }
-    });
-  }
+    } catch (e) {
+      log(`Background summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
 
-  // 5. Connect MCP over stdio
-  await mcp.connect(new StdioServerTransport());
+  // 6. Connect MCP over stdio (using the post-handshake passthrough stream)
+  const transport = new StdioServerTransport(stdinStream as unknown as NodeJS.ReadableStream, process.stdout);
+  await mcp.connect(transport);
   log("MCP connected");
 
-  // 6. Start polling for inbound messages
+  // 7. Start polling for inbound messages
   const pollTimer = setInterval(pollAndPushMessages, POLL_INTERVAL_MS);
 
-  // 7. Start heartbeat
+  // 8. Start heartbeat
   const heartbeatTimer = setInterval(async () => {
     if (myId) {
       try {
@@ -530,7 +617,7 @@ async function main() {
     }
   }, HEARTBEAT_INTERVAL_MS);
 
-  // 8. Clean up on exit
+  // 9. Clean up on exit
   const cleanup = async () => {
     clearInterval(pollTimer);
     clearInterval(heartbeatTimer);
