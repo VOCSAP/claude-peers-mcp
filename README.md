@@ -126,14 +126,14 @@ Make sure your SSH key is authorized on the broker host so that `ssh user@broker
 Configure the remote in env (recommended) or in a settings file (see [Configuration](#configuration)):
 
 ```bash
-export CLAUDE_PEERS_REMOTE=root@broker-host
+export CLAUDE_PEERS_REMOTE=user@broker-host
 ```
 
 Register the MCP server -- pointing at `client.ts` (not `server.ts`):
 
 ```bash
 claude mcp add --scope user --transport stdio claude-peers \
-  --env CLAUDE_PEERS_REMOTE=root@broker-host \
+  --env CLAUDE_PEERS_REMOTE=user@broker-host \
   -- bun ~/claude-peers-mcp/client.ts
 ```
 
@@ -145,7 +145,7 @@ Or in `.mcp.json`:
     "command": "bun",
     "args": ["~/claude-peers-mcp/client.ts"],
     "env": {
-      "CLAUDE_PEERS_REMOTE": "root@broker-host"
+      "CLAUDE_PEERS_REMOTE": "user@broker-host"
     }
   }
 }
@@ -241,7 +241,7 @@ Ollama exposes an OpenAI-compatible endpoint at `/v1`:
 
 ```bash
 CLAUDE_PEERS_SUMMARY_PROVIDER=openai-compat
-CLAUDE_PEERS_SUMMARY_BASE_URL=http://litellm-host:11434/v1
+CLAUDE_PEERS_SUMMARY_BASE_URL=http://ollama-host:11434/v1
 CLAUDE_PEERS_SUMMARY_MODEL=qwen2.5:7b
 # No API key needed (Ollama doesn't authenticate by default)
 ```
@@ -270,7 +270,7 @@ bun cli.ts kill-broker         # stop the broker (Linux/macOS only)
 For a remote broker, just ssh into the host:
 
 ```bash
-ssh root@broker-host "cd /srv/claude-peers && bun cli.ts peers"
+ssh user@broker-host "cd /srv/claude-peers && bun cli.ts peers"
 ```
 
 ---
@@ -311,7 +311,7 @@ Notes:
 {
   "port": 7899,
   "db": "/var/lib/claude-peers/peers.db",
-  "remote": "root@broker-host",
+  "remote": "user@broker-host",
   "remote_server_path": "/srv/claude-peers/server.ts",
   "ssh_opts": ["-o", "ServerAliveInterval=30"],
   "summary_provider": "auto",

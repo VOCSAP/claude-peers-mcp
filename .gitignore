@@ -32,3 +32,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Local planning / session notes (not part of the public repo)
+task_plan.md
+findings.md
+progress.md
+progress-archive.md

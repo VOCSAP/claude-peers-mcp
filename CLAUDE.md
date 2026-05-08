@@ -34,7 +34,7 @@ claude --dangerously-load-development-channels server:claude-peers
 #     "claude-peers": {
 #       "command": "bun",
 #       "args": ["./client.ts"],
-#       "env": { "CLAUDE_PEERS_REMOTE": "root@broker-host" }
+#       "env": { "CLAUDE_PEERS_REMOTE": "user@broker-host" }
 #     }
 #   }
 
