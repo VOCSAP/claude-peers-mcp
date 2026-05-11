@@ -219,6 +219,11 @@ let wsConnected: boolean = false;
 let wsSocket: WebSocket | null = null;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsReconnectDelay: number = WS_RECONNECT_INITIAL_MS;
+// In-session deduplication: message IDs already dispatched via mcp.notification().
+// Prevents the fallback poll from re-notifying messages that were already pushed
+// via WS. Cleared on session restart (process exit), so resumed sessions still
+// see unacknowledged messages. Only check_messages marks delivered in the DB.
+const notifiedMessageIds = new Set<number>();
 
 function groupNameForId(id: GroupId): string {
   for (const [name, gid] of Object.entries(myGroupsMap)) {
@@ -296,6 +301,7 @@ function connectWs() {
             },
           },
         });
+        notifiedMessageIds.add(f.id);
         log(`Pushed message from ${f.from_peer_id}: ${f.text.slice(0, 80)}`);
       } catch (e) {
         log(`Notification dispatch failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -328,7 +334,8 @@ async function pollFallback() {
     const result = await brokerFetch<PollMessagesResponse>("/peek-messages", {
       instance_token: myInstanceToken,
     });
-    if (result.messages.length === 0) return;
+    const fresh = result.messages.filter((m) => !notifiedMessageIds.has(m.id));
+    if (fresh.length === 0) return;
     // Best-effort resolution of from_token -> Peer for richer notification meta.
     let tokenToPeer = new Map<string, Peer>();
     try {
@@ -341,7 +348,7 @@ async function pollFallback() {
       });
       tokenToPeer = new Map(peers.map((p) => [p.instance_token, p]));
     } catch { /* non-fatal */ }
-    for (const msg of result.messages) {
+    for (const msg of fresh) {
       const peer = tokenToPeer.get(msg.from_token);
       try {
         await mcp.notification({
@@ -357,6 +364,7 @@ async function pollFallback() {
             },
           },
         });
+        notifiedMessageIds.add(msg.id);
       } catch { /* fire-and-forget */ }
     }
   } catch { /* non-fatal */ }
