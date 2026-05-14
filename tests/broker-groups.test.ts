@@ -1,10 +1,15 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
 import { startBroker, stopBroker, post, livePid, groupId, sha256Hex, type TestBroker } from "./_helper.ts";
 
 let broker: TestBroker;
+const brokers: TestBroker[] = [];
 
 beforeAll(async () => { broker = await startBroker(); });
-afterAll(async () => { await stopBroker(broker); });
+afterAll(async () => {
+  await stopBroker(broker);
+  for (const b of brokers) { await stopBroker(b); }
+});
 
 async function register(extra: Record<string, unknown> = {}) {
   return post<{ peer_id: string; instance_token: string }>(`${broker.url}/register`, {
@@ -84,4 +89,32 @@ test("send_message rejects cross-group routing", async () => {
 test("'default' group accepts registration without secret", async () => {
   const r = await register({ host: "def-host", cwd: "/def" });
   expect(r.status).toBe(200);
+});
+
+test("/register stores claude_cli_pid on fresh registration", async () => {
+  const b = await startBroker();
+  brokers.push(b);
+  const { status, body } = await post<{ instance_token: string }>(
+    `${b.url}/register`,
+    {
+      pid: livePid(),
+      cwd: "/tmp/proj-pid",
+      git_root: null,
+      tty: null,
+      summary: "",
+      host: "test-host-pid",
+      client_pid: livePid(),
+      claude_cli_pid: 42424,
+      project_key: null,
+      group_id: "default",
+      group_secret_hash: null,
+    }
+  );
+  expect(status).toBe(200);
+  const db = new Database(b.dbPath, { readonly: true });
+  const row = db.query(
+    "SELECT claude_cli_pid FROM peers WHERE instance_token = ?"
+  ).get(body.instance_token) as { claude_cli_pid: number };
+  db.close();
+  expect(row.claude_cli_pid).toBe(42424);
 });

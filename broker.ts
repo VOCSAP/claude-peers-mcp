@@ -220,8 +220,8 @@ setInterval(cleanStalePeers, 30_000);
 const insertPeer = db.prepare(`
   INSERT INTO peers (
     instance_token, peer_id, group_id, pid, cwd, git_root, tty, summary,
-    registered_at, last_seen, host, client_pid, project_key, status
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    registered_at, last_seen, host, client_pid, project_key, claude_cli_pid, status
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
 `);
 
 const updateLastSeen = db.prepare(
@@ -247,7 +247,8 @@ const updateActiveOnRegister = db.prepare(`
       last_seen = ?,
       host = ?,
       client_pid = ?,
-      project_key = ?
+      project_key = ?,
+      claude_cli_pid = ?
   WHERE instance_token = ?
 `);
 
@@ -336,6 +337,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         body.host,
         body.client_pid,
         body.project_key,
+        body.claude_cli_pid ?? null,
         existingPeer.instance_token
       );
       upsertPeerSession.run(sk, existingPeer.instance_token, groupId, body.host, body.cwd, now);
@@ -367,7 +369,8 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         now,
         body.host,
         body.client_pid,
-        body.project_key
+        body.project_key,
+        body.claude_cli_pid ?? null
       );
       return { peer_id: freshId, instance_token: freshToken };
     }
@@ -387,7 +390,8 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
       now,
       body.host,
       body.client_pid,
-      body.project_key
+      body.project_key,
+      body.claude_cli_pid ?? null
     );
     upsertPeerSession.run(sk, session.instance_token, groupId, body.host, body.cwd, now);
     return { peer_id: reusedId, instance_token: session.instance_token };
@@ -409,7 +413,8 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     now,
     body.host,
     body.client_pid,
-    body.project_key
+    body.project_key,
+    body.claude_cli_pid ?? null
   );
   upsertPeerSession.run(sk, newToken, groupId, body.host, body.cwd, now);
   return { peer_id: newPeerId, instance_token: newToken };
