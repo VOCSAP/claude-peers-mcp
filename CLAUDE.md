@@ -23,8 +23,12 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
   v0.3.1 endpoints: `/register`, `/heartbeat`, `/set-summary`, `/disconnect`,
   `/disconnect-by-cli-pid` (hook-driven), `/unregister`, `/set-id`, `/list-peers`,
   `/send-message`, `/poll-messages`, `/peek-messages`, `/group-stats`, plus the `/ws`
-  upgrade. Two cleanup timers: `cleanStalePeers` (every 30s: PID-dead -> dormant,
-  dormant past 24h -> DELETE cascade) and `sweepInactivePeers` (every
+  upgrade. Two cleanup timers: `cleanStalePeers` (every
+  `CLAUDE_PEERS_CLEAN_INTERVAL_SEC` = 30s default: same-host PID-dead -> dormant via
+  `process.kill(pid, 0)`, dormant past 24h -> DELETE cascade; cross-host peers
+  where `peer.host != hostname()` are skipped in the PID check because the broker
+  cannot reason about a foreign machine's process table -- they are reaped by the
+  heartbeat sweep instead) and `sweepInactivePeers` (every
   `CLAUDE_PEERS_DORMANT_SWEEP_SEC` = 60s default: active without recent heartbeat for
   more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` = 120s default -> dormant).
 

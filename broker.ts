@@ -12,6 +12,7 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { loadConfig } from "./shared/config.ts";
 import type {
@@ -56,6 +57,10 @@ const ACTIVE_STALE_SEC = Math.max(
 const SWEEP_INTERVAL_SEC = Math.max(
   10,
   parseInt(process.env.CLAUDE_PEERS_DORMANT_SWEEP_SEC ?? "60", 10)
+);
+const CLEAN_INTERVAL_MS = Math.max(
+  1_000,
+  parseInt(process.env.CLAUDE_PEERS_CLEAN_INTERVAL_SEC ?? "30", 10) * 1000
 );
 
 try {
@@ -193,11 +198,16 @@ function deriveDefaultId(host: string, cwd: string, groupId: GroupId): string {
 
 // --- Stale cleanup (dormant lifecycle) ---
 
+// Hostname of THIS broker process. PID-based liveness only applies to peers
+// registered from the same machine. Cross-machine peers are reaped via the
+// heartbeat staleness sweep (sweepInactivePeers).
+const BROKER_HOST = hostname();
+
 function cleanStalePeers(): void {
-  // Phase 1: bascule active -> dormant pour les pids morts.
+  // Phase 1: bascule active -> dormant pour les pids morts (same-host only).
   const actives = db.query(
-    "SELECT instance_token, pid FROM peers WHERE status = 'active'"
-  ).all() as { instance_token: string; pid: number }[];
+    "SELECT instance_token, pid FROM peers WHERE status = 'active' AND host = ?"
+  ).all(BROKER_HOST) as { instance_token: string; pid: number }[];
   for (const peer of actives) {
     try {
       process.kill(peer.pid, 0);
@@ -223,7 +233,7 @@ function cleanStalePeers(): void {
 }
 
 cleanStalePeers();
-setInterval(cleanStalePeers, 30_000);
+setInterval(cleanStalePeers, CLEAN_INTERVAL_MS);
 
 // --- Heartbeat-staleness sweep (active_stale_sec) ---
 
