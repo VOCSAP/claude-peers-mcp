@@ -1014,6 +1014,17 @@ async function main() {
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
+
+  let shuttingDown = false;
+  const stdinShutdown = async (reason: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`stdin ${reason} -- Claude Code closed, shutting down`);
+    try { await cleanup(); } catch { /* best-effort */ }
+    process.exit(0);
+  };
+  process.stdin.on("end", () => { void stdinShutdown("end"); });
+  process.stdin.on("close", () => { void stdinShutdown("close"); });
 }
 
 main().catch((e) => {
