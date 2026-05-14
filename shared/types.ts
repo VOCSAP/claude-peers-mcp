@@ -196,11 +196,6 @@ export interface ListGroupsResponse {
 
 // --- WebSocket frames (loopback ws://127.0.0.1:<port>/ws) ---
 
-export interface WsAuthFrame {
-  type: "auth";
-  instance_token: InstanceToken;
-}
-
 export interface WsMessageFrame {
   type: "message";
   id: number;
@@ -212,7 +207,7 @@ export interface WsMessageFrame {
   sent_at: string;
 }
 
-export type WsFrame = WsAuthFrame | WsMessageFrame;
+export type WsFrame = WsMessageFrame;
 
 // --- disconnect-by-cli-pid (Task 3, v0.3.1) ---
 
