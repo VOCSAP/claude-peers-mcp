@@ -13,7 +13,7 @@ async function runHook(brokerUrl: string, payload: object, brokerToken?: string)
   const proc = Bun.spawn(["bun", "hook-session-end-peers.ts"], {
     env,
     stdio: ["pipe", "pipe", "pipe"],
-    cwd: "D:\\AI\\MCPServer\\claude-peers-mcp",
+    cwd: process.cwd(),
   });
   // NOTE: proc.stdin is a Bun FileSink, NOT a WritableStream.
   // Use proc.stdin.write(...) + proc.stdin.end(), not getWriter().
@@ -57,7 +57,7 @@ test("hook exits 0 on non-JSON stdin payload", async () => {
   const proc = Bun.spawn(["bun", "hook-session-end-peers.ts"], {
     env: { ...process.env, CLAUDE_PEERS_BROKER_URL: b.url },
     stdio: ["pipe", "pipe", "pipe"],
-    cwd: "D:\\AI\\MCPServer\\claude-peers-mcp",
+    cwd: process.cwd(),
   });
   proc.stdin.write("this is not json");
   proc.stdin.end();

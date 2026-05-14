@@ -83,7 +83,7 @@ bun cli.ts kill-broker        # Linux/macOS only (uses lsof)
 
 `bun build --target=bun broker.ts server.ts hook-session-end-peers.ts cli.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file. For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts hook-session-end-peers.ts cli.ts`.
 
-`bun test` runs the v0.3.1 suite (5 files, 43 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-status.test.ts` (dormant lifecycle, TTL purge, sweep). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` and tears it down in `afterAll`.
+`bun test` runs the v0.3.1 suite (11 files, 43 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-migration.test.ts` (claude_cli_pid migration idempotency), `broker-disconnect-by-cli-pid.test.ts` (host+cli_pid matching), `broker-sweep-inactive.test.ts` (heartbeat sweep), `server-stdin-eof.test.ts` (self-shutdown), `hook-session-end.test.ts` (SessionEnd hook), `install-hook.test.ts` (idempotent installer). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` and tears it down in `afterAll`.
 
 ## Bun
 

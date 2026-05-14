@@ -19,7 +19,7 @@ async function runInstaller(home: string, args: string[] = []): Promise<number> 
   const proc = Bun.spawn(["bun", "install-hook.ts", ...args], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
-    cwd: "D:\\AI\\MCPServer\\claude-peers-mcp",
+    cwd: process.cwd(),
   });
   return await proc.exited;
 }
