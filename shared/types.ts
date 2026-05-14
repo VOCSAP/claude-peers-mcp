@@ -63,27 +63,6 @@ export interface PeerSessionRow {
   last_active_at: string;
 }
 
-// --- Handshake (client.ts -> server.ts via stdin first line) ---
-
-export interface ClientMeta {
-  host: string;
-  client_pid: number;
-  cwd: string;
-  git_root: string | null;
-  git_branch: string | null;
-  recent_files: string[];
-  project_key: string | null;
-  tty: string | null;
-
-  // v0.3: group identity, computed client-side (secret never leaves the PC).
-  group_id: GroupId;
-  group_secret_hash: string | null; // sha256(secret) full hex, or null for 'default'
-
-  // v0.3: name -> group_id mapping so server.ts can invert for whoami / list_groups
-  // without seeing the user's secrets. Keys are user config group names.
-  groups_map: Record<string, GroupId>;
-}
-
 // --- Broker API: requests ---
 
 export interface RegisterRequest {

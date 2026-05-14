@@ -3,12 +3,7 @@
     "claude-peers": {
       "type": "stdio",
       "command": "bun",
-      "args": [
-        "./client.ts"
-      ],
-      "env": {
-        "CLAUDE_PEERS_REMOTE": "user@ip_host"
-      }
-    }	  
+      "args": ["./server.ts"]
+    }
   }
 }
