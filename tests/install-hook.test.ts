@@ -24,14 +24,31 @@ async function runInstaller(home: string, args: string[] = []): Promise<number> 
   return await proc.exited;
 }
 
-test("install creates settings.json with hook entry", async () => {
+test("install copies session-end-peers.sh to ~/.claude/hooks/", async () => {
+  const home = freshHome();
+  const code = await runInstaller(home);
+  expect(code).toBe(0);
+  const hookPath = join(home, ".claude", "hooks", "session-end-peers.sh");
+  expect(existsSync(hookPath)).toBe(true);
+});
+
+test("install writes a valid bash script with shebang", async () => {
+  const home = freshHome();
+  await runInstaller(home);
+  const hookPath = join(home, ".claude", "hooks", "session-end-peers.sh");
+  const content = readFileSync(hookPath, "utf-8");
+  expect(content.startsWith("#!/bin/bash")).toBe(true);
+});
+
+test("install creates settings.json with hook entry (bash command)", async () => {
   const home = freshHome();
   const code = await runInstaller(home);
   expect(code).toBe(0);
   const cfg = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
   const arr = cfg.hooks?.SessionEnd ?? [];
-  const matches = JSON.stringify(arr).includes("hook-session-end-peers.ts");
-  expect(matches).toBe(true);
+  const blob = JSON.stringify(arr);
+  expect(blob).toContain("session-end-peers.sh");
+  expect(blob).toContain("bash");
 });
 
 test("install is idempotent (second run does not duplicate)", async () => {
@@ -39,7 +56,8 @@ test("install is idempotent (second run does not duplicate)", async () => {
   await runInstaller(home);
   await runInstaller(home);
   const cfg = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
-  const count = (JSON.stringify(cfg.hooks.SessionEnd).match(/hook-session-end-peers\.ts/g) ?? []).length;
+  const count = (JSON.stringify(cfg.hooks.SessionEnd).match(/session-end-peers\.sh/g) ?? []).length;
+  // The command string contains the filename once; idempotent means it appears exactly once.
   expect(count).toBe(1);
 });
 
@@ -57,10 +75,10 @@ test("install preserves unrelated SessionEnd hooks", async () => {
   const cfg = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
   const blob = JSON.stringify(cfg.hooks.SessionEnd);
   expect(blob).toContain("other-hook.sh");
-  expect(blob).toContain("hook-session-end-peers.ts");
+  expect(blob).toContain("session-end-peers.sh");
 });
 
-test("uninstall removes the entry but keeps unrelated hooks", async () => {
+test("uninstall removes the .sh file and the settings entry, keeps unrelated hooks", async () => {
   const home = freshHome();
   const existing = {
     hooks: {
@@ -71,11 +89,20 @@ test("uninstall removes the entry but keeps unrelated hooks", async () => {
   };
   writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify(existing, null, 2));
   await runInstaller(home);
+
+  // Verify installed
+  expect(existsSync(join(home, ".claude", "hooks", "session-end-peers.sh"))).toBe(true);
+
   expect(await runInstaller(home, ["--uninstall"])).toBe(0);
+
+  // .sh file removed
+  expect(existsSync(join(home, ".claude", "hooks", "session-end-peers.sh"))).toBe(false);
+
+  // entry removed, other hook preserved
   const cfg = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf-8"));
   const blob = JSON.stringify(cfg.hooks.SessionEnd);
   expect(blob).toContain("other-hook.sh");
-  expect(blob).not.toContain("hook-session-end-peers.ts");
+  expect(blob).not.toContain("session-end-peers.sh");
 });
 
 test("install preserves other top-level keys in settings.json", async () => {

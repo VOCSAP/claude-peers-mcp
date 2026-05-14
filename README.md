@@ -191,8 +191,19 @@ Once per PC, install the SessionEnd hook:
 bun install-hook.ts
 ```
 
-This adds a hook to `~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`)
-that fires when the Claude Code session ends and marks the peer dormant on the broker.
+This copies `hook-session-end-peers.sh` (a plain bash + curl script) to
+`~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
+`~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`).
+The hook fires when the Claude Code session ends and marks the peer dormant on the broker.
+
+`CLAUDE_PEERS_BROKER_URL` must be set in your environment (or exported from your shell profile)
+so the hook can reach the broker without Bun or the MCP config loaded.
+
+To remove:
+
+```sh
+bun install-hook.ts --uninstall
+```
 
 ---
 

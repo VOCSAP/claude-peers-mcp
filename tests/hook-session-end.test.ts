@@ -8,9 +8,13 @@ async function runHook(brokerUrl: string, payload: object, brokerToken?: string)
   const env: Record<string, string> = {
     ...process.env,
     CLAUDE_PEERS_BROKER_URL: brokerUrl,
+    // On Windows, git-bash $PPID is a shell wrapper PID (not the actual Bun
+    // test runner PID). Inject the real PID via env var so the broker can match.
+    CLAUDE_PEERS_CLI_PID: String(process.pid),
   };
   if (brokerToken) env.CLAUDE_PEERS_BROKER_TOKEN = brokerToken;
-  const proc = Bun.spawn(["bun", "hook-session-end-peers.ts"], {
+  // Spawn bash directly against the source .sh in the repo root.
+  const proc = Bun.spawn(["bash", "hook-session-end-peers.sh"], {
     env,
     stdio: ["pipe", "pipe", "pipe"],
     cwd: process.cwd(),
@@ -27,8 +31,9 @@ test("hook POSTs /disconnect-by-cli-pid with payload session_id", async () => {
   const b = await startBroker();
   brokers.push(b);
 
-  // The hook reads hostname() and process.ppid -- inside the hook, ppid is the
-  // bun test runner (this process). Register a matching peer for the assertion to work.
+  // The hook reads hostname() and $PPID -- inside the hook, $PPID is the bash
+  // process's parent, which is the bun test runner (this process). Register a
+  // matching peer for the assertion to work.
   const host = require("node:os").hostname();
   await post(`${b.url}/register`, {
     pid: livePid(), cwd: "/tmp/hook-test", git_root: null, tty: null,
@@ -54,8 +59,8 @@ test("hook exits 0 when broker is unreachable (no throw)", async () => {
 test("hook exits 0 on non-JSON stdin payload", async () => {
   const b = await startBroker();
   brokers.push(b);
-  const proc = Bun.spawn(["bun", "hook-session-end-peers.ts"], {
-    env: { ...process.env, CLAUDE_PEERS_BROKER_URL: b.url },
+  const proc = Bun.spawn(["bash", "hook-session-end-peers.sh"], {
+    env: { ...process.env, CLAUDE_PEERS_BROKER_URL: b.url, CLAUDE_PEERS_CLI_PID: String(process.pid) },
     stdio: ["pipe", "pipe", "pipe"],
     cwd: process.cwd(),
   });

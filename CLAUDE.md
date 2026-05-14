@@ -28,9 +28,11 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
   `CLAUDE_PEERS_DORMANT_SWEEP_SEC` = 60s default: active without recent heartbeat for
   more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` = 120s default -> dormant).
 
-- `hook-session-end-peers.ts` -- one-shot Bun script invoked by Claude Code at session
-  end. POSTs `/disconnect-by-cli-pid` with `(hostname(), process.ppid)`. Always exits 0.
-  Installed via `bun install-hook.ts`.
+- `hook-session-end-peers.sh` -- bash + curl script invoked by Claude Code at session
+  end. POSTs `/disconnect-by-cli-pid` with `(hostname, $PPID)`. Always exits 0.
+  Installed via `bun install-hook.ts`, which copies the script to
+  `~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
+  `~/.claude/settings.json` (consistent with the kleos hook pattern).
 
 - `cli.ts` -- diagnostic CLI for the broker (status, peers, groups, kill-broker).
   Unchanged from v0.3 except for the version string.
@@ -81,7 +83,7 @@ bun cli.ts kill-broker        # Linux/macOS only (uses lsof)
 
 ## Smoke check
 
-`bun build --target=bun broker.ts server.ts hook-session-end-peers.ts cli.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file. For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts hook-session-end-peers.ts cli.ts`.
+`bun build --target=bun broker.ts server.ts cli.ts install-hook.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file (the `.sh` hook is not a Bun entrypoint). For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts cli.ts install-hook.ts`.
 
 `bun test` runs the v0.3.1 suite (11 files, 43 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-migration.test.ts` (claude_cli_pid migration idempotency), `broker-disconnect-by-cli-pid.test.ts` (host+cli_pid matching), `broker-sweep-inactive.test.ts` (heartbeat sweep), `server-stdin-eof.test.ts` (self-shutdown), `hook-session-end.test.ts` (SessionEnd hook), `install-hook.test.ts` (idempotent installer). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` and tears it down in `afterAll`.
 
