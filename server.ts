@@ -315,7 +315,7 @@ async function pollFallback() {
 // --- MCP server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.3.0" },
+  { name: "claude-peers", version: "0.3.1" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
