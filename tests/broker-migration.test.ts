@@ -18,6 +18,8 @@ test("migration is idempotent on already-migrated db", async () => {
   const b1 = await startBroker();
   brokers.push(b1);
   // Restart the broker against the same DB path -- migration must not throw.
+  // Note: b2.dbPath is stale (helper computes a fresh tmpDir regardless of envOverrides);
+  // the broker process uses b1.dbPath via the CLAUDE_PEERS_DB env override.
   const b2 = await startBroker({ CLAUDE_PEERS_DB: b1.dbPath });
   brokers.push(b2);
   // If we got here, the second broker came up successfully.
