@@ -946,6 +946,7 @@ async function main() {
     summary: initialSummary,
     host,
     client_pid: clientPid,
+    claude_cli_pid: process.ppid,
     project_key: myProjectKey,
     group_id: groupId,
     group_secret_hash: groupSecretHash,
