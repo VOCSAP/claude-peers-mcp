@@ -43,3 +43,10 @@ progress-archive.md
 # Claude Code local-only files (personal, not project-wide)
 .claude/session-checkpoint.md
 .claude/settings.local.json
+
+# Superpowers skill artifacts (specs, plans, helpers, task0 assets) -- internal work product, not public
+docs/superpowers/
+
+# Memory / notes directories (auto-memory, kleos exports, etc.)
+**/memory/
+*.memory.md
