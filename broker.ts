@@ -29,6 +29,8 @@ import type {
   SetIdRequest,
   SetIdResponse,
   GroupStatsResponse,
+  DisconnectByCliPidRequest,
+  DisconnectByCliPidResponse,
   Peer,
   Message,
   GroupId,
@@ -435,6 +437,32 @@ function handleDisconnect(body: DisconnectRequest): void {
   );
 }
 
+function handleDisconnectByCliPid(
+  body: DisconnectByCliPidRequest
+): DisconnectByCliPidResponse | { error: string; status: number } {
+  if (typeof body?.host !== "string" || !body.host) {
+    return { error: "host (string) is required", status: 400 };
+  }
+  if (typeof body?.claude_cli_pid !== "number" || !Number.isFinite(body.claude_cli_pid)) {
+    return { error: "claude_cli_pid (number) is required", status: 400 };
+  }
+  const now = new Date().toISOString();
+  const rows = db.query(
+    "SELECT instance_token, peer_id FROM peers WHERE host = ? AND claude_cli_pid = ? AND status = 'active'"
+  ).all(body.host, body.claude_cli_pid) as { instance_token: string; peer_id: string }[];
+
+  const upd = db.prepare(
+    "UPDATE peers SET status = 'dormant', last_seen = ? WHERE instance_token = ?"
+  );
+  for (const r of rows) {
+    upd.run(now, r.instance_token);
+    console.error(
+      `[broker] disconnect-by-cli-pid: peer=${r.peer_id} host=${body.host} cli_pid=${body.claude_cli_pid} session=${body.claude_session_id ?? "?"}`
+    );
+  }
+  return { disconnected: rows.length, peer_ids: rows.map((r) => r.peer_id) };
+}
+
 function handleUnregister(body: UnregisterRequest): void {
   db.run("DELETE FROM messages WHERE to_token = ? AND delivered = 0", [body.instance_token]);
   db.run("DELETE FROM peer_sessions WHERE instance_token = ?", [body.instance_token]);
@@ -755,6 +783,13 @@ const server = Bun.serve<WsData>({
         case "/disconnect":
           handleDisconnect(body as DisconnectRequest);
           return Response.json({ ok: true });
+        case "/disconnect-by-cli-pid": {
+          const result = handleDisconnectByCliPid(body as DisconnectByCliPidRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
         case "/unregister":
           handleUnregister(body as UnregisterRequest);
           return Response.json({ ok: true });

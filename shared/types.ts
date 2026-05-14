@@ -213,3 +213,16 @@ export interface WsMessageFrame {
 }
 
 export type WsFrame = WsAuthFrame | WsMessageFrame;
+
+// --- disconnect-by-cli-pid (Task 3, v0.3.1) ---
+
+export interface DisconnectByCliPidRequest {
+  host: string;
+  claude_cli_pid: number;
+  claude_session_id?: string | null;
+}
+
+export interface DisconnectByCliPidResponse {
+  disconnected: number;
+  peer_ids: string[];
+}
