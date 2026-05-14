@@ -49,6 +49,14 @@ const DORMANT_TTL_HOURS = parseInt(
 const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 const ACTIVITY_TIMEOUT_MS = parseInt(process.env.CLAUDE_PEERS_ACTIVITY_TIMEOUT_SEC ?? "1800", 10) * 1000;
 const WS_IDLE_TIMEOUT_SEC = parseInt(process.env.CLAUDE_PEERS_WS_IDLE_TIMEOUT_SEC ?? "600", 10);
+const ACTIVE_STALE_SEC = Math.max(
+  10,
+  parseInt(process.env.CLAUDE_PEERS_ACTIVE_STALE_SEC ?? "120", 10)
+);
+const SWEEP_INTERVAL_SEC = Math.max(
+  10,
+  parseInt(process.env.CLAUDE_PEERS_DORMANT_SWEEP_SEC ?? "60", 10)
+);
 
 try {
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -216,6 +224,17 @@ function cleanStalePeers(): void {
 
 cleanStalePeers();
 setInterval(cleanStalePeers, 30_000);
+
+// --- Heartbeat-staleness sweep (active_stale_sec) ---
+
+function sweepInactivePeers(): void {
+  const cutoff = new Date(Date.now() - ACTIVE_STALE_SEC * 1000).toISOString();
+  db.run(
+    "UPDATE peers SET status = 'dormant' WHERE status = 'active' AND last_seen < ?",
+    [cutoff]
+  );
+}
+setInterval(sweepInactivePeers, SWEEP_INTERVAL_SEC * 1000);
 
 // --- Prepared statements ---
 
@@ -821,5 +840,8 @@ const server = Bun.serve<WsData>({
 });
 
 console.error(
-  `[claude-peers broker v0.3] listening on ${BIND_HOST}:${PORT} (db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ws_idle=${WS_IDLE_TIMEOUT_SEC}s, auth=${BROKER_TOKEN ? "token" : "none"})`
+  `[claude-peers broker v0.3.1] listening on ${BIND_HOST}:${PORT} ` +
+  `(db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ` +
+  `ws_idle=${WS_IDLE_TIMEOUT_SEC}s, active_stale=${ACTIVE_STALE_SEC}s, sweep_interval=${SWEEP_INTERVAL_SEC}s, ` +
+  `auth=${BROKER_TOKEN ? "token" : "none"})`
 );
