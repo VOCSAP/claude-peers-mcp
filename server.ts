@@ -15,6 +15,8 @@
  */
 
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -65,7 +67,7 @@ const WS_RECONNECT_MAX_MS = 30_000;
 // Fallback poll interval used when the WebSocket connection is down.
 // Does NOT mark messages as delivered -- only check_messages does that.
 const POLL_FALLBACK_INTERVAL_MS = parseInt(process.env.CLAUDE_PEERS_POLL_FALLBACK_SEC ?? "5", 10) * 1000;
-const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
+const BROKER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
 
 // --- Broker HTTP communication ---
 

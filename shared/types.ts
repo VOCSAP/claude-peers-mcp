@@ -97,6 +97,7 @@ export interface RegisterRequest {
   project_key: string | null;
   group_id: GroupId;
   group_secret_hash: string | null;
+  claude_cli_pid?: number; // PID of the Claude Code CLI process (process.ppid of server.ts)
 }
 
 export interface RegisterResponse {

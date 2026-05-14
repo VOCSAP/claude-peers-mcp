@@ -107,6 +107,16 @@ try {
   if (!msg.includes("duplicate column name")) console.error(`[broker] migration: ${msg}`);
 }
 
+// Migration: add claude_cli_pid column (idempotent)
+// PID of the Claude Code CLI process (process.ppid of server.ts) -- used by
+// the SessionEnd hook to mark a peer dormant without an instance_token.
+try {
+  db.run("ALTER TABLE peers ADD COLUMN claude_cli_pid INTEGER");
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!msg.includes("duplicate column name")) console.error(`[broker] migration: ${msg}`);
+}
+
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
