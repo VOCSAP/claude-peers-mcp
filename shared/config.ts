@@ -189,6 +189,22 @@ export function brokerUrl(config: Config): string {
   return `http://127.0.0.1:${config.port}`;
 }
 
+/**
+ * Whether a broker URL points to the local loopback interface. Used to gate
+ * the auto-spawn fallback in server.ts: only the local-only deployment may
+ * legitimately spawn a broker daemon side by side with server.ts. In HTTP
+ * mode the broker lives elsewhere, so a local spawn would just leak a zombie
+ * process that does not serve the configured URL.
+ */
+export function isLoopbackBrokerUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 // --- v0.3: group resolution ---
 
 const PROJECT_FILE = ".claude-peers.json";

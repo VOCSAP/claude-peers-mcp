@@ -41,6 +41,7 @@ import {
 import {
   loadConfig,
   brokerUrl,
+  isLoopbackBrokerUrl,
   resolveProvider,
   resolveGroup,
   computeGroupId,
@@ -105,6 +106,16 @@ async function ensureBroker(): Promise<void> {
   if (await isBrokerAlive()) {
     log("Broker already running");
     return;
+  }
+
+  // HTTP-remote mode: the configured broker lives on another host, so a local
+  // spawn would bind 127.0.0.1 and never satisfy isBrokerAlive() on the remote
+  // URL. proc.unref() would then leak that local broker as a zombie after the
+  // outer throw (observed as Bug F, 2026-05-15). Fail fast instead.
+  if (!isLoopbackBrokerUrl(BROKER_URL)) {
+    throw new Error(
+      `Broker at ${BROKER_URL} is unreachable. Remote brokers (HTTP mode) must be started manually; refusing to spawn a local broker that would not serve this URL.`
+    );
   }
 
   log("Starting broker daemon...");
