@@ -337,15 +337,18 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
 
   if (session) {
     const existingPeer = db.query(
-      "SELECT instance_token, peer_id, status, pid FROM peers WHERE instance_token = ?"
+      "SELECT instance_token, peer_id, status, pid, host FROM peers WHERE instance_token = ?"
     ).get(session.instance_token) as
-      | { instance_token: string; peer_id: string; status: "active" | "dormant"; pid: number }
+      | { instance_token: string; peer_id: string; status: "active" | "dormant"; pid: number; host: string }
       | null;
 
     // If marked active but the bun server.ts pid is dead, treat as dormant.
     // This shrinks the post-crash window where the user would otherwise
     // receive a fresh peer_id while waiting for cleanStalePeers (30s tick).
-    if (existingPeer && existingPeer.status === "active") {
+    // Only valid for same-host peers: a Linux broker cannot probe a Windows
+    // PID, the kill throws unconditionally, and the resurrect path would
+    // silently steal the active peer's identity (see Bug D, 2026-05-15).
+    if (existingPeer && existingPeer.status === "active" && existingPeer.host === BROKER_HOST) {
       try {
         process.kill(existingPeer.pid, 0);
       } catch {

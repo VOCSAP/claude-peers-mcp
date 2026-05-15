@@ -1,4 +1,5 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
+import { hostname } from "node:os";
 import { Database } from "bun:sqlite";
 import { startBroker, stopBroker, post, livePid, type TestBroker } from "./_helper.ts";
 
@@ -31,14 +32,17 @@ test("re-register after /disconnect resurrects the same instance_token and peer_
 });
 
 test("dead-pid registration on the same (host, cwd) is treated as resurrect", async () => {
-  // First, register with a known-dead pid (very large, unlikely to be assigned).
+  // The post-crash dead-pid optimization is scoped to same-host peers (the
+  // broker can only probe its own machine's process table). The same-host
+  // scenario uses hostname() of the test runner, which equals BROKER_HOST.
+  const myHost = hostname();
   const deadPid = 999_999_999;
-  const a = await register("hostD", "/dp", deadPid);
+  const a = await register(myHost, "/dp", deadPid);
   const tok1 = a.body.instance_token;
   const id1 = a.body.peer_id;
 
   // Re-register with a live pid; broker should detect dead pid -> resurrect.
-  const a2 = await register("hostD", "/dp", livePid());
+  const a2 = await register(myHost, "/dp", livePid());
   expect(a2.body.instance_token).toBe(tok1);
   expect(a2.body.peer_id).toBe(id1);
 });
