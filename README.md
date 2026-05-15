@@ -21,7 +21,7 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Centralized configuration** (env vars + JSON settings file).
 - **v0.3** -- isolation by **groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
 - **v0.3.1** -- **auto-disconnect** on session end (SessionEnd hook, stdin EOF, sweep timer).
-- **v0.3.2** -- opt-in **status-line `peer_id` cache** for users who wire a status-line script.
+- **v0.3.2** -- opt-in **status-line `peer_id` cache** for users who wire a status-line script; **Windows-compatible SessionEnd hook** (cross-platform PID liveness probe).
 
 ## What v0.3 / v0.3.1 changes
 
@@ -195,7 +195,13 @@ bun install-hook.ts
 This copies `hook-session-end-peers.sh` (a plain bash + curl script) to
 `~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
 `~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`).
-The hook fires when the Claude Code session ends and marks the peer dormant on the broker.
+
+When a Claude Code session ends, the hook:
+1. Asks the broker for the list of active peers registered on the local hostname (`POST /list-peers-by-host`).
+2. Probes each peer's `claude_cli_pid` liveness locally (`tasklist //FI "PID eq <pid>"` on Windows MINGW/MSYS/CYGWIN, `kill -0 <pid>` on Linux/macOS).
+3. Posts `/disconnect` to the broker for every peer whose PID is dead.
+
+This makes the hook robust on Windows where Claude Code detaches the hook (so `$PPID = 1` was never a usable correlation key) and avoids any platform-specific behavior.
 
 `CLAUDE_PEERS_BROKER_URL` must be set in your environment (or exported from your shell profile)
 so the hook can reach the broker without Bun or the MCP config loaded.

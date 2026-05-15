@@ -3,6 +3,9 @@
 ## v0.3.2 -- 2026-05-15
 
 ### Added
+- New broker endpoint `POST /list-peers-by-host { host }` -> `{ peers: [{ instance_token, claude_cli_pid }, ...] }`.
+  Returns active peers on the given host, used by the SessionEnd hook to
+  enumerate candidates for liveness probing.
 - New opt-in env var `CLAUDE_PEERS_STATUS_LINE_CACHE` (default off). When set to
   `1`/`true`/`yes`/`on`, `server.ts` writes the active `peer_id` to
   `$HOME/.claude/peers/peer-id-<cwd_key>.txt` after every successful `/register`
@@ -15,6 +18,23 @@
   the bash logic exactly: non-alphanumeric (and non-hyphen) chars replaced with
   `_`, last 40 chars kept, with an explicit offset to avoid the MSYS2 bash 5.2
   `${str: -N}` quirk. Best-effort writes (FS failures do not break `/register`).
+
+### Changed
+- **Bug E -- Windows-compatible SessionEnd hook.** `hook-session-end-peers.sh`
+  no longer correlates by `$PPID`. New flow:
+  1. POST `/list-peers-by-host` with `{ host: hostname }` to enumerate active peers.
+  2. For each peer, probe `claude_cli_pid` liveness locally:
+     - Windows (MINGW/MSYS/CYGWIN, detected via `uname -s`): `tasklist //FI "PID eq <pid>" //NH | grep -qw <pid>`. MSYS2's `kill -0` cannot probe native Win32 PIDs, but `tasklist` can.
+     - POSIX (Linux/macOS): `kill -0 <pid>`.
+  3. POST `/disconnect` by `instance_token` for every peer whose recorded PID is dead.
+  This finally makes the hook functional on Windows, where Claude Code detaches
+  the hook so `$PPID = 1` (init) and the v0.3.1 `/disconnect-by-cli-pid` path
+  was a silent no-op.
+
+### Removed
+- **Broker endpoint `POST /disconnect-by-cli-pid`** and its request/response
+  types (`DisconnectByCliPidRequest`, `DisconnectByCliPidResponse`). The hook
+  no longer correlates by PID server-side, so the endpoint is dead code.
 
 ### Fixed
 - **Bug C -- status-line `peer_id` segment empty or stale.** Previously,

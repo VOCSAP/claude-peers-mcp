@@ -20,8 +20,9 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
   stdin EOF (Claude Code exits), `server.ts` calls `/disconnect` then `process.exit(0)`.
 
 - `broker.ts` -- singleton HTTP + WebSocket daemon on `<BIND_HOST>:<port>` + SQLite.
-  v0.3.1 endpoints: `/register`, `/heartbeat`, `/set-summary`, `/disconnect`,
-  `/disconnect-by-cli-pid` (hook-driven), `/unregister`, `/set-id`, `/list-peers`,
+  v0.3.2 endpoints: `/register`, `/heartbeat`, `/set-summary`, `/disconnect`,
+  `/list-peers-by-host` (hook-driven, v0.3.2 replacement for the v0.3.1
+  `/disconnect-by-cli-pid` endpoint), `/unregister`, `/set-id`, `/list-peers`,
   `/send-message`, `/poll-messages`, `/peek-messages`, `/group-stats`, plus the `/ws`
   upgrade. Two cleanup timers: `cleanStalePeers` (every
   `CLAUDE_PEERS_CLEAN_INTERVAL_SEC` = 30s default: same-host PID-dead -> dormant via
@@ -33,8 +34,13 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
   more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` = 120s default -> dormant).
 
 - `hook-session-end-peers.sh` -- bash + curl script invoked by Claude Code at session
-  end. POSTs `/disconnect-by-cli-pid` with `(hostname, $PPID)`. Always exits 0.
-  Installed via `bun install-hook.ts`, which copies the script to
+  end. **v0.3.2** flow: queries `/list-peers-by-host` for active peers on the local
+  hostname, probes each peer's `claude_cli_pid` liveness on the local machine
+  (Windows: `tasklist //FI "PID eq <pid>" //NH`; POSIX: `kill -0 <pid>`), then
+  POSTs `/disconnect` for every peer whose recorded PID is dead. This sidesteps
+  the v0.3.1 limitation where `$PPID` from the detached hook was 1 (init) on
+  Windows and never matched a real peer. Always exits 0. Installed via
+  `bun install-hook.ts`, which copies the script to
   `~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
   `~/.claude/settings.json` (consistent with the kleos hook pattern).
 
@@ -90,7 +96,7 @@ bun cli.ts kill-broker        # Linux/macOS only (uses lsof)
 
 `bun build --target=bun broker.ts server.ts cli.ts install-hook.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file (the `.sh` hook is not a Bun entrypoint). For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts cli.ts install-hook.ts`.
 
-`bun test` runs the v0.3.2 suite (17 files, 83 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-ws-auth.test.ts` (Bearer-token upgrade, no-token rejection), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-activity-status.test.ts` (fresh + resurrected peer reports active), `broker-migration.test.ts` (claude_cli_pid migration idempotency), `broker-disconnect-by-cli-pid.test.ts` (host+cli_pid matching), `broker-sweep-inactive.test.ts` (heartbeat sweep), `broker-cross-host-cleanup.test.ts` (cleanStalePeers same-host filter), `broker-cross-host-register.test.ts` (handleRegister same-host filter + collision mints fresh id), `config-loopback.test.ts` (isLoopbackBrokerUrl detection), `peer-cache.test.ts` (status-line cwd_key derivation + cache file write), `server-stdin-eof.test.ts` (self-shutdown), `hook-session-end.test.ts` (SessionEnd hook), `install-hook.test.ts` (idempotent installer). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` (env-scrubbed so developer-side `CLAUDE_PEERS_*` vars do not leak into the broker) and tears it down in `afterAll`.
+`bun test` runs the v0.3.2 suite (17 files, 89 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-ws-auth.test.ts` (Bearer-token upgrade, no-token rejection), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-activity-status.test.ts` (fresh + resurrected peer reports active), `broker-migration.test.ts` (claude_cli_pid migration idempotency), `broker-list-peers-by-host.test.ts` (v0.3.2 endpoint feeding the hook: host filter, dormant exclusion, auth), `broker-sweep-inactive.test.ts` (heartbeat sweep), `broker-cross-host-cleanup.test.ts` (cleanStalePeers same-host filter), `broker-cross-host-register.test.ts` (handleRegister same-host filter + collision mints fresh id), `config-loopback.test.ts` (isLoopbackBrokerUrl detection), `peer-cache.test.ts` (status-line cwd_key derivation + cache file write), `server-stdin-eof.test.ts` (self-shutdown), `hook-session-end.test.ts` (cross-platform PID liveness probe drives `/disconnect`), `install-hook.test.ts` (idempotent installer). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` (env-scrubbed so developer-side `CLAUDE_PEERS_*` vars do not leak into the broker) and tears it down in `afterAll`.
 
 ## Bun
 

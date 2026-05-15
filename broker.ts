@@ -30,8 +30,8 @@ import type {
   SetIdRequest,
   SetIdResponse,
   GroupStatsResponse,
-  DisconnectByCliPidRequest,
-  DisconnectByCliPidResponse,
+  ListPeersByHostRequest,
+  ListPeersByHostResponse,
   Peer,
   Message,
   GroupId,
@@ -474,30 +474,16 @@ function handleDisconnect(body: DisconnectRequest): void {
   );
 }
 
-function handleDisconnectByCliPid(
-  body: DisconnectByCliPidRequest
-): DisconnectByCliPidResponse | { error: string; status: number } {
+function handleListPeersByHost(
+  body: ListPeersByHostRequest
+): ListPeersByHostResponse | { error: string; status: number } {
   if (typeof body?.host !== "string" || !body.host) {
     return { error: "host (string) is required", status: 400 };
   }
-  if (typeof body?.claude_cli_pid !== "number" || !Number.isFinite(body.claude_cli_pid)) {
-    return { error: "claude_cli_pid (number) is required", status: 400 };
-  }
-  const now = new Date().toISOString();
   const rows = db.query(
-    "SELECT instance_token, peer_id FROM peers WHERE host = ? AND claude_cli_pid = ? AND status = 'active'"
-  ).all(body.host, body.claude_cli_pid) as { instance_token: string; peer_id: string }[];
-
-  const upd = db.prepare(
-    "UPDATE peers SET status = 'dormant', last_seen = ? WHERE instance_token = ?"
-  );
-  for (const r of rows) {
-    upd.run(now, r.instance_token);
-    console.error(
-      `[broker] disconnect-by-cli-pid: peer=${r.peer_id} host=${body.host} cli_pid=${body.claude_cli_pid} session=${body.claude_session_id ?? "?"}`
-    );
-  }
-  return { disconnected: rows.length, peer_ids: rows.map((r) => r.peer_id) };
+    "SELECT instance_token, claude_cli_pid FROM peers WHERE host = ? AND status = 'active'"
+  ).all(body.host) as { instance_token: string; claude_cli_pid: number | null }[];
+  return { peers: rows };
 }
 
 function handleUnregister(body: UnregisterRequest): void {
@@ -820,8 +806,8 @@ const server = Bun.serve<WsData>({
         case "/disconnect":
           handleDisconnect(body as DisconnectRequest);
           return Response.json({ ok: true });
-        case "/disconnect-by-cli-pid": {
-          const result = handleDisconnectByCliPid(body as DisconnectByCliPidRequest);
+        case "/list-peers-by-host": {
+          const result = handleListPeersByHost(body as ListPeersByHostRequest);
           if ("error" in result) {
             return Response.json({ error: result.error }, { status: result.status });
           }
