@@ -1,4 +1,4 @@
-# claude-peers (v0.3.1)
+# claude-peers (v0.3.2)
 
 Let your Claude Code instances find each other and talk -- across multiple projects on a single PC, or across multiple PCs sharing a common broker on the LAN. When you're running 5 sessions, any Claude can discover the others and send messages that arrive instantly via the `claude/channel` protocol.
 
@@ -20,7 +20,8 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Multi-provider auto-summary** (Anthropic + any OpenAI-compatible endpoint), with deterministic heuristic fallback.
 - **Centralized configuration** (env vars + JSON settings file).
 - **v0.3** -- isolation by **groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
-- **v0.3.1** -- **auto-disconnect** on session end (SessionEnd hook, stdin EOF, sweep timer).
+- **v0.3.1** -- **auto-disconnect** on session end (`server.ts` SIGTERM/stdin EOF + broker sweep timers).
+- **v0.3.2** -- opt-in **status-line `peer_id` cache** for users who wire a status-line script; **SessionEnd bash hook removed** (the broker's heartbeat sweep + `server.ts` cleanup are sufficient; the hook was either a no-op on Windows or redundant on POSIX).
 
 ## What v0.3 / v0.3.1 changes
 
@@ -30,7 +31,7 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Resume**: your `peer_id` is stable across reconnects in the same `(host, cwd, group)`. Quit Claude Code, restart it, you keep the same identity. `set_id` lets you rename it.
 - **WebSocket push**: messages land on the recipient instantly via a loopback WebSocket. A 5s fallback poll (peek, no mark-delivered) kicks in only when the WS is down.
 - **Dual identity**: `instance_token` (UUID, immutable, internal routing) + `peer_id` (display name, mutable). Renames are now cosmetic and never break in-flight conversations.
-- **v0.3.1 -- Auto-disconnect**: peers are marked dormant when Claude Code exits, via SessionEnd hook, stdin EOF detection, and a sweep timer. No more zombie `active` peers after sessions close.
+- **v0.3.1 -- Auto-disconnect**: peers are marked dormant when Claude Code exits, via `server.ts` stdin EOF / SIGTERM cleanup. The broker also runs two background sweeps (`cleanStalePeers` every 30s for same-host dead PIDs, `sweepInactivePeers` every 60s for stale heartbeats >120s) so crashed clients are reaped within ~180s on any platform. (v0.3.1 originally also shipped a bash SessionEnd hook; v0.3.2 dropped it as redundant.)
 
 ## Two deployment modes
 
@@ -185,25 +186,21 @@ On each Claude Code client, in `~/.config/claude-peers/config.json`
 
 ### Auto-disconnect on session end
 
-Once per PC, install the SessionEnd hook:
+No setup needed. Cleanup happens through three independent paths:
 
-```sh
-bun install-hook.ts
-```
+1. **`server.ts` SIGTERM / stdin EOF**: when Claude Code shuts the MCP server down at session end, `server.ts` catches it and POSTs `/disconnect`. Immediate, cross-platform.
+2. **`cleanStalePeers` (broker, 30s)**: for active peers registered on the broker's own host, probes the PID with `process.kill(pid, 0)`. Dead -> dormant. Also purges dormant peers older than `CLAUDE_PEERS_DORMANT_TTL_HOURS` (24h default). Cross-host peers are skipped here (the broker cannot test a foreign machine's process table).
+3. **`sweepInactivePeers` (broker, 60s)**: any active peer without a `/heartbeat` for more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` (120s default) is marked dormant. This is what catches crashed cross-host clients.
 
-This copies `hook-session-end-peers.sh` (a plain bash + curl script) to
-`~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
-`~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`).
-The hook fires when the Claude Code session ends and marks the peer dormant on the broker.
+Worst case for a crashed cross-host client (kill -9, power loss, network partition): ~180s before the peer flips dormant (120s stale threshold + one 60s sweep tick).
 
-`CLAUDE_PEERS_BROKER_URL` must be set in your environment (or exported from your shell profile)
-so the hook can reach the broker without Bun or the MCP config loaded.
-
-To remove:
-
-```sh
-bun install-hook.ts --uninstall
-```
+> **v0.3.2 note:** the v0.3.1 `hook-session-end-peers.sh` SessionEnd bash hook
+> and its `bun install-hook.ts` installer have been removed. The hook was a
+> silent no-op on Windows (Claude Code detaches the hook so `$PPID = 1`) and
+> redundant with `server.ts` cleanup on POSIX. If you ran `bun install-hook.ts`
+> on a previous version, remove the stale `SessionEnd` entry from your
+> `~/.claude/settings.json` and delete the leftover script under
+> `~/.claude/hooks/`.
 
 ---
 
@@ -368,6 +365,7 @@ Every setting can be provided via an environment variable or via a JSON settings
 | `CLAUDE_PEERS_BROKER_URL`            | `broker_url`           | (none)                               | server                | HTTP mode: direct broker URL (e.g. `http://my-server:7899`). Overrides loopback. |
 | `CLAUDE_PEERS_BROKER_TOKEN`          | `broker_token`         | (none)                               | broker + server       | Bearer token for broker auth. Broker requires it on all requests (except `/health`); server sends it on every call. |
 | `CLAUDE_PEERS_BIND_HOST`             | `bind_host`            | `127.0.0.1`                          | broker                | Broker bind address. Set `0.0.0.0` to accept external connections.     |
+| `CLAUDE_PEERS_STATUS_LINE_CACHE`     | (n/a)                  | (unset = off)                        | server                | Opt-in: when truthy (`1`, `true`, `yes`, `on`, case-insensitive), `server.ts` writes the active `peer_id` to `$HOME/.claude/peers/peer-id-<cwd_key>.txt` on every register so a status-line script can read it. Any other value (or unset) disables the write. See [Status-line integration](#status-line-integration). |
 
 ### Example settings file (with groups)
 
@@ -425,6 +423,44 @@ The `group_id` is derived from `sha256(secret).slice(0, 32)`. If the two PCs use
 ### "session_key collision" warning in broker logs
 
 Two `bun server.ts` processes registered with the same `(host, cwd, group_id)` while both alive. The first kept the resume identity, the second got a fresh `peer_id` like `myhost-foo-2`. This usually means you launched two Claude Code sessions in the same directory simultaneously -- expected behavior.
+
+---
+
+## Status-line integration
+
+If you run a Claude Code status-line script that wants to display the current `peer_id`, opt in with:
+
+```bash
+export CLAUDE_PEERS_STATUS_LINE_CACHE=1
+```
+
+(Or `true`, `yes`, `on` -- case-insensitive. Any other value, including `0`/`false`/unset, leaves the feature off.)
+
+When enabled, `server.ts` writes the active `peer_id` to:
+
+```
+$HOME/.claude/peers/peer-id-<cwd_key>.txt
+```
+
+on every successful `/register` (initial registration and group switches). `<cwd_key>` is computed from `cwd` by replacing every non-alphanumeric character (except `-`) with `_` and keeping the last 40 characters (the same rule a status-line script should use to look the file up).
+
+A reference status-line lookup, in POSIX bash, that matches this convention:
+
+```bash
+get_peer_id() {
+    local sanitized cwd_key peer_id_file len offset
+    sanitized=$(printf '%s' "$CWD" | sed 's/[^a-zA-Z0-9-]/_/g')
+    len=${#sanitized}
+    # Explicit offset avoids the MSYS2 bash 5.2 quirk where ${str: -N}
+    # returns empty when len(str) < N.
+    offset=$(( len > 40 ? len - 40 : 0 ))
+    cwd_key="${sanitized:$offset}"
+    peer_id_file="$HOME/.claude/peers/peer-id-${cwd_key}.txt"
+    [[ -f "$peer_id_file" ]] && cat "$peer_id_file" || echo ""
+}
+```
+
+The write is best-effort: a FS failure is swallowed and never breaks `/register`. The feature is off by default because the cache is only useful when a status-line script consumes it, and most users do not want `server.ts` to write under `$HOME`.
 
 ---
 

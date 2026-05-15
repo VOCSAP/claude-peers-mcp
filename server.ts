@@ -47,6 +47,7 @@ import {
   computeGroupId,
   computeGroupSecretHash,
 } from "./shared/config.ts";
+import { writePeerIdCache } from "./shared/peer-cache.ts";
 
 const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 
@@ -766,6 +767,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         myPeerId = reg.peer_id;
         myGroupId = newGroupId;
         myRegisteredAt = new Date().toISOString();
+        await writePeerIdCache(myCwd, myPeerId);
         connectWs();
         return {
           content: [
@@ -882,6 +884,7 @@ async function main() {
   myInstanceToken = reg.instance_token;
   myPeerId = reg.peer_id;
   myRegisteredAt = new Date().toISOString();
+  await writePeerIdCache(myCwd, myPeerId);
   log(`Registered as peer '${myPeerId}' (instance ${myInstanceToken.slice(0, 8)})`);
 
   // Background summary upgrade.
