@@ -25,12 +25,6 @@ export interface Config {
   port: number;
   /** SQLite DB path (broker side). */
   db: string;
-  /** SSH target for client.ts: "user@host[:port]". */
-  remote: string | null;
-  /** Path to server.ts on the remote host. */
-  remote_server_path: string;
-  /** Extra SSH options (passed as raw argv to ssh). */
-  ssh_opts: string[];
   /** Auto-summary provider selection. "auto" resolves at call time. */
   summary_provider: SummaryProvider;
   /** Override base URL for openai-compat (e.g. LiteLLM/Ollama proxy). */
@@ -54,9 +48,6 @@ export interface Config {
 interface FileConfig {
   port?: number;
   db?: string;
-  remote?: string;
-  remote_server_path?: string;
-  ssh_opts?: string[];
   summary_provider?: SummaryProvider;
   summary_base_url?: string;
   summary_api_key?: string;
@@ -108,14 +99,6 @@ function defaultDbPath(): string {
   return join(homedir(), ".claude-peers.db");
 }
 
-function parseSshOpts(value: string | undefined): string[] | null {
-  if (!value) return null;
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
 function parseProvider(value: string | undefined): SummaryProvider | null {
   if (!value) return null;
   const v = value.toLowerCase();
@@ -137,18 +120,6 @@ export async function loadConfig(): Promise<Config> {
   );
 
   const db = process.env.CLAUDE_PEERS_DB ?? fileCfg.db ?? defaultDbPath();
-
-  const remote = process.env.CLAUDE_PEERS_REMOTE ?? fileCfg.remote ?? null;
-
-  const remote_server_path =
-    process.env.CLAUDE_PEERS_REMOTE_SERVER_PATH ??
-    fileCfg.remote_server_path ??
-    "/srv/claude-peers/server.ts";
-
-  const ssh_opts =
-    parseSshOpts(process.env.CLAUDE_PEERS_SSH_OPTS) ??
-    fileCfg.ssh_opts ??
-    [];
 
   const summary_provider: SummaryProvider =
     parseProvider(process.env.CLAUDE_PEERS_SUMMARY_PROVIDER) ??
@@ -182,9 +153,6 @@ export async function loadConfig(): Promise<Config> {
   return {
     port,
     db,
-    remote,
-    remote_server_path,
-    ssh_opts,
     summary_provider,
     summary_base_url,
     summary_api_key,
@@ -219,6 +187,22 @@ export function resolveProvider(config: Config): Exclude<SummaryProvider, "auto"
 export function brokerUrl(config: Config): string {
   if (config.broker_url) return config.broker_url;
   return `http://127.0.0.1:${config.port}`;
+}
+
+/**
+ * Whether a broker URL points to the local loopback interface. Used to gate
+ * the auto-spawn fallback in server.ts: only the local-only deployment may
+ * legitimately spawn a broker daemon side by side with server.ts. In HTTP
+ * mode the broker lives elsewhere, so a local spawn would just leak a zombie
+ * process that does not serve the configured URL.
+ */
+export function isLoopbackBrokerUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  } catch {
+    return false;
+  }
 }
 
 // --- v0.3: group resolution ---

@@ -63,27 +63,6 @@ export interface PeerSessionRow {
   last_active_at: string;
 }
 
-// --- Handshake (client.ts -> server.ts via stdin first line) ---
-
-export interface ClientMeta {
-  host: string;
-  client_pid: number;
-  cwd: string;
-  git_root: string | null;
-  git_branch: string | null;
-  recent_files: string[];
-  project_key: string | null;
-  tty: string | null;
-
-  // v0.3: group identity, computed client-side (secret never leaves the PC).
-  group_id: GroupId;
-  group_secret_hash: string | null; // sha256(secret) full hex, or null for 'default'
-
-  // v0.3: name -> group_id mapping so server.ts can invert for whoami / list_groups
-  // without seeing the user's secrets. Keys are user config group names.
-  groups_map: Record<string, GroupId>;
-}
-
 // --- Broker API: requests ---
 
 export interface RegisterRequest {
@@ -97,6 +76,7 @@ export interface RegisterRequest {
   project_key: string | null;
   group_id: GroupId;
   group_secret_hash: string | null;
+  claude_cli_pid?: number; // PID of the Claude Code CLI process (process.ppid of server.ts)
 }
 
 export interface RegisterResponse {
@@ -195,11 +175,6 @@ export interface ListGroupsResponse {
 
 // --- WebSocket frames (loopback ws://127.0.0.1:<port>/ws) ---
 
-export interface WsAuthFrame {
-  type: "auth";
-  instance_token: InstanceToken;
-}
-
 export interface WsMessageFrame {
   type: "message";
   id: number;
@@ -211,4 +186,17 @@ export interface WsMessageFrame {
   sent_at: string;
 }
 
-export type WsFrame = WsAuthFrame | WsMessageFrame;
+export type WsFrame = WsMessageFrame;
+
+// --- disconnect-by-cli-pid (Task 3, v0.3.1) ---
+
+export interface DisconnectByCliPidRequest {
+  host: string;
+  claude_cli_pid: number;
+  claude_session_id?: string | null;
+}
+
+export interface DisconnectByCliPidResponse {
+  disconnected: number;
+  peer_ids: string[];
+}

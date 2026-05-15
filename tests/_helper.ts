@@ -20,11 +20,19 @@ export async function startBroker(
   const tmpDir = mkdtempSync(join(tmpdir(), "cp-test-"));
   const dbPath = join(tmpDir, "peers.db");
 
+  // Scrub any CLAUDE_PEERS_* vars inherited from the developer's shell
+  // (BROKER_TOKEN, BROKER_URL, ...). Tests must own their broker config
+  // entirely through envOverrides; otherwise a token set in the user
+  // environment turns every unauthenticated test POST into a 401.
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
+  ) as Record<string, string>;
+
   for (let attempt = 0; attempt < 20; attempt++) {
     const port = nextPort++;
     const proc = Bun.spawn(["bun", "broker.ts"], {
       env: {
-        ...process.env,
+        ...cleanEnv,
         CLAUDE_PEERS_PORT: String(port),
         CLAUDE_PEERS_DB: dbPath,
         CLAUDE_PEERS_DORMANT_TTL_HOURS: "24",

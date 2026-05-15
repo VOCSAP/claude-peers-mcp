@@ -1,20 +1,17 @@
 #!/usr/bin/env bun
 /**
- * claude-peers MCP server (v0.3)
+ * claude-peers MCP server (v0.3.1)
  *
- * Runs on the broker host (loopback to broker.ts). Spawned by client.ts via
- * SSH stdio, or directly by Claude Code in legacy local-only mode.
- *
- * Reads a single JSON handshake line on stdin BEFORE switching to the MCP
- * stdio transport. The handshake carries the client's local context plus
- * the resolved group identity (group_id, group_secret_hash, groups_map).
+ * Runs locally alongside Claude Code. Always uses local context detection --
+ * SSH mode is removed in v0.3.1.
  *
  * Connects to the broker via WebSocket (loopback) for push delivery, with a
  * polling fallback for resilience. SIGINT/SIGTERM transitions the peer to
  * 'dormant' via /disconnect (resume-able), instead of /unregister (DELETE).
  */
 
-import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -26,7 +23,6 @@ import type {
   Peer,
   RegisterResponse,
   PollMessagesResponse,
-  ClientMeta,
   GroupId,
   GroupStatsResponse,
   PeerId,
@@ -45,6 +41,7 @@ import {
 import {
   loadConfig,
   brokerUrl,
+  isLoopbackBrokerUrl,
   resolveProvider,
   resolveGroup,
   computeGroupId,
@@ -59,13 +56,12 @@ const config = await loadConfig();
 const BROKER_URL = brokerUrl(config);
 const BROKER_TOKEN = config.broker_token ?? null;
 const HEARTBEAT_INTERVAL_MS = 15_000;
-const HANDSHAKE_TIMEOUT_MS = 2000;
 const WS_RECONNECT_INITIAL_MS = 1000;
 const WS_RECONNECT_MAX_MS = 30_000;
 // Fallback poll interval used when the WebSocket connection is down.
 // Does NOT mark messages as delivered -- only check_messages does that.
 const POLL_FALLBACK_INTERVAL_MS = parseInt(process.env.CLAUDE_PEERS_POLL_FALLBACK_SEC ?? "5", 10) * 1000;
-const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
+const BROKER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
 
 // --- Broker HTTP communication ---
 
@@ -112,6 +108,16 @@ async function ensureBroker(): Promise<void> {
     return;
   }
 
+  // HTTP-remote mode: the configured broker lives on another host, so a local
+  // spawn would bind 127.0.0.1 and never satisfy isBrokerAlive() on the remote
+  // URL. proc.unref() would then leak that local broker as a zombie after the
+  // outer throw (observed as Bug F, 2026-05-15). Fail fast instead.
+  if (!isLoopbackBrokerUrl(BROKER_URL)) {
+    throw new Error(
+      `Broker at ${BROKER_URL} is unreachable. Remote brokers (HTTP mode) must be started manually; refusing to spawn a local broker that would not serve this URL.`
+    );
+  }
+
   log("Starting broker daemon...");
   const proc = Bun.spawn(["bun", BROKER_SCRIPT], {
     stdio: ["ignore", "ignore", "inherit"],
@@ -148,59 +154,6 @@ async function getGitRoot(cwd: string): Promise<string | null> {
     // not a git repo
   }
   return null;
-}
-
-// --- Handshake ---
-
-function readHandshake(): Promise<{
-  meta: ClientMeta | null;
-  stream: PassThrough;
-}> {
-  const stream = new PassThrough();
-  let resolved = false;
-  let buffer: Buffer = Buffer.alloc(0);
-
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-
-    const finalize = (meta: ClientMeta | null, leftover: Buffer) => {
-      if (resolved) return;
-      resolved = true;
-      stdin.off("data", onData);
-      stdin.off("end", onEnd);
-      clearTimeout(timer);
-      if (leftover.length > 0) {
-        stream.write(leftover);
-      }
-      stdin.on("data", (chunk: Buffer) => stream.write(chunk));
-      stdin.on("end", () => stream.end());
-      resolve({ meta, stream });
-    };
-
-    const onData = (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      const nl = buffer.indexOf(0x0a);
-      if (nl === -1) return;
-      const line = buffer.subarray(0, nl).toString("utf-8");
-      const rest = buffer.subarray(nl + 1);
-      try {
-        const parsed = JSON.parse(line) as { client_meta?: ClientMeta };
-        if (parsed && parsed.client_meta) {
-          finalize(parsed.client_meta, rest);
-          return;
-        }
-      } catch {
-        // Not a handshake line: this is already MCP traffic.
-      }
-      finalize(null, buffer);
-    };
-
-    const onEnd = () => finalize(null, buffer);
-    const timer = setTimeout(() => finalize(null, buffer), HANDSHAKE_TIMEOUT_MS);
-
-    stdin.on("data", onData);
-    stdin.on("end", onEnd);
-  });
 }
 
 // --- State (v0.3 dual identity) ---
@@ -259,7 +212,14 @@ function connectWs() {
     try { wsSocket.close(); } catch { /* ignore */ }
   }
   const wsUrl = BROKER_URL.replace(/^http/, "ws") + "/ws";
-  const ws = new WebSocket(wsUrl);
+  // Bun's WebSocket constructor accepts an options object with custom headers.
+  // Required when the broker enforces a Bearer token: the HTTP /ws upgrade
+  // request itself must carry the Authorization header, otherwise it is
+  // rejected with 401 before the auth frame is ever exchanged.
+  const wsInit = BROKER_TOKEN
+    ? ({ headers: { Authorization: `Bearer ${BROKER_TOKEN}` } } as unknown as string[])
+    : undefined;
+  const ws = new WebSocket(wsUrl, wsInit);
   wsSocket = ws;
 
   ws.addEventListener("open", () => {
@@ -373,7 +333,7 @@ async function pollFallback() {
 // --- MCP server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.3.0" },
+  { name: "claude-peers", version: "0.3.1" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -873,47 +833,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // --- Startup ---
 
 async function main() {
-  log("Awaiting client handshake on stdin...");
-  const { meta, stream: stdinStream } = await readHandshake();
-
-  let host: string;
-  let clientPid: number;
-  let tty: string | null;
-  let gitBranch: string | null;
-  let recentFiles: string[];
-  let groupId: GroupId;
-  let groupSecretHash: string | null;
-  let groupsMap: Record<string, GroupId>;
-
-  if (meta) {
-    log(`Handshake received from host ${meta.host}, client_pid ${meta.client_pid}`);
-    myCwd = meta.cwd;
-    myGitRoot = meta.git_root;
-    myProjectKey = meta.project_key;
-    host = meta.host;
-    clientPid = meta.client_pid;
-    tty = meta.tty ?? null;
-    gitBranch = meta.git_branch ?? null;
-    recentFiles = meta.recent_files ?? [];
-    groupId = meta.group_id ?? "default";
-    groupSecretHash = meta.group_secret_hash ?? null;
-    groupsMap = meta.groups_map ?? { default: "default" };
-  } else {
-    log("No handshake -- legacy mode, resolving group locally");
-    myCwd = process.cwd();
-    myGitRoot = await getGitRoot(myCwd);
-    myProjectKey = await computeProjectKey(myCwd);
-    host = hostname();
-    clientPid = process.pid;
-    tty = null;
-    gitBranch = await getGitBranch(myCwd);
-    recentFiles = await getRecentFiles(myCwd);
-    const resolved = resolveGroup(myCwd, myGitRoot, config);
-    groupId = resolved.group_id;
-    groupSecretHash = resolved.group_secret_hash;
-    groupsMap = resolved.groups_map;
-    log(`Local group resolution: ${resolved.name} (id: ${groupId.slice(0, 8)})`);
-  }
+  log("Local context detection...");
+  myCwd = process.cwd();
+  myGitRoot = await getGitRoot(myCwd);
+  myProjectKey = await computeProjectKey(myCwd);
+  const host = hostname();
+  const clientPid = process.pid;
+  const tty = process.stdin.isTTY ? "tty" : null;
+  const gitBranch = await getGitBranch(myCwd);
+  const recentFiles = await getRecentFiles(myCwd);
+  const { group_id: groupId, group_secret_hash: groupSecretHash, groups_map: groupsMap, name: groupName } = resolveGroup(myCwd, myGitRoot, config);
+  log(`Local group resolution: ${groupName} (id: ${groupId.slice(0, 8)})`);
 
   myHost = host;
   myClientPid = clientPid;
@@ -944,6 +874,7 @@ async function main() {
     summary: initialSummary,
     host,
     client_pid: clientPid,
+    claude_cli_pid: process.ppid,
     project_key: myProjectKey,
     group_id: groupId,
     group_secret_hash: groupSecretHash,
@@ -976,7 +907,7 @@ async function main() {
     }
   })();
 
-  const transport = new StdioServerTransport(stdinStream as unknown as NodeJS.ReadableStream, process.stdout);
+  const transport = new StdioServerTransport(process.stdin, process.stdout);
   await mcp.connect(transport);
   log("MCP connected");
 
@@ -1011,6 +942,17 @@ async function main() {
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
+
+  let shuttingDown = false;
+  const stdinShutdown = async (reason: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`stdin ${reason} -- Claude Code closed, shutting down`);
+    try { await cleanup(); } catch { /* best-effort */ }
+    process.exit(0);
+  };
+  process.stdin.on("end", () => { void stdinShutdown("end"); });
+  process.stdin.on("close", () => { void stdinShutdown("close"); });
 }
 
 main().catch((e) => {

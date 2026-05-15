@@ -1,4 +1,4 @@
-# claude-peers (v0.3)
+# claude-peers (v0.3.1)
 
 Let your Claude Code instances find each other and talk -- across multiple projects on a single PC, or across multiple PCs sharing a common broker on the LAN. When you're running 5 sessions, any Claude can discover the others and send messages that arrive instantly via the `claude/channel` protocol.
 
@@ -15,13 +15,14 @@ Let your Claude Code instances find each other and talk -- across multiple proje
 
 This fork extends the original [louislva/claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) with:
 
-- **Remote broker over SSH stdio** (multi-PC LAN setup).
+- **Remote broker over HTTP** (multi-PC LAN/Internet setup, no SSH required).
 - **Cross-PC repo matching** via normalized git remote URL (`project_key`).
 - **Multi-provider auto-summary** (Anthropic + any OpenAI-compatible endpoint), with deterministic heuristic fallback.
 - **Centralized configuration** (env vars + JSON settings file).
 - **v0.3** -- isolation by **groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
+- **v0.3.1** -- **auto-disconnect** on session end (SessionEnd hook, stdin EOF, sweep timer).
 
-## What v0.3 changes
+## What v0.3 / v0.3.1 changes
 
 > **Breaking** -- v0.3 introduces a new SQLite schema. There is no migration path: stop the broker, delete `peers.db`, restart. See [Upgrading](#upgrading-from-v02).
 
@@ -29,20 +30,17 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Resume**: your `peer_id` is stable across reconnects in the same `(host, cwd, group)`. Quit Claude Code, restart it, you keep the same identity. `set_id` lets you rename it.
 - **WebSocket push**: messages land on the recipient instantly via a loopback WebSocket. A 5s fallback poll (peek, no mark-delivered) kicks in only when the WS is down.
 - **Dual identity**: `instance_token` (UUID, immutable, internal routing) + `peer_id` (display name, mutable). Renames are now cosmetic and never break in-flight conversations.
+- **v0.3.1 -- Auto-disconnect**: peers are marked dormant when Claude Code exits, via SessionEnd hook, stdin EOF detection, and a sweep timer. No more zombie `active` peers after sessions close.
 
-## Three deployment modes
+## Two deployment modes
 
 ### Mode 1 -- Local broker (single PC)
 
 Broker runs on the same PC as your Claude Code sessions. See [Quick start (local)](#quick-start-local).
 
-### Mode 2 -- Remote broker via SSH (multi-PC, LAN)
+### Mode 2 -- Remote broker via HTTP (multi-PC, LAN/Internet)
 
-Broker runs on a dedicated host (e.g. a LXC, VM, or always-on Linux box). Each PC runs a thin `client.ts` that ssh's into the broker host and forwards stdio. Sessions on different PCs see each other and can collaborate. See [Quick start (remote)](#quick-start-remote).
-
-### Mode 3 -- Remote broker via HTTP (public, no SSH)
-
-`server.ts` runs locally on each PC and connects directly to a remote broker over HTTP. No SSH needed. Suited for contributors who don't have SSH access to the broker host. See [Quick start (HTTP)](#quick-start-http).
+`server.ts` runs locally on each PC and connects directly to a remote broker over HTTP. No SSH needed. Suited for multi-PC setups and contributors. See [Quick start (HTTP)](#quick-start-http).
 
 ---
 
@@ -71,88 +69,6 @@ claude --dangerously-load-development-channels server:claude-peers
 Without `--dangerously-load-development-channels`, peer messages still work but you'll have to call `check_messages` manually.
 
 The broker daemon auto-starts on first launch.
-
----
-
-## Quick start (remote)
-
-### 1. On the broker host (e.g. a Debian LXC)
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-
-git clone https://github.com/vocsap/claude-peers-mcp.git /srv/claude-peers
-cd /srv/claude-peers
-bun install
-
-mkdir -p /var/lib/claude-peers
-
-mkdir -p /etc/claude-peers
-cat >/etc/claude-peers/claude-peers.env <<'EOF'
-ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_PEERS_DB=/var/lib/claude-peers/peers.db
-EOF
-chmod 600 /etc/claude-peers/claude-peers.env
-
-cat >/etc/systemd/system/claude-peers-broker.service <<'EOF'
-[Unit]
-Description=claude-peers broker daemon
-After=network.target
-
-[Service]
-Type=simple
-User=root
-EnvironmentFile=/etc/claude-peers/claude-peers.env
-ExecStart=/root/.bun/bin/bun /srv/claude-peers/broker.ts
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now claude-peers-broker.service
-curl http://127.0.0.1:7899/health
-```
-
-Adjust `/root/.bun/bin/bun` to wherever bun is installed (`which bun`).
-
-### 2. On each PC client
-
-```bash
-git clone https://github.com/vocsap/claude-peers-mcp.git ~/claude-peers-mcp
-cd ~/claude-peers-mcp
-bun install
-```
-
-Make sure your SSH key is authorized on the broker host so that `ssh user@broker-host bun --version` works without a password.
-
-Add `CLAUDE_PEERS_REMOTE` to your env or settings file, then register the MCP server pointing at `client.ts`:
-
-```bash
-claude mcp add --scope user --transport stdio claude-peers \
-  --env CLAUDE_PEERS_REMOTE=user@broker-host \
-  -- bun ~/claude-peers-mcp/client.ts
-```
-
-Or in `.mcp.json`:
-
-```json
-{
-  "claude-peers": {
-    "command": "bun",
-    "args": ["~/claude-peers-mcp/client.ts"],
-    "env": { "CLAUDE_PEERS_REMOTE": "user@broker-host" }
-  }
-}
-```
-
-Then launch Claude Code:
-
-```bash
-claude --dangerously-load-development-channels server:claude-peers
-```
 
 ---
 
@@ -193,7 +109,7 @@ Set `broker_url` and `broker_token` in your settings file (`%APPDATA%\claude-pee
 }
 ```
 
-Register the MCP server pointing directly at `server.ts` (no `client.ts` needed):
+Register the MCP server:
 
 ```bash
 claude mcp add --scope user --transport stdio claude-peers -- bun ~/claude-peers-mcp/server.ts
@@ -219,6 +135,78 @@ You'll see your `peer_id`, current group, host, cwd, and `ws_connected: true`. T
 
 ---
 
+## Running
+
+### Local-only (single PC, broker auto-spawned by server.ts)
+
+`.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "claude-peers": {
+      "command": "bun",
+      "args": ["./server.ts"]
+    }
+  }
+}
+```
+
+### HTTP (broker daemon on LAN/Internet)
+
+On the broker host (Docker, systemd unit, or directly):
+
+```sh
+CLAUDE_PEERS_BIND_HOST=0.0.0.0 CLAUDE_PEERS_BROKER_TOKEN=<secret> bun broker.ts
+```
+
+On each Claude Code client, in `~/.config/claude-peers/config.json`
+(`%APPDATA%\claude-peers\config.json` on Windows):
+
+```json
+{
+  "broker_url": "http://broker-host:7899",
+  "broker_token": "<secret>"
+}
+```
+
+`.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "claude-peers": {
+      "command": "bun",
+      "args": ["./server.ts"]
+    }
+  }
+}
+```
+
+### Auto-disconnect on session end
+
+Once per PC, install the SessionEnd hook:
+
+```sh
+bun install-hook.ts
+```
+
+This copies `hook-session-end-peers.sh` (a plain bash + curl script) to
+`~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
+`~/.claude/settings.json` (or `%USERPROFILE%\.claude\settings.json`).
+The hook fires when the Claude Code session ends and marks the peer dormant on the broker.
+
+`CLAUDE_PEERS_BROKER_URL` must be set in your environment (or exported from your shell profile)
+so the hook can reach the broker without Bun or the MCP config loaded.
+
+To remove:
+
+```sh
+bun install-hook.ts --uninstall
+```
+
+---
+
 ## Groups
 
 Groups isolate sessions on a shared broker. A group is identified by a 32-hex `group_id` derived from `sha256(group_secret).slice(0, 32)`. The secret never leaves your PC -- the broker only ever sees the hash.
@@ -237,7 +225,6 @@ Groups isolate sessions on a shared broker. A group is identified by a 32-hex `g
 
 ```json
 {
-  "remote": "user@broker-host",
   "groups": {
     "perso":  "secret-perso-aaaa",
     "work":   "secret-work-bbbb",
@@ -362,14 +349,14 @@ Every setting can be provided via an environment variable or via a JSON settings
 | ------------------------------------ | ---------------------- | ------------------------------------ | --------------------- | ---------------------------------------------------------------------- |
 | `CLAUDE_PEERS_PORT`                  | `port`                 | `7899`                               | broker / server / cli | Broker HTTP port (loopback)                                            |
 | `CLAUDE_PEERS_DB`                    | `db`                   | `/var/lib/claude-peers/peers.db` (Linux/macOS) or `~/.claude-peers.db` (Windows) | broker                | SQLite database path                                                   |
-| `CLAUDE_PEERS_REMOTE`                | `remote`               | (none, required for client mode)     | client                | SSH target `user@host[:port]`                                          |
-| `CLAUDE_PEERS_SSH_OPTS`              | `ssh_opts`             | (empty)                              | client                | Extra ssh args (env: comma-separated, file: JSON array)                |
-| `CLAUDE_PEERS_REMOTE_SERVER_PATH`    | `remote_server_path`   | `/srv/claude-peers/server.ts`        | client                | Path to `server.ts` on the broker host                                 |
-| `CLAUDE_PEERS_GROUP`                 | (n/a)                  | (none)                               | client / server       | Group name override; env-level fallback before the 'default' sentinel  |
-| (n/a)                                | `groups`               | `{}`                                 | client                | Map of group name -> secret. Keep secrets out of the repo.             |
-| (n/a)                                | `default_group`        | `null`                               | client                | Group name used when no project file overrides                         |
+| `CLAUDE_PEERS_GROUP`                 | (n/a)                  | (none)                               | server                | Group name override; env-level fallback before the 'default' sentinel  |
+| (n/a)                                | `groups`               | `{}`                                 | server                | Map of group name -> secret. Keep secrets out of the repo.             |
+| (n/a)                                | `default_group`        | `null`                               | server                | Group name used when no project file overrides                         |
 | `CLAUDE_PEERS_DORMANT_TTL_HOURS`     | (n/a)                  | `24`                                 | broker                | Hours after which dormant peers are purged                             |
 | `CLAUDE_PEERS_ACTIVITY_TIMEOUT_SEC`  | (n/a)                  | `1800` (30 min)                      | broker                | Seconds of inactivity before a peer transitions from `active` to `sleep` in `list_peers` |
+| `CLAUDE_PEERS_ACTIVE_STALE_SEC`      | (n/a)                  | `120`                                | broker                | Seconds without heartbeat before an active peer is swept to dormant    |
+| `CLAUDE_PEERS_DORMANT_SWEEP_SEC`     | (n/a)                  | `60`                                 | broker                | Interval (seconds) between sweep-inactive-peers timer runs             |
+| `CLAUDE_PEERS_CLEAN_INTERVAL_SEC`    | (n/a)                  | `30`                                 | broker                | Interval (seconds) between `cleanStalePeers` runs: same-host PID liveness check + dormant TTL purge. Cross-host peers (`peer.host != hostname()`) are skipped in the PID check and reaped by `CLAUDE_PEERS_ACTIVE_STALE_SEC` instead. |
 | `CLAUDE_PEERS_WS_IDLE_TIMEOUT_SEC`   | (n/a)                  | `600` (10 min)                       | broker                | Seconds of WebSocket silence before the broker closes the connection   |
 | `CLAUDE_PEERS_POLL_FALLBACK_SEC`     | (n/a)                  | `5`                                  | server                | Seconds between fallback polls when the WebSocket is down (uses `/peek-messages`, never marks delivered) |
 | `CLAUDE_PEERS_SUMMARY_PROVIDER`      | `summary_provider`     | `auto`                               | server                | `auto` / `anthropic` / `openai-compat` / `none`                        |
@@ -384,15 +371,10 @@ Every setting can be provided via an environment variable or via a JSON settings
 
 ### Example settings file (with groups)
 
-SSH mode (remote broker via ssh):
+Local mode (groups only):
 
 ```json
 {
-  "port": 7899,
-  "db": "/var/lib/claude-peers/peers.db",
-  "remote": "user@broker-host",
-  "remote_server_path": "/srv/claude-peers/server.ts",
-  "ssh_opts": ["-o", "ServerAliveInterval=30"],
   "groups": {
     "perso":  "secret-perso-aaaa",
     "work":   "secret-work-bbbb",
@@ -404,7 +386,7 @@ SSH mode (remote broker via ssh):
 }
 ```
 
-HTTP mode (direct broker URL, no SSH):
+HTTP mode (remote broker):
 
 ```json
 {
@@ -420,15 +402,6 @@ HTTP mode (direct broker URL, no SSH):
 }
 ```
 
-### SSH multiplexing (recommended for remote mode)
-
-```
-Host broker-host
-  ControlMaster auto
-  ControlPath ~/.ssh/cm-%r@%h:%p
-  ControlPersist 10m
-```
-
 ---
 
 ## Troubleshooting
@@ -437,7 +410,7 @@ Host broker-host
 
 The fallback poll runs every 5s while the WebSocket is disconnected. It peeks at undelivered messages (without marking them delivered) and pushes them via `mcp.notification()`. Messages still arrive -- just with up to 5s latency instead of instant push. Common causes:
 
-- Broker is not running. `curl http://127.0.0.1:7899/health` (or `ssh ... curl ...` for remote).
+- Broker is not running. `curl http://127.0.0.1:7899/health`.
 - The broker version is older than v0.3 -- the `/ws` endpoint didn't exist. Update the broker host.
 - Bun's WebSocket client throws on the first connect; the backoff is 1s -> 2s -> ... -> 30s. Check `stderr` for `WebSocket closed; will retry`.
 
@@ -464,23 +437,7 @@ Claude Code --stdio--> server.ts --loopback--> broker.ts + peers.db
                        (auto-spawns broker)
 ```
 
-**Mode 2 -- SSH** (multi-PC):
-
-```
-                Local PC                                       Broker host
-+------------------------------------+              +---------------------------------+
-| Claude Code                        |              |                                 |
-|     v stdio (MCP)                  |              |                                 |
-| client.ts  --(detect local ctx,    |   ssh stdio  |  bun /srv/claude-peers/server.ts|
-|             resolve group)        <-------------->|     |                           |
-|     | spawn ssh, send handshake    |  (handshake  |     v http + ws (loopback)      |
-|     | forward stdio (transparent)  |   on stdin)  |  bun /srv/claude-peers/broker.ts|
-+------------------------------------+              |     v                           |
-                                                    |  /var/lib/claude-peers/peers.db |
-                                                    +---------------------------------+
-```
-
-**Mode 3 -- HTTP** (public broker, no SSH):
+**Mode 2 -- HTTP** (multi-PC, LAN/Internet):
 
 ```
 Local PC                                      Broker host
@@ -494,11 +451,9 @@ Local PC                                      Broker host
                                               +----------------------------+
 ```
 
-In SSH mode, the first line on stdin from `client.ts` is a JSON handshake carrying the client's local context plus the group identity. `server.ts` registers using these values, then opens a WebSocket for push delivery.
+In HTTP mode, `server.ts` runs locally and connects directly to `CLAUDE_PEERS_BROKER_URL`. No SSH is involved.
 
-In HTTP mode, `server.ts` runs locally and connects directly to `CLAUDE_PEERS_BROKER_URL`. No `client.ts` or SSH is involved.
-
-In local mode (`bun server.ts` without a client), the server resolves the group itself from the user config.
+In local mode, `server.ts` auto-spawns a broker on loopback and resolves the group from the user config.
 
 ---
 
@@ -516,7 +471,7 @@ In local mode (`bun server.ts` without a client), the server resolves the group 
 - [Bun](https://bun.sh) on every host involved (broker + clients).
 - Claude Code v2.1.80+ on every PC client.
 - claude.ai login (channels require it).
-- For multi-PC mode: SSH access (key-based) from each client to the broker host.
+- For HTTP mode: network access from each client to the broker host on port 7899.
 
 ---
 
@@ -539,5 +494,5 @@ Existing in-flight messages are dropped along with the DB. Sessions transparentl
 Coming from `louislva/claude-peers-mcp`?
 
 - The auto-summary now uses **Anthropic** (`claude-haiku-4-5-20251001`) by default, with an OpenAI-compatible alternative for LiteLLM/Ollama/etc. Replace `OPENAI_API_KEY` with `ANTHROPIC_API_KEY` in your env, or set the openai-compat variables.
-- A new `client.ts` entrypoint wraps SSH for remote-broker setups.
 - v0.3 adds the groups + resume + WebSocket layer described above.
+- v0.3.1 removes the SSH deployment mode. Use local-only or HTTP mode instead.

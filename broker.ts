@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers broker daemon (v0.3)
+ * claude-peers broker daemon (v0.3.1)
  *
  * Singleton HTTP server on 127.0.0.1:<port> backed by SQLite.
  * Tracks registered Claude Code peers, isolates them by group, persists session
@@ -12,6 +12,7 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { loadConfig } from "./shared/config.ts";
 import type {
@@ -29,6 +30,8 @@ import type {
   SetIdRequest,
   SetIdResponse,
   GroupStatsResponse,
+  DisconnectByCliPidRequest,
+  DisconnectByCliPidResponse,
   Peer,
   Message,
   GroupId,
@@ -47,6 +50,18 @@ const DORMANT_TTL_HOURS = parseInt(
 const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 const ACTIVITY_TIMEOUT_MS = parseInt(process.env.CLAUDE_PEERS_ACTIVITY_TIMEOUT_SEC ?? "1800", 10) * 1000;
 const WS_IDLE_TIMEOUT_SEC = parseInt(process.env.CLAUDE_PEERS_WS_IDLE_TIMEOUT_SEC ?? "600", 10);
+const ACTIVE_STALE_SEC = Math.max(
+  10,
+  parseInt(process.env.CLAUDE_PEERS_ACTIVE_STALE_SEC ?? "120", 10)
+);
+const SWEEP_INTERVAL_SEC = Math.max(
+  10,
+  parseInt(process.env.CLAUDE_PEERS_DORMANT_SWEEP_SEC ?? "60", 10)
+);
+const CLEAN_INTERVAL_MS = Math.max(
+  1_000,
+  parseInt(process.env.CLAUDE_PEERS_CLEAN_INTERVAL_SEC ?? "30", 10) * 1000
+);
 
 try {
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -102,6 +117,16 @@ db.run(`CREATE INDEX IF NOT EXISTS idx_peers_status ON peers(status)`);
 // Migration: add last_activity_at column (idempotent)
 try {
   db.run("ALTER TABLE peers ADD COLUMN last_activity_at TEXT DEFAULT NULL");
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!msg.includes("duplicate column name")) console.error(`[broker] migration: ${msg}`);
+}
+
+// Migration: add claude_cli_pid column (idempotent)
+// PID of the Claude Code CLI process (process.ppid of server.ts) -- used by
+// the SessionEnd hook to mark a peer dormant without an instance_token.
+try {
+  db.run("ALTER TABLE peers ADD COLUMN claude_cli_pid INTEGER");
 } catch (e) {
   const msg = e instanceof Error ? e.message : String(e);
   if (!msg.includes("duplicate column name")) console.error(`[broker] migration: ${msg}`);
@@ -173,11 +198,16 @@ function deriveDefaultId(host: string, cwd: string, groupId: GroupId): string {
 
 // --- Stale cleanup (dormant lifecycle) ---
 
+// Hostname of THIS broker process. PID-based liveness only applies to peers
+// registered from the same machine. Cross-machine peers are reaped via the
+// heartbeat staleness sweep (sweepInactivePeers).
+const BROKER_HOST = hostname();
+
 function cleanStalePeers(): void {
-  // Phase 1: bascule active -> dormant pour les pids morts.
+  // Phase 1: bascule active -> dormant pour les pids morts (same-host only).
   const actives = db.query(
-    "SELECT instance_token, pid FROM peers WHERE status = 'active'"
-  ).all() as { instance_token: string; pid: number }[];
+    "SELECT instance_token, pid FROM peers WHERE status = 'active' AND host = ?"
+  ).all(BROKER_HOST) as { instance_token: string; pid: number }[];
   for (const peer of actives) {
     try {
       process.kill(peer.pid, 0);
@@ -203,15 +233,26 @@ function cleanStalePeers(): void {
 }
 
 cleanStalePeers();
-setInterval(cleanStalePeers, 30_000);
+setInterval(cleanStalePeers, CLEAN_INTERVAL_MS);
+
+// --- Heartbeat-staleness sweep (active_stale_sec) ---
+
+function sweepInactivePeers(): void {
+  const cutoff = new Date(Date.now() - ACTIVE_STALE_SEC * 1000).toISOString();
+  db.run(
+    "UPDATE peers SET status = 'dormant' WHERE status = 'active' AND last_seen < ?",
+    [cutoff]
+  );
+}
+setInterval(sweepInactivePeers, SWEEP_INTERVAL_SEC * 1000);
 
 // --- Prepared statements ---
 
 const insertPeer = db.prepare(`
   INSERT INTO peers (
     instance_token, peer_id, group_id, pid, cwd, git_root, tty, summary,
-    registered_at, last_seen, host, client_pid, project_key, status
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    registered_at, last_seen, last_activity_at, host, client_pid, project_key, claude_cli_pid, status
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
 `);
 
 const updateLastSeen = db.prepare(
@@ -235,9 +276,11 @@ const updateActiveOnRegister = db.prepare(`
       tty = ?,
       summary = ?,
       last_seen = ?,
+      last_activity_at = ?,
       host = ?,
       client_pid = ?,
-      project_key = ?
+      project_key = ?,
+      claude_cli_pid = ?
   WHERE instance_token = ?
 `);
 
@@ -294,15 +337,18 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
 
   if (session) {
     const existingPeer = db.query(
-      "SELECT instance_token, peer_id, status, pid FROM peers WHERE instance_token = ?"
+      "SELECT instance_token, peer_id, status, pid, host FROM peers WHERE instance_token = ?"
     ).get(session.instance_token) as
-      | { instance_token: string; peer_id: string; status: "active" | "dormant"; pid: number }
+      | { instance_token: string; peer_id: string; status: "active" | "dormant"; pid: number; host: string }
       | null;
 
     // If marked active but the bun server.ts pid is dead, treat as dormant.
     // This shrinks the post-crash window where the user would otherwise
     // receive a fresh peer_id while waiting for cleanStalePeers (30s tick).
-    if (existingPeer && existingPeer.status === "active") {
+    // Only valid for same-host peers: a Linux broker cannot probe a Windows
+    // PID, the kill throws unconditionally, and the resurrect path would
+    // silently steal the active peer's identity (see Bug D, 2026-05-15).
+    if (existingPeer && existingPeer.status === "active" && existingPeer.host === BROKER_HOST) {
       try {
         process.kill(existingPeer.pid, 0);
       } catch {
@@ -323,9 +369,11 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         body.tty,
         body.summary,
         now,
+        now,
         body.host,
         body.client_pid,
         body.project_key,
+        body.claude_cli_pid ?? null,
         existingPeer.instance_token
       );
       upsertPeerSession.run(sk, existingPeer.instance_token, groupId, body.host, body.cwd, now);
@@ -355,9 +403,11 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         body.summary,
         now,
         now,
+        now,
         body.host,
         body.client_pid,
-        body.project_key
+        body.project_key,
+        body.claude_cli_pid ?? null
       );
       return { peer_id: freshId, instance_token: freshToken };
     }
@@ -375,9 +425,11 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
       body.summary,
       now,
       now,
+      now,
       body.host,
       body.client_pid,
-      body.project_key
+      body.project_key,
+      body.claude_cli_pid ?? null
     );
     upsertPeerSession.run(sk, session.instance_token, groupId, body.host, body.cwd, now);
     return { peer_id: reusedId, instance_token: session.instance_token };
@@ -397,9 +449,11 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     body.summary,
     now,
     now,
+    now,
     body.host,
     body.client_pid,
-    body.project_key
+    body.project_key,
+    body.claude_cli_pid ?? null
   );
   upsertPeerSession.run(sk, newToken, groupId, body.host, body.cwd, now);
   return { peer_id: newPeerId, instance_token: newToken };
@@ -418,6 +472,32 @@ function handleDisconnect(body: DisconnectRequest): void {
     "UPDATE peers SET status = 'dormant', last_seen = ? WHERE instance_token = ?",
     [new Date().toISOString(), body.instance_token]
   );
+}
+
+function handleDisconnectByCliPid(
+  body: DisconnectByCliPidRequest
+): DisconnectByCliPidResponse | { error: string; status: number } {
+  if (typeof body?.host !== "string" || !body.host) {
+    return { error: "host (string) is required", status: 400 };
+  }
+  if (typeof body?.claude_cli_pid !== "number" || !Number.isFinite(body.claude_cli_pid)) {
+    return { error: "claude_cli_pid (number) is required", status: 400 };
+  }
+  const now = new Date().toISOString();
+  const rows = db.query(
+    "SELECT instance_token, peer_id FROM peers WHERE host = ? AND claude_cli_pid = ? AND status = 'active'"
+  ).all(body.host, body.claude_cli_pid) as { instance_token: string; peer_id: string }[];
+
+  const upd = db.prepare(
+    "UPDATE peers SET status = 'dormant', last_seen = ? WHERE instance_token = ?"
+  );
+  for (const r of rows) {
+    upd.run(now, r.instance_token);
+    console.error(
+      `[broker] disconnect-by-cli-pid: peer=${r.peer_id} host=${body.host} cli_pid=${body.claude_cli_pid} session=${body.claude_session_id ?? "?"}`
+    );
+  }
+  return { disconnected: rows.length, peer_ids: rows.map((r) => r.peer_id) };
 }
 
 function handleUnregister(body: UnregisterRequest): void {
@@ -740,6 +820,13 @@ const server = Bun.serve<WsData>({
         case "/disconnect":
           handleDisconnect(body as DisconnectRequest);
           return Response.json({ ok: true });
+        case "/disconnect-by-cli-pid": {
+          const result = handleDisconnectByCliPid(body as DisconnectByCliPidRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
         case "/unregister":
           handleUnregister(body as UnregisterRequest);
           return Response.json({ ok: true });
@@ -771,5 +858,8 @@ const server = Bun.serve<WsData>({
 });
 
 console.error(
-  `[claude-peers broker v0.3] listening on ${BIND_HOST}:${PORT} (db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ws_idle=${WS_IDLE_TIMEOUT_SEC}s, auth=${BROKER_TOKEN ? "token" : "none"})`
+  `[claude-peers broker v0.3.1] listening on ${BIND_HOST}:${PORT} ` +
+  `(db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ` +
+  `ws_idle=${WS_IDLE_TIMEOUT_SEC}s, active_stale=${ACTIVE_STALE_SEC}s, sweep_interval=${SWEEP_INTERVAL_SEC}s, ` +
+  `auth=${BROKER_TOKEN ? "token" : "none"})`
 );
