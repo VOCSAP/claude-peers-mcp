@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.3.2 -- 2026-05-15
+
+### Added
+- New opt-in env var `CLAUDE_PEERS_STATUS_LINE_CACHE` (default off). When set to
+  `1`/`true`/`yes`/`on`, `server.ts` writes the active `peer_id` to
+  `$HOME/.claude/peers/peer-id-<cwd_key>.txt` after every successful `/register`
+  (initial and on group switch). This is the file consumed by status-line
+  scripts such as `~/.claude/status-line.sh:get_peer_id`. Off by default because
+  the cache is only useful for users who wire a status-line and most users will
+  not want `server.ts` to litter `$HOME`.
+- New module `shared/peer-cache.ts` exposing `computeCwdKey()`,
+  `isPeerIdCacheEnabled()`, and `writePeerIdCache()`. The key derivation matches
+  the bash logic exactly: non-alphanumeric (and non-hyphen) chars replaced with
+  `_`, last 40 chars kept, with an explicit offset to avoid the MSYS2 bash 5.2
+  `${str: -N}` quirk. Best-effort writes (FS failures do not break `/register`).
+
+### Fixed
+- **Bug C -- status-line `peer_id` segment empty or stale.** Previously,
+  `~/.claude/status-line.sh:get_peer_id` read a cache that only the deleted v0.2
+  SSH client (`client.ts`) used to write, so on v0.3+ status-lines either showed
+  nothing (fresh cwd) or a stale id from a v0.2 session. Users who set
+  `CLAUDE_PEERS_STATUS_LINE_CACHE=1` now get a fresh cache file refreshed on
+  every `/register`.
+
 ## v0.3.1 -- 2026-05-14
 
 ### Added
