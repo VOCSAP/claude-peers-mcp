@@ -6,7 +6,7 @@ alwaysApply: false
 
 # claude-peers (v0.3.2)
 
-Peer discovery and messaging MCP channel for Claude Code instances. v0.3 introduces group isolation (TOFU), resumable identity, WebSocket push, and a dual `instance_token` / `peer_id` model. v0.3.1 adds auto-disconnect on session end. v0.3.2 restores the status-line `peer_id` cache that v0.3 lost when the SSH `client.ts` was removed.
+Peer discovery and messaging MCP channel for Claude Code instances. v0.3 introduces group isolation (TOFU), resumable identity, WebSocket push, and a dual `instance_token` / `peer_id` model. v0.3.1 adds server-side auto-disconnect (SIGTERM/stdin EOF + broker sweeps). v0.3.2 restores the status-line `peer_id` cache that v0.3 lost when the SSH `client.ts` was removed, and drops the SessionEnd bash hook (the hook never fired at a useful moment on Windows, and the broker sweep + server-side cleanup already cover every realistic case).
 
 ## Architecture
 
@@ -15,34 +15,25 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
 - `server.ts` -- per-session MCP stdio server. Spawned by Claude Code, runs locally on
   the PC. Detects local context (cwd, git_root, branch, hostname, pid, project_key)
   and resolves the group via `resolveGroup` from `shared/config.ts`. Registers with
-  the broker (HTTP), opens a WebSocket for push delivery. Captures `process.ppid` as
-  `claude_cli_pid` -- shared with the SessionEnd hook for 1:1 disconnect mapping. On
-  stdin EOF (Claude Code exits), `server.ts` calls `/disconnect` then `process.exit(0)`.
+  the broker (HTTP), opens a WebSocket for push delivery. On SIGTERM/SIGINT or stdin
+  EOF (Claude Code exits or shuts the MCP server down), `server.ts` calls
+  `/disconnect` then `process.exit(0)`. This is the primary auto-disconnect path on
+  every platform.
 
 - `broker.ts` -- singleton HTTP + WebSocket daemon on `<BIND_HOST>:<port>` + SQLite.
   v0.3.2 endpoints: `/register`, `/heartbeat`, `/set-summary`, `/disconnect`,
-  `/list-peers-by-host` (hook-driven, v0.3.2 replacement for the v0.3.1
-  `/disconnect-by-cli-pid` endpoint), `/unregister`, `/set-id`, `/list-peers`,
-  `/send-message`, `/poll-messages`, `/peek-messages`, `/group-stats`, plus the `/ws`
-  upgrade. Two cleanup timers: `cleanStalePeers` (every
-  `CLAUDE_PEERS_CLEAN_INTERVAL_SEC` = 30s default: same-host PID-dead -> dormant via
-  `process.kill(pid, 0)`, dormant past 24h -> DELETE cascade; cross-host peers
-  where `peer.host != hostname()` are skipped in the PID check because the broker
-  cannot reason about a foreign machine's process table -- they are reaped by the
-  heartbeat sweep instead) and `sweepInactivePeers` (every
-  `CLAUDE_PEERS_DORMANT_SWEEP_SEC` = 60s default: active without recent heartbeat for
-  more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` = 120s default -> dormant).
-
-- `hook-session-end-peers.sh` -- bash + curl script invoked by Claude Code at session
-  end. **v0.3.2** flow: queries `/list-peers-by-host` for active peers on the local
-  hostname, probes each peer's `claude_cli_pid` liveness on the local machine
-  (Windows: `tasklist //FI "PID eq <pid>" //NH`; POSIX: `kill -0 <pid>`), then
-  POSTs `/disconnect` for every peer whose recorded PID is dead. This sidesteps
-  the v0.3.1 limitation where `$PPID` from the detached hook was 1 (init) on
-  Windows and never matched a real peer. Always exits 0. Installed via
-  `bun install-hook.ts`, which copies the script to
-  `~/.claude/hooks/session-end-peers.sh` and registers a `bash <path>` command in
-  `~/.claude/settings.json` (consistent with the kleos hook pattern).
+  `/unregister`, `/set-id`, `/list-peers`, `/send-message`, `/poll-messages`,
+  `/peek-messages`, `/group-stats`, plus the `/ws` upgrade. Two cleanup timers:
+  `cleanStalePeers` (every `CLAUDE_PEERS_CLEAN_INTERVAL_SEC` = 30s default:
+  same-host PID-dead -> dormant via `process.kill(pid, 0)`, dormant past 24h ->
+  DELETE cascade; cross-host peers where `peer.host != hostname()` are skipped in
+  the PID check because the broker cannot reason about a foreign machine's process
+  table -- they are reaped by the heartbeat sweep instead) and `sweepInactivePeers`
+  (every `CLAUDE_PEERS_DORMANT_SWEEP_SEC` = 60s default: active without recent
+  heartbeat for more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` = 120s default -> dormant).
+  Together with `server.ts` SIGTERM/stdin EOF cleanup, these timers replace the v0.3.1
+  SessionEnd hook (removed in v0.3.2). Worst case for a crashed cross-host peer:
+  ~180s before it flips dormant (120s stale threshold + one 60s sweep tick).
 
 - `cli.ts` -- diagnostic CLI for the broker (status, peers, groups, kill-broker).
   Unchanged from v0.3 except for the version string.
@@ -82,9 +73,6 @@ claude --dangerously-load-development-channels server:claude-peers
 #   broker side: CLAUDE_PEERS_BIND_HOST=0.0.0.0 CLAUDE_PEERS_BROKER_TOKEN=secret bun broker.ts
 #   .mcp.json: { "mcpServers": { "claude-peers": { "command": "bun", "args": ["./server.ts"] } } }
 
-# Install auto-disconnect hook (once per PC):
-bun install-hook.ts
-
 # CLI (run on the broker host):
 bun cli.ts status
 bun cli.ts peers [--include-dormant]
@@ -94,9 +82,9 @@ bun cli.ts kill-broker        # Linux/macOS only (uses lsof)
 
 ## Smoke check
 
-`bun build --target=bun broker.ts server.ts cli.ts install-hook.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file (the `.sh` hook is not a Bun entrypoint). For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts cli.ts install-hook.ts`.
+`bun build --target=bun broker.ts server.ts cli.ts --outdir=/tmp/cp-check` bundles all entrypoints in ~20 ms and surfaces any import or type-resolution error. Use this between refactors instead of running each file. For type-strict checks: `bunx tsc --noEmit --skipLibCheck --module esnext --target es2022 --moduleResolution bundler --allowImportingTsExtensions broker.ts server.ts cli.ts`.
 
-`bun test` runs the v0.3.2 suite (17 files, 89 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-ws-auth.test.ts` (Bearer-token upgrade, no-token rejection), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-activity-status.test.ts` (fresh + resurrected peer reports active), `broker-migration.test.ts` (claude_cli_pid migration idempotency), `broker-list-peers-by-host.test.ts` (v0.3.2 endpoint feeding the hook: host filter, dormant exclusion, auth), `broker-sweep-inactive.test.ts` (heartbeat sweep), `broker-cross-host-cleanup.test.ts` (cleanStalePeers same-host filter), `broker-cross-host-register.test.ts` (handleRegister same-host filter + collision mints fresh id), `config-loopback.test.ts` (isLoopbackBrokerUrl detection), `peer-cache.test.ts` (status-line cwd_key derivation + cache file write), `server-stdin-eof.test.ts` (self-shutdown), `hook-session-end.test.ts` (cross-platform PID liveness probe drives `/disconnect`), `install-hook.test.ts` (idempotent installer). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` (env-scrubbed so developer-side `CLAUDE_PEERS_*` vars do not leak into the broker) and tears it down in `afterAll`.
+`bun test` runs the v0.3.2 suite (14 files, 65 cases): `tests/broker-groups.test.ts` (TOFU + isolation), `broker-resume.test.ts` (identity stability), `broker-set-id.test.ts` (rename + collision), `broker-websocket.test.ts` (auth, push, flush), `broker-ws-auth.test.ts` (Bearer-token upgrade, no-token rejection), `broker-status.test.ts` (dormant lifecycle, TTL purge), `broker-activity-status.test.ts` (fresh + resurrected peer reports active), `broker-migration.test.ts` (claude_cli_pid migration idempotency -- the column is kept for forward-compat even though no code reads it any more), `broker-sweep-inactive.test.ts` (heartbeat sweep), `broker-cross-host-cleanup.test.ts` (cleanStalePeers same-host filter), `broker-cross-host-register.test.ts` (handleRegister same-host filter + collision mints fresh id), `config-loopback.test.ts` (isLoopbackBrokerUrl detection), `peer-cache.test.ts` (status-line cwd_key derivation + cache file write + opt-in env gating), `server-stdin-eof.test.ts` (self-shutdown). Each suite spins up an ephemeral broker on a random port via `tests/_helper.ts` (env-scrubbed so developer-side `CLAUDE_PEERS_*` vars do not leak into the broker) and tears it down in `afterAll`.
 
 ## Bun
 

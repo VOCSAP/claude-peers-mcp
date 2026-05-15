@@ -187,25 +187,3 @@ export interface WsMessageFrame {
 }
 
 export type WsFrame = WsMessageFrame;
-
-// --- list-peers-by-host (v0.3.2, replaces /disconnect-by-cli-pid) ---
-//
-// Hook calls this at SessionEnd to enumerate active peers on its own host,
-// then probes claude_cli_pid liveness locally (kill -0 on POSIX, tasklist on
-// Windows) and POSTs /disconnect by instance_token for any peer whose recorded
-// PID is dead. This sidesteps the v0.3.1 issue where the hook's own $PPID was
-// the wrong correlation key on Windows (Claude Code detaches the hook so
-// $PPID = 1, never matched a real peer).
-
-export interface ListPeersByHostRequest {
-  host: string;
-}
-
-export interface ListPeersByHostResponseEntry {
-  instance_token: string;
-  claude_cli_pid: number | null;
-}
-
-export interface ListPeersByHostResponse {
-  peers: ListPeersByHostResponseEntry[];
-}

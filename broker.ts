@@ -30,8 +30,6 @@ import type {
   SetIdRequest,
   SetIdResponse,
   GroupStatsResponse,
-  ListPeersByHostRequest,
-  ListPeersByHostResponse,
   Peer,
   Message,
   GroupId,
@@ -474,18 +472,6 @@ function handleDisconnect(body: DisconnectRequest): void {
   );
 }
 
-function handleListPeersByHost(
-  body: ListPeersByHostRequest
-): ListPeersByHostResponse | { error: string; status: number } {
-  if (typeof body?.host !== "string" || !body.host) {
-    return { error: "host (string) is required", status: 400 };
-  }
-  const rows = db.query(
-    "SELECT instance_token, claude_cli_pid FROM peers WHERE host = ? AND status = 'active'"
-  ).all(body.host) as { instance_token: string; claude_cli_pid: number | null }[];
-  return { peers: rows };
-}
-
 function handleUnregister(body: UnregisterRequest): void {
   db.run("DELETE FROM messages WHERE to_token = ? AND delivered = 0", [body.instance_token]);
   db.run("DELETE FROM peer_sessions WHERE instance_token = ?", [body.instance_token]);
@@ -806,13 +792,6 @@ const server = Bun.serve<WsData>({
         case "/disconnect":
           handleDisconnect(body as DisconnectRequest);
           return Response.json({ ok: true });
-        case "/list-peers-by-host": {
-          const result = handleListPeersByHost(body as ListPeersByHostRequest);
-          if ("error" in result) {
-            return Response.json({ error: result.error }, { status: result.status });
-          }
-          return Response.json(result);
-        }
         case "/unregister":
           handleUnregister(body as UnregisterRequest);
           return Response.json({ ok: true });

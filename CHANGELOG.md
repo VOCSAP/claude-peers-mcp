@@ -3,38 +3,41 @@
 ## v0.3.2 -- 2026-05-15
 
 ### Added
-- New broker endpoint `POST /list-peers-by-host { host }` -> `{ peers: [{ instance_token, claude_cli_pid }, ...] }`.
-  Returns active peers on the given host, used by the SessionEnd hook to
-  enumerate candidates for liveness probing.
 - New opt-in env var `CLAUDE_PEERS_STATUS_LINE_CACHE` (default off). When set to
-  `1`/`true`/`yes`/`on`, `server.ts` writes the active `peer_id` to
-  `$HOME/.claude/peers/peer-id-<cwd_key>.txt` after every successful `/register`
-  (initial and on group switch). This is the file consumed by status-line
-  scripts such as `~/.claude/status-line.sh:get_peer_id`. Off by default because
-  the cache is only useful for users who wire a status-line and most users will
-  not want `server.ts` to litter `$HOME`.
+  `1`/`true`/`yes`/`on` (case-insensitive), `server.ts` writes the active
+  `peer_id` to `$HOME/.claude/peers/peer-id-<cwd_key>.txt` after every
+  successful `/register` (initial and on group switch). This is the file
+  consumed by status-line scripts such as `~/.claude/status-line.sh:get_peer_id`.
+  Off by default because the cache is only useful for users who wire a
+  status-line and most users will not want `server.ts` to litter `$HOME`.
 - New module `shared/peer-cache.ts` exposing `computeCwdKey()`,
   `isPeerIdCacheEnabled()`, and `writePeerIdCache()`. The key derivation matches
   the bash logic exactly: non-alphanumeric (and non-hyphen) chars replaced with
   `_`, last 40 chars kept, with an explicit offset to avoid the MSYS2 bash 5.2
   `${str: -N}` quirk. Best-effort writes (FS failures do not break `/register`).
 
-### Changed
-- **Bug E -- Windows-compatible SessionEnd hook.** `hook-session-end-peers.sh`
-  no longer correlates by `$PPID`. New flow:
-  1. POST `/list-peers-by-host` with `{ host: hostname }` to enumerate active peers.
-  2. For each peer, probe `claude_cli_pid` liveness locally:
-     - Windows (MINGW/MSYS/CYGWIN, detected via `uname -s`): `tasklist //FI "PID eq <pid>" //NH | grep -qw <pid>`. MSYS2's `kill -0` cannot probe native Win32 PIDs, but `tasklist` can.
-     - POSIX (Linux/macOS): `kill -0 <pid>`.
-  3. POST `/disconnect` by `instance_token` for every peer whose recorded PID is dead.
-  This finally makes the hook functional on Windows, where Claude Code detaches
-  the hook so `$PPID = 1` (init) and the v0.3.1 `/disconnect-by-cli-pid` path
-  was a silent no-op.
-
 ### Removed
-- **Broker endpoint `POST /disconnect-by-cli-pid`** and its request/response
-  types (`DisconnectByCliPidRequest`, `DisconnectByCliPidResponse`). The hook
-  no longer correlates by PID server-side, so the endpoint is dead code.
+- **SessionEnd bash hook** (`hook-session-end-peers.sh`), its installer
+  (`install-hook.ts` + `--uninstall` flag), and the now-unused broker endpoint
+  `POST /disconnect-by-cli-pid` (and its `DisconnectByCliPidRequest`/`Response`
+  types). Rationale: the hook never fired at a useful moment on Windows
+  (Claude Code detaches the hook so `$PPID = 1`, never matched a real peer),
+  and on Linux/macOS it only duplicated the work that `server.ts`'s
+  SIGTERM/stdin EOF handler already does. The broker-side safety nets
+  (`cleanStalePeers` every 30s for same-host PIDs, `sweepInactivePeers` every
+  60s for stale heartbeats >120s) cover every realistic crash scenario. Worst
+  case for a crashed cross-host peer: ~180s before it flips dormant.
+- Test files dropped along with the hook: `tests/hook-session-end.test.ts`,
+  `tests/install-hook.test.ts`, `tests/broker-list-peers-by-host.test.ts` (the
+  latter was a v0.3.2-internal experiment that never shipped to main).
+
+### Note on upgrade
+
+If a previous v0.3.1 install registered the hook in your `~/.claude/settings.json`
+under `hooks.SessionEnd`, that entry now points at a non-existent script and
+will be a silent no-op. To clean it up, remove the entry and delete
+`~/.claude/hooks/session-end-peers.sh` (or `hook-session-end-peers.sh` depending
+on how it was installed). No data loss, no DB migration.
 
 ### Fixed
 - **Bug C -- status-line `peer_id` segment empty or stale.** Previously,
