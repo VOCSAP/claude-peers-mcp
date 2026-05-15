@@ -251,8 +251,8 @@ setInterval(sweepInactivePeers, SWEEP_INTERVAL_SEC * 1000);
 const insertPeer = db.prepare(`
   INSERT INTO peers (
     instance_token, peer_id, group_id, pid, cwd, git_root, tty, summary,
-    registered_at, last_seen, host, client_pid, project_key, claude_cli_pid, status
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    registered_at, last_seen, last_activity_at, host, client_pid, project_key, claude_cli_pid, status
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
 `);
 
 const updateLastSeen = db.prepare(
@@ -276,6 +276,7 @@ const updateActiveOnRegister = db.prepare(`
       tty = ?,
       summary = ?,
       last_seen = ?,
+      last_activity_at = ?,
       host = ?,
       client_pid = ?,
       project_key = ?,
@@ -365,6 +366,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         body.tty,
         body.summary,
         now,
+        now,
         body.host,
         body.client_pid,
         body.project_key,
@@ -398,6 +400,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
         body.summary,
         now,
         now,
+        now,
         body.host,
         body.client_pid,
         body.project_key,
@@ -417,6 +420,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
       body.git_root,
       body.tty,
       body.summary,
+      now,
       now,
       now,
       body.host,
@@ -440,6 +444,7 @@ function handleRegister(body: RegisterRequest): RegisterResponse | { error: stri
     body.git_root,
     body.tty,
     body.summary,
+    now,
     now,
     now,
     body.host,

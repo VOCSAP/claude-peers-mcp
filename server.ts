@@ -201,7 +201,14 @@ function connectWs() {
     try { wsSocket.close(); } catch { /* ignore */ }
   }
   const wsUrl = BROKER_URL.replace(/^http/, "ws") + "/ws";
-  const ws = new WebSocket(wsUrl);
+  // Bun's WebSocket constructor accepts an options object with custom headers.
+  // Required when the broker enforces a Bearer token: the HTTP /ws upgrade
+  // request itself must carry the Authorization header, otherwise it is
+  // rejected with 401 before the auth frame is ever exchanged.
+  const wsInit = BROKER_TOKEN
+    ? ({ headers: { Authorization: `Bearer ${BROKER_TOKEN}` } } as unknown as string[])
+    : undefined;
+  const ws = new WebSocket(wsUrl, wsInit);
   wsSocket = ws;
 
   ws.addEventListener("open", () => {
