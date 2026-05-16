@@ -224,7 +224,9 @@ function cleanStalePeers(): void {
      WHERE status = 'dormant' AND last_seen < datetime('now', ?)`
   ).all(cutoff) as { instance_token: string }[];
   for (const { instance_token } of expired) {
-    db.run("DELETE FROM messages WHERE to_token = ? AND delivered = 0", [instance_token]);
+    // Must clear BOTH FK directions before deleting the peer row:
+    // messages.from_token and messages.to_token both reference peers(instance_token).
+    db.run("DELETE FROM messages WHERE from_token = ? OR to_token = ?", [instance_token, instance_token]);
     db.run("DELETE FROM peer_sessions WHERE instance_token = ?", [instance_token]);
     db.run("DELETE FROM peers WHERE instance_token = ?", [instance_token]);
   }
@@ -473,7 +475,7 @@ function handleDisconnect(body: DisconnectRequest): void {
 }
 
 function handleUnregister(body: UnregisterRequest): void {
-  db.run("DELETE FROM messages WHERE to_token = ? AND delivered = 0", [body.instance_token]);
+  db.run("DELETE FROM messages WHERE from_token = ? OR to_token = ?", [body.instance_token, body.instance_token]);
   db.run("DELETE FROM peer_sessions WHERE instance_token = ?", [body.instance_token]);
   db.run("DELETE FROM peers WHERE instance_token = ?", [body.instance_token]);
 }

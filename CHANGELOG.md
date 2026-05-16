@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.3.2.1 -- 2026-05-16
+
+### Fixed
+- **Broker crash-loop on dormant-peer purge (FK violation).** `cleanStalePeers`
+  and `handleUnregister` deleted a peer row without first clearing the rows in
+  `messages` that referenced it via `from_token`. Both `messages.from_token`
+  and `messages.to_token` are FKs to `peers.instance_token`, so any peer that
+  had sent at least one message would crash the `DELETE FROM peers` with
+  `SQLiteError: FOREIGN KEY constraint failed` (errno 787). On a long-running
+  broker this surfaced as a restart loop once the first dormant-with-history
+  peer hit the TTL cutoff. Both DELETE paths now run
+  `DELETE FROM messages WHERE from_token = ? OR to_token = ?` before deleting
+  the peer (previously only `to_token = ? AND delivered = 0` was cleared, which
+  covered neither `from_token` nor delivered receive-side history).
+- Semantic change to be aware of: a purged peer's message history is now
+  removed in full (both sent and received, regardless of `delivered`). This is
+  required by the FK and is consistent with the v0.3.x model where messages
+  have no lifetime independent of their peers.
+- Regression covered by `tests/broker-fk-cleanup.test.ts` (sender purge via
+  TTL, and direct `/unregister` of a peer with sent messages).
+
 ## v0.3.2 -- 2026-05-15
 
 ### Added
