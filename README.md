@@ -1,4 +1,4 @@
-# claude-peers (v0.3.2)
+# claude-peers
 
 Let your Claude Code instances find each other and talk -- across multiple projects on a single PC, or across multiple PCs sharing a common broker on the LAN. When you're running 5 sessions, any Claude can discover the others and send messages that arrive instantly via the `claude/channel` protocol.
 
@@ -15,23 +15,11 @@ Let your Claude Code instances find each other and talk -- across multiple proje
 
 This fork extends the original [louislva/claude-peers-mcp](https://github.com/louislva/claude-peers-mcp) with:
 
-- **Remote broker over HTTP** (multi-PC LAN/Internet setup, no SSH required).
+- **Remote broker over HTTP** (multi-PC LAN/Internet setup).
 - **Cross-PC repo matching** via normalized git remote URL (`project_key`).
 - **Multi-provider auto-summary** (Anthropic + any OpenAI-compatible endpoint), with deterministic heuristic fallback.
 - **Centralized configuration** (env vars + JSON settings file).
 - **v0.3** -- isolation by **groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
-- **v0.3.1** -- **auto-disconnect** on session end (`server.ts` SIGTERM/stdin EOF + broker sweep timers).
-- **v0.3.2** -- opt-in **status-line `peer_id` cache** for users who wire a status-line script; **SessionEnd bash hook removed** (the broker's heartbeat sweep + `server.ts` cleanup are sufficient; the hook was either a no-op on Windows or redundant on POSIX).
-
-## What v0.3 / v0.3.1 changes
-
-> **Breaking** -- v0.3 introduces a new SQLite schema. There is no migration path: stop the broker, delete `peers.db`, restart. See [Upgrading](#upgrading-from-v02).
-
-- **Groups**: each session lives in a logical group (e.g. `perso`, `work`, `shared`, or the open `default`). Peers in different groups can't see or message each other.
-- **Resume**: your `peer_id` is stable across reconnects in the same `(host, cwd, group)`. Quit Claude Code, restart it, you keep the same identity. `set_id` lets you rename it.
-- **WebSocket push**: messages land on the recipient instantly via a loopback WebSocket. A 5s fallback poll (peek, no mark-delivered) kicks in only when the WS is down.
-- **Dual identity**: `instance_token` (UUID, immutable, internal routing) + `peer_id` (display name, mutable). Renames are now cosmetic and never break in-flight conversations.
-- **v0.3.1 -- Auto-disconnect**: peers are marked dormant when Claude Code exits, via `server.ts` stdin EOF / SIGTERM cleanup. The broker also runs two background sweeps (`cleanStalePeers` every 30s for same-host dead PIDs, `sweepInactivePeers` every 60s for stale heartbeats >120s) so crashed clients are reaped within ~180s on any platform. (v0.3.1 originally also shipped a bash SessionEnd hook; v0.3.2 dropped it as redundant.)
 
 ## Two deployment modes
 
@@ -41,7 +29,7 @@ Broker runs on the same PC as your Claude Code sessions. See [Quick start (local
 
 ### Mode 2 -- Remote broker via HTTP (multi-PC, LAN/Internet)
 
-`server.ts` runs locally on each PC and connects directly to a remote broker over HTTP. No SSH needed. Suited for multi-PC setups and contributors. See [Quick start (HTTP)](#quick-start-http).
+`server.ts` runs locally on each PC and connects directly to a remote broker over HTTP. Suited for multi-PC setups and contributors. See [Quick start (HTTP)](#quick-start-http).
 
 ---
 
@@ -193,14 +181,6 @@ No setup needed. Cleanup happens through three independent paths:
 3. **`sweepInactivePeers` (broker, 60s)**: any active peer without a `/heartbeat` for more than `CLAUDE_PEERS_ACTIVE_STALE_SEC` (120s default) is marked dormant. This is what catches crashed cross-host clients.
 
 Worst case for a crashed cross-host client (kill -9, power loss, network partition): ~180s before the peer flips dormant (120s stale threshold + one 60s sweep tick).
-
-> **v0.3.2 note:** the v0.3.1 `hook-session-end-peers.sh` SessionEnd bash hook
-> and its `bun install-hook.ts` installer have been removed. The hook was a
-> silent no-op on Windows (Claude Code detaches the hook so `$PPID = 1`) and
-> redundant with `server.ts` cleanup on POSIX. If you ran `bun install-hook.ts`
-> on a previous version, remove the stale `SessionEnd` entry from your
-> `~/.claude/settings.json` and delete the leftover script under
-> `~/.claude/hooks/`.
 
 ---
 
@@ -530,5 +510,3 @@ Existing in-flight messages are dropped along with the DB. Sessions transparentl
 Coming from `louislva/claude-peers-mcp`?
 
 - The auto-summary now uses **Anthropic** (`claude-haiku-4-5-20251001`) by default, with an OpenAI-compatible alternative for LiteLLM/Ollama/etc. Replace `OPENAI_API_KEY` with `ANTHROPIC_API_KEY` in your env, or set the openai-compat variables.
-- v0.3 adds the groups + resume + WebSocket layer described above.
-- v0.3.1 removes the SSH deployment mode. Use local-only or HTTP mode instead.
