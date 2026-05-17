@@ -19,7 +19,7 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Cross-PC repo matching** via normalized git remote URL (`project_key`).
 - **Multi-provider auto-summary** (Anthropic + any OpenAI-compatible endpoint), with deterministic heuristic fallback.
 - **Centralized configuration** (env vars + JSON settings file).
-- **v0.3** -- isolation by **groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
+- **isolation by groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
 
 ## Two deployment modes
 
