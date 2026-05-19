@@ -20,6 +20,7 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Multi-provider auto-summary** (Anthropic + any OpenAI-compatible endpoint), with deterministic heuristic fallback.
 - **Centralized configuration** (env vars + JSON settings file).
 - **isolation by groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
+- **v0.3.3 delivery hardening**: heuristic ack via `send_message` (replying acknowledges prior messages from the same group), capped WS flush at reconnect (no more backlog avalanche), TTL purge of stale undelivered messages.
 
 ## Two deployment modes
 
@@ -334,6 +335,10 @@ Every setting can be provided via an environment variable or via a JSON settings
 | `CLAUDE_PEERS_ACTIVE_STALE_SEC`      | (n/a)                  | `120`                                | broker                | Seconds without heartbeat before an active peer is swept to dormant    |
 | `CLAUDE_PEERS_DORMANT_SWEEP_SEC`     | (n/a)                  | `60`                                 | broker                | Interval (seconds) between sweep-inactive-peers timer runs             |
 | `CLAUDE_PEERS_CLEAN_INTERVAL_SEC`    | (n/a)                  | `30`                                 | broker                | Interval (seconds) between `cleanStalePeers` runs: same-host PID liveness check + dormant TTL purge. Cross-host peers (`peer.host != hostname()`) are skipped in the PID check and reaped by `CLAUDE_PEERS_ACTIVE_STALE_SEC` instead. |
+| `CLAUDE_PEERS_FLUSH_MAX_COUNT`       | (n/a)                  | `20`                                 | broker                | v0.3.3: max number of pending messages replayed by `flushPendingForToken` on each WS auth. Prevents backlog avalanche at reconnect; `check_messages` still returns the full backlog. |
+| `CLAUDE_PEERS_FLUSH_MAX_AGE_HOURS`   | (n/a)                  | `24`                                 | broker                | v0.3.3: max age (hours) of pending messages replayed by `flushPendingForToken`. Anything older stays in DB until purged or pulled explicitly. |
+| `CLAUDE_PEERS_MESSAGE_TTL_DAYS`      | (n/a)                  | `7`                                  | broker                | v0.3.3: undelivered messages older than this are purged by `purgeOldMessages` (runs at boot + every `CLAUDE_PEERS_PURGE_INTERVAL_SEC`). Delivered messages are never purged. |
+| `CLAUDE_PEERS_PURGE_INTERVAL_SEC`    | (n/a)                  | `3600` (1h)                          | broker                | v0.3.3: interval (seconds) between `purgeOldMessages` runs. Manual trigger via `GET /admin/purge-messages`. |
 | `CLAUDE_PEERS_WS_IDLE_TIMEOUT_SEC`   | (n/a)                  | `600` (10 min)                       | broker                | Seconds of WebSocket silence before the broker closes the connection   |
 | `CLAUDE_PEERS_POLL_FALLBACK_SEC`     | (n/a)                  | `5`                                  | server                | Seconds between fallback polls when the WebSocket is down (uses `/peek-messages`, never marks delivered) |
 | `CLAUDE_PEERS_SUMMARY_PROVIDER`      | `summary_provider`     | `auto`                               | server                | `auto` / `anthropic` / `openai-compat` / `none`                        |

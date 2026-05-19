@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers broker daemon (v0.3.1)
+ * claude-peers broker daemon (v0.3.3)
  *
  * Singleton HTTP server on 127.0.0.1:<port> backed by SQLite.
  * Tracks registered Claude Code peers, isolates them by group, persists session
@@ -59,6 +59,22 @@ const SWEEP_INTERVAL_SEC = Math.max(
 const CLEAN_INTERVAL_MS = Math.max(
   1_000,
   parseInt(process.env.CLAUDE_PEERS_CLEAN_INTERVAL_SEC ?? "30", 10) * 1000
+);
+const FLUSH_MAX_COUNT = Math.max(
+  1,
+  parseInt(process.env.CLAUDE_PEERS_FLUSH_MAX_COUNT ?? "20", 10)
+);
+const FLUSH_MAX_AGE_HOURS = Math.max(
+  1,
+  parseInt(process.env.CLAUDE_PEERS_FLUSH_MAX_AGE_HOURS ?? "24", 10)
+);
+const MESSAGE_TTL_DAYS = Math.max(
+  1,
+  parseInt(process.env.CLAUDE_PEERS_MESSAGE_TTL_DAYS ?? "7", 10)
+);
+const PURGE_INTERVAL_SEC = Math.max(
+  60,
+  parseInt(process.env.CLAUDE_PEERS_PURGE_INTERVAL_SEC ?? "3600", 10)
 );
 
 try {
@@ -293,7 +309,39 @@ const selectUndelivered = db.prepare(
   `SELECT * FROM messages WHERE to_token = ? AND delivered = 0 ORDER BY sent_at ASC`
 );
 
+// Capped variant used only by flushPendingForToken to avoid replaying the entire
+// backlog at every WS reconnect. /poll-messages and /peek-messages keep using the
+// uncapped selectUndelivered so an explicit check_messages still returns everything.
+const selectUndeliveredCapped = db.prepare(
+  `SELECT * FROM (
+     SELECT * FROM messages
+     WHERE to_token = ? AND delivered = 0
+       AND sent_at > datetime('now', ?)
+     ORDER BY sent_at DESC
+     LIMIT ?
+   ) ORDER BY sent_at ASC`
+);
+
 const markDelivered = db.prepare(`UPDATE messages SET delivered = 1 WHERE id = ?`);
+
+// Heuristic ack: when a peer sends a message in a group, it has necessarily
+// processed the messages addressed to it in that same group before sent_at.
+// Promoting those to delivered=1 prevents the flushPendingForToken avalanche
+// at the next WS reconnect for bidirectional conversations.
+const ackPriorMessagesForSender = db.prepare(
+  `UPDATE messages
+     SET delivered = 1
+   WHERE to_token = ?
+     AND group_id = ?
+     AND delivered = 0
+     AND sent_at < ?`
+);
+
+const purgeOldUndeliveredStmt = db.prepare(
+  `DELETE FROM messages
+   WHERE delivered = 0
+     AND sent_at < datetime('now', ?)`
+);
 
 const upsertPeerSession = db.prepare(`
   INSERT INTO peer_sessions (session_key, instance_token, group_id, host, cwd, last_active_at)
@@ -302,6 +350,20 @@ const upsertPeerSession = db.prepare(`
     instance_token = excluded.instance_token,
     last_active_at = excluded.last_active_at
 `);
+
+// --- TTL purge of undelivered messages ---
+
+function purgeOldMessages(): void {
+  const cutoff = `-${MESSAGE_TTL_DAYS} days`;
+  const result = purgeOldUndeliveredStmt.run(cutoff);
+  if (result.changes > 0) {
+    console.error(
+      `[claude-peers broker] purged ${result.changes} stale undelivered messages (>${MESSAGE_TTL_DAYS}d)`
+    );
+  }
+}
+purgeOldMessages();
+setInterval(purgeOldMessages, PURGE_INTERVAL_SEC * 1000);
 
 // --- /register: TOFU + resume ---
 
@@ -605,6 +667,11 @@ function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
   updateLastActivity.run(sentAt, sender.instance_token);
   updateLastActivity.run(sentAt, target.instance_token);
 
+  // Heuristic ack: the sender has necessarily read everything addressed to it in
+  // this group before sent_at (otherwise it could not be replying now). Mark
+  // those as delivered=1 so the next WS reconnect does not avalanche the backlog.
+  ackPriorMessagesForSender.run(sender.instance_token, sender.group_id, sentAt);
+
   // Try WebSocket push if the target is connected.
   const ws = wsPool.get(target.instance_token);
   if (ws && ws.readyState === 1) {
@@ -635,7 +702,10 @@ function flushPendingForToken(token: InstanceToken): void {
   const ws = wsPool.get(token);
   if (!ws || ws.readyState !== 1) return;
   type MessageRow = Omit<Message, "delivered"> & { delivered: number };
-  const rows = selectUndelivered.all(token) as MessageRow[];
+  // Capped replay: only the last FLUSH_MAX_COUNT messages within FLUSH_MAX_AGE_HOURS.
+  // Beyond that, the LLM can still pull the full backlog via check_messages.
+  const cutoff = `-${FLUSH_MAX_AGE_HOURS} hours`;
+  const rows = selectUndeliveredCapped.all(token, cutoff, FLUSH_MAX_COUNT) as MessageRow[];
   for (const row of rows) {
     const sender = db.query(
       "SELECT peer_id, summary, host, cwd FROM peers WHERE instance_token = ?"
@@ -771,6 +841,13 @@ const server = Bun.serve<WsData>({
         const rows = db.query(sql).all() as Peer[];
         return Response.json(rows);
       }
+      if (path === "/admin/purge-messages") {
+        // Manual trigger for the TTL sweep (also runs at boot + every PURGE_INTERVAL_SEC).
+        // Returns the number of rows deleted. Used by tests and for ad-hoc cleanup.
+        const cutoff = `-${MESSAGE_TTL_DAYS} days`;
+        const result = purgeOldUndeliveredStmt.run(cutoff);
+        return Response.json({ purged: result.changes, cutoff_days: MESSAGE_TTL_DAYS });
+      }
       return new Response("claude-peers broker", { status: 200 });
     }
 
@@ -825,8 +902,10 @@ const server = Bun.serve<WsData>({
 });
 
 console.error(
-  `[claude-peers broker v0.3.1] listening on ${BIND_HOST}:${PORT} ` +
-  `(db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ` +
-  `ws_idle=${WS_IDLE_TIMEOUT_SEC}s, active_stale=${ACTIVE_STALE_SEC}s, sweep_interval=${SWEEP_INTERVAL_SEC}s, ` +
+  `[claude-peers broker v0.3.3] listening on ${BIND_HOST}:${PORT} ` +
+  `(db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, msg_ttl=${MESSAGE_TTL_DAYS}d, ` +
+  `flush_cap=${FLUSH_MAX_COUNT}/${FLUSH_MAX_AGE_HOURS}h, purge_interval=${PURGE_INTERVAL_SEC}s, ` +
+  `activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ws_idle=${WS_IDLE_TIMEOUT_SEC}s, ` +
+  `active_stale=${ACTIVE_STALE_SEC}s, sweep_interval=${SWEEP_INTERVAL_SEC}s, ` +
   `auth=${BROKER_TOKEN ? "token" : "none"})`
 );
