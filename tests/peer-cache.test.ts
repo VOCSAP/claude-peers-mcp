@@ -3,7 +3,12 @@ import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { computeCwdKey, isPeerIdCacheEnabled, writePeerIdCache } from "../shared/peer-cache";
+import {
+  computeCwdKey,
+  isPeerIdCacheEnabled,
+  sanitizeSessionId,
+  writePeerIdCache,
+} from "../shared/peer-cache";
 
 const ENABLED_ENV = { CLAUDE_PEERS_STATUS_LINE_CACHE: "1" };
 
@@ -88,6 +93,80 @@ describe("writePeerIdCache", () => {
   test("is a no-op when env var is set to a falsy string", async () => {
     await writePeerIdCache("/foo/bar", "peer-z", tmpHome, { CLAUDE_PEERS_STATUS_LINE_CACHE: "0" });
     await expect(stat(join(tmpHome, ".claude"))).rejects.toThrow();
+  });
+
+  test("suffixes filename with CLAUDE_CODE_SESSION_ID when present", async () => {
+    await writePeerIdCache("/repo", "peer-A", tmpHome, {
+      ...ENABLED_ENV,
+      CLAUDE_CODE_SESSION_ID: "23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1",
+    });
+    const file = join(
+      tmpHome,
+      ".claude",
+      "peers",
+      "peer-id-_repo-23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1.txt",
+    );
+    expect(await readFile(file, "utf-8")).toBe("peer-A");
+  });
+
+  test("two sessions in the same cwd keep distinct cache files", async () => {
+    await writePeerIdCache("/repo", "peer-1", tmpHome, {
+      ...ENABLED_ENV,
+      CLAUDE_CODE_SESSION_ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    });
+    await writePeerIdCache("/repo", "peer-2", tmpHome, {
+      ...ENABLED_ENV,
+      CLAUDE_CODE_SESSION_ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    });
+    const dir = join(tmpHome, ".claude", "peers");
+    expect(
+      await readFile(join(dir, "peer-id-_repo-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.txt"), "utf-8"),
+    ).toBe("peer-1");
+    expect(
+      await readFile(join(dir, "peer-id-_repo-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.txt"), "utf-8"),
+    ).toBe("peer-2");
+  });
+
+  test("falls back to legacy filename when CLAUDE_CODE_SESSION_ID is empty", async () => {
+    await writePeerIdCache("/repo", "peer-legacy", tmpHome, {
+      ...ENABLED_ENV,
+      CLAUDE_CODE_SESSION_ID: "",
+    });
+    const file = join(tmpHome, ".claude", "peers", "peer-id-_repo.txt");
+    expect(await readFile(file, "utf-8")).toBe("peer-legacy");
+  });
+
+  test("sanitizes session id with unsafe chars before writing", async () => {
+    await writePeerIdCache("/repo", "peer-S", tmpHome, {
+      ...ENABLED_ENV,
+      CLAUDE_CODE_SESSION_ID: "abc/../etc",
+    });
+    const file = join(tmpHome, ".claude", "peers", "peer-id-_repo-abc____etc.txt");
+    expect(await readFile(file, "utf-8")).toBe("peer-S");
+  });
+});
+
+describe("sanitizeSessionId", () => {
+  test("returns empty string for undefined/null/empty", () => {
+    expect(sanitizeSessionId(undefined)).toBe("");
+    expect(sanitizeSessionId(null)).toBe("");
+    expect(sanitizeSessionId("")).toBe("");
+  });
+
+  test("passes UUID v4 through unchanged", () => {
+    expect(sanitizeSessionId("23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1")).toBe(
+      "23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1",
+    );
+  });
+
+  test("replaces non [A-Za-z0-9-] chars with underscore", () => {
+    expect(sanitizeSessionId("abc/../etc")).toBe("abc____etc");
+    expect(sanitizeSessionId("with spaces")).toBe("with_spaces");
+  });
+
+  test("caps length at 64 chars", () => {
+    const long = "a".repeat(200);
+    expect(sanitizeSessionId(long).length).toBe(64);
   });
 });
 
