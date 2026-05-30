@@ -1,0 +1,20 @@
+appId: com.vocsap.claude-peers-deck
+productName: Claude Peers Deck
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+# node-pty ships a native .node binary that must stay outside the asar archive.
+asarUnpack:
+  - node_modules/node-pty/**
+win:
+  target: nsis
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+linux:
+  target:
+    - AppImage
+  category: Development
