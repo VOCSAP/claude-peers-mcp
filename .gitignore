@@ -50,3 +50,5 @@ docs/superpowers/
 # Memory / notes directories (auto-memory, kleos exports, etc.)
 **/memory/
 *.memory.md
+.kleos-space
+.claude/settings.json
