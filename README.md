@@ -191,11 +191,24 @@ Groups isolate sessions on a shared broker. A group is identified by a 32-hex `g
 
 ### How a group is resolved (first wins)
 
+0. Forced group via `CLAUDE_PEERS_FORCE_GROUP` / `CLAUDE_PEERS_FORCE_GROUP_FILE` (see below)
 1. `.claude-peers.local.json` walking up from cwd to git_root
 2. `.claude-peers.json` walking up from cwd to git_root
 3. `default_group` from your user config
 4. Env var `CLAUDE_PEERS_GROUP`
 5. Sentinel `'default'` (open, no auth)
+
+### Forced group (app-driven isolation)
+
+A parent process (e.g. the Claude Peers Desk app) can pin every child session to an isolated group without writing any project file. When set, this takes precedence over all other sources above.
+
+| Env var                          | Effect                                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_PEERS_FORCE_GROUP`       | The group secret, supplied directly. Highest priority.                                                   |
+| `CLAUDE_PEERS_FORCE_GROUP_FILE`  | Path to a file (e.g. `chmod 600`) whose trimmed content is the group secret. Used only if the env var above is unset. `CLAUDE_PEERS_FORCE_GROUP` wins when both are set. |
+| `CLAUDE_PEERS_FORCE_GROUP_NAME`  | Optional display name for the forced group. Defaults to `forced-<group_id first 8 chars>`.               |
+
+The file transport keeps the secret out of the process environment (and out of `ps`/argv); the env var is the fallback when filesystem access fails. An empty-string env var or a missing/unreadable file is treated as unset and resolution falls through to the normal sources.
 
 ### User config -- where the secrets live
 

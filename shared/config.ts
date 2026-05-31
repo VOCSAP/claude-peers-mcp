@@ -210,6 +210,64 @@ export function isLoopbackBrokerUrl(url: string): boolean {
 const PROJECT_FILE = ".claude-peers.json";
 const PROJECT_LOCAL_FILE = ".claude-peers.local.json";
 
+// --- Forced group (Claude Peers Desk app, M1) ---
+// The desktop app launches child Claude Code sessions pinned to an isolated
+// group without writing a project file. The forced secret is transported via an
+// env var or a chmod-600 file (env wins). When present it takes precedence over
+// every other group source: project files, default_group, CLAUDE_PEERS_GROUP.
+
+const FORCE_GROUP_ENV = "CLAUDE_PEERS_FORCE_GROUP";
+const FORCE_GROUP_FILE_ENV = "CLAUDE_PEERS_FORCE_GROUP_FILE";
+const FORCE_GROUP_NAME_ENV = "CLAUDE_PEERS_FORCE_GROUP_NAME";
+
+/**
+ * Resolve the forced group secret, if any. Reads CLAUDE_PEERS_FORCE_GROUP (env)
+ * first; if unset or empty, reads the trimmed content of the file pointed at by
+ * CLAUDE_PEERS_FORCE_GROUP_FILE. Returns null when neither yields a non-empty
+ * secret. A missing or unreadable file is logged to stderr and treated as unset
+ * so resolution falls through to the normal group sources.
+ */
+function resolveForcedGroupSecret(): string | null {
+  const envSecret = process.env[FORCE_GROUP_ENV];
+  if (envSecret && envSecret.length > 0) return envSecret;
+
+  const filePath = process.env[FORCE_GROUP_FILE_ENV];
+  if (filePath && filePath.length > 0) {
+    try {
+      if (existsSync(filePath)) {
+        const content = readFileSync(filePath, "utf-8").trim();
+        if (content.length > 0) return content;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[claude-peers] failed to read ${FORCE_GROUP_FILE_ENV} ${filePath}: ${msg}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Derive the display name for a forced group. Uses CLAUDE_PEERS_FORCE_GROUP_NAME
+ * when provided, otherwise a deterministic `forced-<group_id slice 0,8>`.
+ */
+function forcedGroupName(secret: string): string {
+  const envName = process.env[FORCE_GROUP_NAME_ENV];
+  if (envName && envName.length > 0) return envName;
+  return `forced-${computeGroupId(secret).slice(0, 8)}`;
+}
+
+/**
+ * Build the public name -> group_id map (no secrets) for server.ts inversion.
+ * Always includes the 'default' sentinel plus every user-config group.
+ */
+function buildGroupsMap(groups: Record<string, string>): Record<string, GroupId> {
+  const groups_map: Record<string, GroupId> = { default: "default" };
+  for (const [n, s] of Object.entries(groups)) {
+    groups_map[n] = computeGroupId(s);
+  }
+  return groups_map;
+}
+
 /**
  * Read a project file (.claude-peers.json or .local.json) and return the validated `group` field.
  * Returns null if the file doesn't exist, is malformed, or has no `group` field.
@@ -270,6 +328,7 @@ function findUpwards(start: string, filename: string, gitRoot: string | null): s
 /**
  * Resolve the effective group name for a given cwd.
  * Order (first wins):
+ *   0. forced group (CLAUDE_PEERS_FORCE_GROUP env or _FILE) -- app top-precedence
  *   1. .claude-peers.local.json (walking up to git_root)
  *   2. .claude-peers.json       (walking up to git_root)
  *   3. user config `default_group`
@@ -281,6 +340,9 @@ export function resolveGroupName(
   gitRoot: string | null,
   userConfig: Pick<Config, "default_group">
 ): string {
+  const forced = resolveForcedGroupSecret();
+  if (forced !== null) return forcedGroupName(forced);
+
   const localFile = findUpwards(cwd, PROJECT_LOCAL_FILE, gitRoot);
   if (localFile) {
     const name = readProjectFile(localFile);
@@ -342,16 +404,25 @@ export function resolveGroup(
   gitRoot: string | null,
   userConfig: Pick<Config, "groups" | "default_group">
 ): { name: string; group_id: GroupId; group_secret_hash: string | null; groups_map: Record<string, GroupId> } {
+  // Top precedence: the desktop app forces an isolated group via env/file. This
+  // bypasses project files, default_group and CLAUDE_PEERS_GROUP entirely.
+  const forced = resolveForcedGroupSecret();
+  if (forced !== null) {
+    const group_id = computeGroupId(forced);
+    const group_secret_hash = computeGroupSecretHash(forced);
+    const name = forcedGroupName(forced);
+    const groups_map = buildGroupsMap(userConfig.groups);
+    // Inject the forced name so server.ts groupNameForId reverse-lookup resolves
+    // it instead of falling back to '<unknown>'. Forced wins on name collision.
+    groups_map[name] = group_id;
+    return { name, group_id, group_secret_hash, groups_map };
+  }
+
   const name = resolveGroupName(cwd, gitRoot, userConfig);
   const secret = resolveGroupSecret(name, userConfig);
   const group_id = computeGroupId(secret);
   const group_secret_hash = computeGroupSecretHash(secret);
-
-  // Build the public name -> group_id map (no secrets) for server.ts inversion.
-  const groups_map: Record<string, GroupId> = { default: "default" };
-  for (const [n, s] of Object.entries(userConfig.groups)) {
-    groups_map[n] = computeGroupId(s);
-  }
+  const groups_map = buildGroupsMap(userConfig.groups);
 
   return { name, group_id, group_secret_hash, groups_map };
 }
