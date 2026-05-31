@@ -16,26 +16,27 @@ framework (en+fr); persist & restore (resume via `--session-id`).
 Out (→ Phase 2): `/announce`, broadcast field, no-reply message kind,
 onboarding via summaries, agent dropdown polish, destinatary selection.
 
-## 1. Core change in claude-peers (prerequisite) — forced group via env
+## 1. Core change in claude-peers (prerequisite) — forced group via env/file
 
 **Why:** the app must force its sessions into a chosen, isolated group without
 writing project files. Today `CLAUDE_PEERS_GROUP` is low precedence and group
 isolation needs a *secret* not passable by env (see `DESIGN.md` §4).
 
 **Change** (`shared/config.ts`):
-- [ ] Add a top-precedence branch in `resolveGroup` (and a helper for
-  `resolveGroupName`): if `process.env.CLAUDE_PEERS_FORCE_GROUP` is set and
-  non-empty, treat it as the **group secret**:
-  - `secret = CLAUDE_PEERS_FORCE_GROUP`
+- [ ] Add a top-precedence branch in `resolveGroup` (and `resolveGroupName`):
+  resolve the forced **group secret** from, in order, `CLAUDE_PEERS_FORCE_GROUP`
+  (env) **or** the contents of `CLAUDE_PEERS_FORCE_GROUP_FILE` (a `chmod 600`
+  file — keeps the secret out of `/proc/<pid>/environ`, DESIGN §15). If found:
   - `group_id = computeGroupId(secret)`
   - `group_secret_hash = computeGroupSecretHash(secret)`
-  - `name = process.env.CLAUDE_PEERS_FORCE_GROUP_NAME || "forced-" + group_id.slice(0,8)`
+  - `name = CLAUDE_PEERS_FORCE_GROUP_NAME || "forced-" + group_id.slice(0,8)`
   - This **bypasses** project files, `default_group`, and `CLAUDE_PEERS_GROUP`.
 - [ ] Keep `groups_map` building intact (still include `default`).
 - [ ] Document both env vars in `README.md`.
-- [ ] Test: `tests/config-force-group.test.ts` — forced env wins over a present
-  `.claude-peers.json`, over `default_group`, and over `CLAUDE_PEERS_GROUP`;
-  produces a stable `group_id`/`secret_hash`; empty/unset env = no effect.
+- [ ] Test: `tests/config-force-group.test.ts` — forced secret (env **or** file)
+  wins over a present `.claude-peers.json`, over `default_group`, and over
+  `CLAUDE_PEERS_GROUP`; stable `group_id`/`secret_hash`; unset = no effect; env
+  takes precedence over file when both set.
 - [ ] `bun test` green; smoke build green (`bun build --target=bun broker.ts
   server.ts cli.ts`).
 
@@ -105,15 +106,18 @@ desktop/
 
 ## 4. Scope / group (`scope.ts`)
 
-- [ ] If `scopeId` arg present → `secret = scopeId`; else `secret = randomUUID()`.
+- [ ] `scopeId` arg present → `secret = scopeId`, `scopeKind = "custom"`; else
+  `secret = randomUUID()`, `scopeKind = "ephemeral"`.
 - [ ] Compute display root from `host` + `basename(projectDir)` (exact
   `deriveDefaultId` base algorithm, no suffix — see DESIGN §4).
-- [ ] Build the **child env** for every spawned session:
-  - `CLAUDE_PEERS_FORCE_GROUP = secret`
-  - `CLAUDE_PEERS_FORCE_GROUP_NAME = root`
-  - `CLAUDE_PEERS_STATUS_LINE_CACHE = "1"`
-  - merged over `process.env` (non-invasive; child only).
-- [ ] Scope is computed **once** and shared by all sessions of this launch.
+- [ ] Provide the secret to each spawned session via **env or file** transport
+  (`CLAUDE_PEERS_FORCE_GROUP[_FILE]` + `CLAUDE_PEERS_FORCE_GROUP_NAME`) plus
+  `CLAUDE_PEERS_STATUS_LINE_CACHE=1`, merged over `process.env` (child only).
+- [ ] Persist **only `groupId`** (sha256) in the workspace, never the secret
+  (DESIGN §6.8). On restore: ephemeral → mint a fresh scope; custom → re-supplied
+  via arg (optional `safeStorage` cache).
+- [ ] Scope computed **once**, shared by all sessions; fixed only once the first
+  session spawns (adoptable at restore while empty).
 
 ## 5. Launch-command config (`launch-config.ts`)
 
@@ -126,11 +130,17 @@ desktop/
 
 ## 6. PTY + sessions (`pty-manager.ts`, `session-service.ts`)
 
-- [ ] **Spawn** a session: mint `uuid`, build argv =
-  `<launchCommand tokens> --session-id <uuid> [extraArgs]`, wrap in the login/
-  interactive shell (Unix: `$SHELL -l -i -c "<cmd>"`; Windows:
-  `powershell -NoLogo -Command "<cmd>"`), `cwd = session.cwd`, `env` from §4.
-- [ ] **Restore**: same but `--resume <uuid>` + original `extraArgs`.
+- [ ] **Command execution (default = no interactive shell):** run the configured
+  command **directly**, or via a **login** shell `-l -c` (Unix) /
+  `powershell -NoLogo -Command` (Windows). **Avoid `-i`** by default (rc noise —
+  oh-my-zsh/NVM/conda/pyenv pollutes the PTY, DESIGN §7).
+- [ ] **Opt-in interactive mode** (`-i`) for shell-alias users: emit a unique
+  **start marker** before the command and **strip all PTY output before it**.
+- [ ] **New session:** argv = `<cmd tokens> --session-id <uuid> [extraArgs]`,
+  `cwd = session.cwd`, env/secret-file from §4.
+- [ ] **Resume/restore (fork-on-resume):** `--resume <prevId> --fork-session
+  [--session-id <newUuid>]`; do **not** re-pass `--agent`/`--model` (auto-restored);
+  capture & persist the new id per the two-track strategy (§11).
 - [ ] Persist `{ uuid, name, cwd, args, createdAt }` per session.
 - [ ] Runtime state per session: `starting | running | exited`, pid, peerId,
   thinking (bool).
@@ -145,25 +155,33 @@ desktop/
 - [ ] Fallback (if §14.1 verification fails): newest `peer-id-<cwdKey>-*.txt`.
 - [ ] Until resolved, UI shows `Session <uuid[:8]>`.
 
-## 8. Thinking heuristic (`thinking.ts`)
+## 8. Thinking heuristic (`thinking.ts`) — PLACEHOLDER (to be replaced)
+
+> Explicitly temporary (DESIGN §10). Non-deterministic; the real, hook-based
+> solution lands in Phase 2.
 
 - [ ] Tap the PTY output stream; detect busy markers (spinner / "esc to
-  interrupt") vs idle (prompt). Debounce. Emit `session:thinking {id, busy}`.
-- [ ] Isolated module so the detection rules can be tuned per Claude version.
-- [ ] Renderer shows a dot/icon in first position of each sidebar row + tile.
+  interrupt") vs idle. Debounce. Emit `session:thinking {id, busy}`.
+- [ ] Isolated module so rules can be tuned per Claude version / swapped out.
+- [ ] Renderer shows a dot in the leading position of each sidebar row + tile.
 
 ## 9. UI (renderer)
 
-- [ ] **Sidebar**: list rows `[thinking][peer_id]`; `+` (quick create in project
-  scope) with `▾` → **CreateMenu** (agent dropdown from `.claude/agents`, free
-  args field, presets); delete with **ConfirmDialog**; single-click select.
+- [ ] **Sidebar (resizable by drag, persisted width):** rows = `[colour swatch +
+  thinking dot] [editable name — primary] / [peer_id — secondary, dim, tooltip]`;
+  `+` (quick create) with `▾` → **CreateMenu** (agent dropdown from
+  `.claude/agents`, free args, presets, optional colour); delete with
+  **ConfirmDialog**; single-click select; double-click toggles fullscreen.
 - [ ] **TileArea + DisplayModeBar**: modes 1×1 carousel (horizontal scroll +
-  wheel), 1×2, 2×2, custom X×Y (free inputs). Overflow scrollable.
-- [ ] **Selection/maximize**: single-click highlights; double-click toggles
-  fullscreen (single slot); per-tile maximize/reduce button. All PTYs stay
-  alive when hidden; refit on visibility/size change.
-- [ ] **SettingsDialog**: launch command, locale, theme, font size, columns
-  defaults, restore-on-launch.
+  wheel), 1×2, 2×2, custom X×Y (free inputs). Overflow scrollable. Each tile is
+  **framed in its session colour** (border/header); xterm background untouched.
+- [ ] **Fullscreen**: per-tile `⤢` button + shortcut (`Ctrl+Shift+M`) +
+  double-click **on the tile title bar only** (never the xterm body). All PTYs
+  stay alive when hidden; refit on visibility/size change.
+- [ ] **Colour**: auto-assign from a rotating ~8–12 palette; user override via a
+  colour picker; persisted per session.
+- [ ] **SettingsDialog**: launch command, locale, theme, font size, default
+  display mode, restore behaviour, palette.
 - [ ] All strings via `t()` (§10).
 
 ## 10. i18n (`i18n.ts` main + renderer)
@@ -215,10 +233,15 @@ See DESIGN §6 for the full rationale and verified Claude facts.
   all".
 - [ ] **File menu**: New / Save / Save As (name) / Restore.
 
-## 12. Packaging
+## 12. Packaging & native-build DX
 
+- [ ] **Pin exact versions** of `electron` and `node-pty` (no `^`): every Electron
+  bump changes the V8/ABI and forces a node-pty rebuild (DESIGN §15).
+- [ ] `@electron/rebuild` in `postinstall` + explicit `npm run rebuild`; document
+  per-OS toolchain (VC++ Build Tools / Xcode CLT / build-essential+python3) and
+  macOS arm64↔x64 arch matching.
+- [ ] **Per-OS CI** build to catch rebuild breakage early.
 - [ ] electron-builder targets (win/mac/linux); `asarUnpack` node-pty.
-- [ ] `postinstall` electron-rebuild for node-pty; document toolchain needs.
 
 ## 13. Validation (definition of done, Phase 1)
 

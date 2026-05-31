@@ -78,18 +78,23 @@ unrelated peers; and two app launches are isolated unless explicitly shared.
   ```
   Isolation rests on the **secret**, not the name — so a readable, possibly
   colliding name is fine.
-- **Injection:** a **new dominant env var** in the claude-peers core, injected
-  per child process via node-pty's `env` option. This is **non-invasive**: it
+- **Injection:** a **new top-precedence forced-group path** in the claude-peers
+  core, fed per child process via node-pty's `env` option (**non-invasive**:
   affects only the spawned terminal, never the user's shell, global env, or any
-  project file. (Verified correct approach.)
-- **Core change required** (claude-peers): the current `CLAUDE_PEERS_GROUP` env
-  var is **near-last** in `resolveGroupName` precedence (after `.claude-peers*.json`
-  and `default_group`) and group **isolation requires a secret** that cannot be
-  passed by env today. So we add a **top-precedence forced-group env path**
-  (see Phase 1 plan, §"Core change"). Proposed names:
-  - `CLAUDE_PEERS_FORCE_GROUP` — the scope secret (top precedence; overrides
-    files, `default_group`, and `CLAUDE_PEERS_GROUP`).
-  - `CLAUDE_PEERS_FORCE_GROUP_NAME` — optional display label (the root above).
+  project file). Needed because the existing `CLAUDE_PEERS_GROUP` is **near-last**
+  in `resolveGroupName` precedence and group **isolation requires a secret** that
+  cannot be passed today. Two transport options (see §15 and Phase 1 §"Core change"):
+  - **env var** `CLAUDE_PEERS_FORCE_GROUP` (the secret) + `CLAUDE_PEERS_FORCE_GROUP_NAME`
+    (display label) — simplest, but the secret is visible in `/proc/<pid>/environ`;
+  - **file** `CLAUDE_PEERS_FORCE_GROUP_FILE` pointing to a `chmod 600` file holding
+    the secret — keeps the secret out of the environment (preferred if the small
+    `server.ts` read stays cheap).
+  Both **override** project files, `default_group`, and `CLAUDE_PEERS_GROUP`.
+- **The secret is never persisted in the workspace JSON** (see §6.3/§6.8): only
+  the `group_id` (sha256) is stored. Default scopes are **ephemeral** (a fresh
+  scope is minted on restore; sessions still rediscover each other); custom
+  scopes are **re-supplied** via the launch arg (optionally cached in the OS
+  keychain via Electron `safeStorage`).
 - **All app sessions join the same group**, computed **once from the app launch
   dir**, even sessions opened in another folder.
 - **Host is included** in the display root ⇒ the same project on two machines =
@@ -152,13 +157,16 @@ proliferation is the accepted cost.
 
 - **New session (not a restore):** `--session-id <uuid>` (nothing to fork from).
 - **Resume/restore:** `--resume <prevId> --fork-session [--session-id <newUuid>]`.
-- **Knowing the new id:** if `--session-id` is honoured on a fork (see §14) we
-  mint and know it up front (deterministic peer-id cache). Otherwise we
-  **discover** it right after spawn via the cache file
-  `peer-id-<cwdKey>-<newId>.txt` (suffix = new id, content = peer_id — both at
-  once) or the newest `.jsonl` in `~/.claude/projects/<project>/`. During a
-  restore, sessions are **spawned sequentially** so each new id is captured
-  before the next.
+- **Knowing the new id (two-track, decided up front):** a one-time **capability
+  probe** at first launch tests whether `--session-id` is honoured on a fork
+  (§14). The result drives `session-service.ts`:
+  - **deterministic track** (honoured) → ids known in advance → **parallel spawn**
+    (instant restore), deterministic peer-id cache;
+  - **discovery track** (ignored) → **discover** the new id right after spawn via
+    `peer-id-<cwdKey>-<newId>.txt` (suffix = new id, content = peer_id — both at
+    once) or the newest `~/.claude/projects/<project>/*.jsonl`. Spawn is
+    **sequential only within the same cwd** (same `cwdKey` = ambiguous files);
+    **parallel across distinct cwds**.
 - **Resume passes only `--resume`/`--fork-session`** (agent/model auto-restored);
   stored `args` are kept for display and for the expired-session fallback (§6.6).
 
@@ -168,33 +176,38 @@ A **workspace** = a restorable snapshot:
 ```jsonc
 {
   "id": "wsp_…", "name": "Team feature-X", "pinned": false,
-  "cwd": "/abs/project", "scopeSecret": "…", "scopeName": "olivier-pc-foo",
+  "cwd": "/abs/project", "groupId": "<sha256 hex>", "scopeName": "olivier-pc-foo",
+  "scopeKind": "ephemeral",                // or "custom" ⇒ re-supplied via launch arg
   "displayMode": { "kind": "grid", "x": 2, "y": 2 },
   "createdAt": 0, "updatedAt": 0,
   "sessions": [
     { "claudeSessionId": "…", "name": "reviewer", "cwd": "/abs/project",
-      "args": ["--agent","reviewer"], "position": 0 }
+      "args": ["--agent","reviewer"], "color": "#4488ff", "position": 0 }
   ]
 }
 ```
+> **No `scopeSecret`** — only `groupId` for display/identification (see §6.8).
 
 ### 6.4 Storage & discovery (in-repo)
 
 - Stored **in the project**: `<project>/.claude/claude-peers/workspaces/<id>.json`.
   Discovery = **list one directory** (no global scan). Consistent with the
   launch-command config location.
-- The dir is **git-ignored by default** (the workspace holds `scopeSecret`); the
-  app maintains a `.gitignore`. Community sharing of sanitized "team templates"
-  (no secret, no session ids) is a separate Phase 2 export.
+- **No secret is stored** (only `groupId`), so a leaked/synced workspace cannot
+  join the group. The dir is still **git-ignored by default** (session ids +
+  layout are machine/project-local noise); the app maintains a `.gitignore`.
+  Community sharing of sanitized "team templates" (no ids) is a Phase 2 export.
 
 ### 6.5 Locking (mandatory, per §6.1)
 
 - An app that owns a workspace holds a **lock**: sidecar `<id>.lock` with
   `{ pid, host, startedAt, heartbeat }`.
-- Restore refuses a workspace whose lock is held by a **live** owner (pid alive
-  same-host, or fresh heartbeat cross-host) → "already open in another
-  instance". A **stale** lock (dead pid / old heartbeat) is reclaimed. (Same
-  liveness logic as the broker.)
+- Restore refuses a workspace whose lock is held by a **live** owner; reclaims a
+  **stale** one. **Same-host** liveness = `process.kill(pid,0)` → **reliable, no
+  clock issue** (the targeted Phase 1 case). **Cross-host** relies on heartbeat
+  freshness across two clocks → **best-effort only** (documented §15); a robust
+  cross-host lock would delegate to the broker (single authoritative clock) — a
+  Phase 2 enhancement.
 - Belt-and-suspenders: an **open-session-id registry** prevents resuming the
   same id from two workspaces.
 
@@ -231,6 +244,17 @@ A **workspace** = a restorable snapshot:
 - Optional pruning of **unpinned**, closed auto-saves older than N days
   (aligned with Claude's 30-day retention).
 
+### 6.8 Secret handling (security)
+
+- The workspace **never stores the scope secret** — only `groupId` (§6.3).
+- **Default (ephemeral) scope:** on restore, mint a **fresh** secret/scope. The
+  restored sessions get new forked ids and **rediscover each other** in the new
+  scope; there were no external members, so nothing is lost. Nothing to persist.
+- **Custom scope:** the secret is the **user-supplied launch arg** — to rejoin
+  the same shared group, relaunch with the same arg. Optionally cache it on the
+  machine via Electron **`safeStorage`** (OS-keychain-backed; no `keytar` native
+  dep) for a "remember on this machine" convenience — never written to the repo.
+
 ## 7. Launch-command config (decided)
 
 Three distinct config systems — do **not** conflate:
@@ -248,6 +272,15 @@ Three distinct config systems — do **not** conflate:
 Fields (minimum): `launchCommand` (string) + free args added via the "+ ▾"
 advanced-create menu. **Agent presets**: a named list `{ label, args, prompt? }`
 the "+ ▾" menu proposes alongside free input.
+
+**Command execution (decided):** by default the command is run **directly / via
+a login shell `-l -c` (no `-i`)** — *not* an interactive shell — to avoid
+`.bashrc`/`.zshrc` noise (oh-my-zsh, NVM, conda, pyenv) polluting the PTY. Since
+the launch-command **is** the indirection, no shell alias is needed. An **opt-in
+"interactive shell"** mode (`-i`) remains for users who must resolve a shell
+alias; in that mode the app emits a **unique start marker** before the command
+and **discards rc output before the marker**. (Details in Phase 1 §"PTY +
+sessions".)
 
 ## 8. Agents (decided, polish later)
 
@@ -275,13 +308,18 @@ the "+ ▾" menu proposes alongside free input.
 └───────────────┴─────────────────────────────────────┘
 ```
 
-- **Left menu:** session list; create (`+` with `▾` for advanced), delete
-  **with confirmation**. Each row = `[thinking icon][peer_id]`.
+- **Left menu (resizable by drag, min/max width, persisted):** session list;
+  create (`+` with `▾` for advanced), delete **with confirmation**.
+  - Row = `[color swatch + thinking dot] [session name — primary, editable,
+    ellipsis]`, with the **peer_id as secondary** (dim, ellipsis, full on
+    tooltip). Colour/name never the sole carrier of info (accessibility).
 - **Single click** = select/highlight the session in the tiles area.
-- **Double click** = fullscreen in the tiles area (toggle, single slot):
-  - same session double-clicked again ⇒ reduce;
-  - another session ⇒ previous reduces, new expands.
-  - Each tile also has a maximize/reduce button.
+- **Fullscreen toggle** (single slot) is triggered by the per-tile **`⤢`
+  button**, a **keyboard shortcut** (e.g. `Ctrl+Shift+M`), or a **double-click on
+  the tile *title bar*** — **never** a double-click on the xterm body (that is
+  reserved for the terminal's own word selection). Double-click in the
+  **sidebar** also toggles fullscreen (no xterm there).
+  - same target again ⇒ reduce; another ⇒ previous reduces, new expands.
 - **Display-mode selector** for the tiles area:
   - **1×1 "carousel"**: one full-size session, navigate horizontally between
     conversations (scrollbar + mouse wheel);
@@ -289,15 +327,27 @@ the "+ ▾" menu proposes alongside free input.
   - **Custom X×Y**: free input of columns × rows; the grid shows X·Y cells and
     overflow is scrollable.
   - Maximize/fullscreen overrides the current mode.
-- **Thinking indicator** (first position on each row): see §10.
+- **Thinking indicator** (leading position on each row): see §10.
+- **Per-agent colors:** each session gets a colour — **auto-assigned** from a
+  rotating palette of ~8–12 perceptually-distinct, dark/light-safe (ideally
+  colorblind-safe) hues, **overridable** via a colour picker (wider palette). The
+  colour frames the **tile border/header** and the **sidebar swatch** — **not**
+  the xterm background (readability). Persisted per session (`color`) and
+  restored. Always paired with the name (never colour-only).
 
 ## 10. "Thinking" indicator (decided)
 
 - No public API/env exposes Claude's busy/idle state (verified).
-- **Approach B first** (chosen): heuristic on the PTY output stream the app
-  already renders (spinner glyphs / "esc to interrupt" markers). Zero config for
-  the user, but brittle across Claude Code versions.
-- Fallback / later: lean on the existing peer activity status.
+- **Phase 1 = placeholder, explicitly temporary:** a heuristic over the PTY
+  output (spinner / "esc to interrupt"). It is **non-deterministic** (the stream
+  mixes UI chrome and Claude-generated content that may contain the same strings,
+  and varies across `--agent`/interactive/`--print`). Shipped only as a first
+  approximation, **to be replaced** — not the final solution.
+- **Real solution (Phase 2): hooks.** Inject `UserPromptSubmit` (turn start) +
+  `Stop` (turn end) hooks for the app's sessions that write a busy/idle state to
+  a per-session file the app watches → deterministic. Open question: the
+  **injection mechanism** without polluting the user's config (verify a
+  `--settings <file>` flag, or a gitignored `.claude/settings.local.json`).
 
 ## 11. i18n (decided)
 
@@ -370,3 +420,19 @@ these specs. Notable changes:
 4. `claude "<prompt>"` (positional) starts an **interactive** session (not
    `-p`/print) — for the onboarding seed prompt (§12).
 5. node-pty rebuild for Electron on each target OS (toolchain present).
+
+## 15. Security & known limitations
+
+- **Scope secret in process env:** if the env transport (§4) is used, the secret
+  is visible in `/proc/<pid>/environ` to the current user (and possibly
+  monitoring tools). Low risk for solo use; **documented in the README**. For
+  shared/multi-user machines, prefer the **file transport** (§4) or a future
+  authenticated local socket. Further mitigated by §6.8 (default scopes are
+  ephemeral; custom secrets are already user-known).
+- **Workspace files hold no secret** (§6.3/§6.8) — only `group_id`. A leaked or
+  cloud-synced workspace cannot join the group.
+- **Cross-host workspace lock is best-effort** (clock-skew dependent, §6.5).
+  Same-host locking is reliable. Robust cross-host exclusion is a Phase 2
+  broker-arbitrated enhancement.
+- **node-pty native rebuild** is required per Electron version / OS / arch — see
+  the Phase 1 packaging/DX task (pinned versions, `electron-rebuild`, per-OS CI).

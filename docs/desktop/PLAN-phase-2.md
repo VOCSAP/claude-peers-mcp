@@ -19,17 +19,23 @@
 Chosen over a hidden-peer registration: the app **never registers**, is
 **invisible by construction**, and **cannot receive**.
 
+> ⛔ **BLOCKING decision — day 1 of Phase 2** (deferred by agreement; revisit
+> then): how an app-originated announcement is stored/delivered, since
+> `messages.from_token` has a **FK** to `peers(instance_token)`. Three options,
+> to be chosen at Phase 2 start (**not now**):
+> 1. **Separate announcements table** + dedicated WS frame — no FK, cleanest
+>    semantics (announcements aren't peer→peer messages). *(Claude's lean.)*
+> 2. **Reserved "controller" peer row** per group — keeps the FK, but a fake peer
+>    to exclude from `list_peers`.
+> 3. **Allow `from_token = NULL`** via migration — most invasive semantically.
+
 - [ ] New endpoint `POST /announce`:
-  - Auth by **group secret** (so only someone holding the scope can post):
-    body carries `group_secret_hash` (computed like peers do) or the raw secret
-    hashed server-side; reject mismatch (same spirit as TOFU).
+  - Auth by **group secret** (only a scope holder can post): body carries
+    `group_secret_hash`; reject mismatch (TOFU spirit). Respect HTTP bearer auth.
   - Payload: `{ group_secret_hash, kind: "info" | "broadcast", text, targets?: peer_id[] }`.
-  - **Fan-out** to peers in that `group_id`: if `targets` omitted → all active
-    peers; else the listed ones. Reuse existing message storage + WS push +
-    poll delivery.
-  - `from` is a **non-peer sentinel** (e.g. `from_token = null` / a reserved
-    "controller" marker) — there is **no peer row** for the app.
-  - Respect HTTP-mode bearer auth like other endpoints.
+  - **Fan-out** to peers in that `group_id` (all active, or `targets`), via the
+    delivery model chosen above.
+  - The app has **no peer row** and is **never a reply target**.
 - [ ] Message persistence: store with a flag marking it app-originated +
   `kind`, so `server.ts` can render it correctly and so it is **never routed
   back** to a non-existent sender.
@@ -56,10 +62,15 @@ Chosen over a hidden-peer registration: the app **never registers**, is
 
 ## 3. App — announce on add / remove
 
-- [ ] On **session add**: popup **free-text field** (i18n) to enrich the message.
-  Final text = i18n base template (`announce.joined = "{peer} ({role}) joined the group."`)
-  + appended custom text. Resolve `role` from launch args (`--agent`).
-  → `POST /announce { kind: "info", text }`.
+- [ ] On **session add**: announce **automatically and silently** with the base
+  template (no forced popup — it would interrupt rapid creation). Enrichment is
+  **opt-in**: an "add a note" field in the advanced CreateMenu, and/or
+  **retroactive editing** from the sidebar. Global setting "announce on create:
+  on/off".
+  - Final text = i18n base template
+    (`announce.joined = "{peer} ({role}) joined the group."`) + optional note.
+    `role` resolved from launch args (`--agent`).
+  - → `POST /announce { kind: "info", text }`.
 - [ ] On **session remove**: `info` announce `announce.left = "{peer} left the group."`
   (no popup, or optional).
 - [ ] Texts come from `locales/*.json` (`announce.*` keys). **App renders the
@@ -108,10 +119,14 @@ Chosen over a hidden-peer registration: the app **never registers**, is
 
 ## 8. Risks / to revisit before starting
 
-- Exact `/announce` auth shape (raw secret vs precomputed hash) vs existing
-  TOFU/bearer mechanics — align with `broker.ts` conventions at implementation
-  time.
-- Whether to keep `from = null` or introduce a reserved controller token (DB FK
-  constraints on `messages.from_token` — check `broker.ts` schema; may need the
-  flag/route to bypass the FK).
+- **Delivery/FK model = the ⛔ blocking decision in §1** (separate table vs
+  controller token vs NULL). Decide before any `/announce` code.
+- Exact `/announce` auth shape (raw secret vs precomputed hash) — align with
+  `broker.ts` TOFU/bearer conventions at implementation time.
+- **Thinking indicator (real solution):** replace the Phase 1 PTY placeholder
+  with `UserPromptSubmit` + `Stop` hooks writing a per-session state file. Open:
+  the **injection mechanism** (verify `--settings <file>`, or a gitignored
+  `.claude/settings.local.json`) so we never touch the user's config.
+- **Cross-host workspace lock:** delegate to the broker (single authoritative
+  clock) instead of comparing two machines' heartbeats (DESIGN §6.5/§15).
 - Selection UI ergonomics (defer until the broadcast feature is used).
