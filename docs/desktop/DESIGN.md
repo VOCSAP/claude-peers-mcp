@@ -63,8 +63,13 @@ Goal: sessions opened by the app **only discover each other**, never leak to
 unrelated peers; and two app launches are isolated unless explicitly shared.
 
 - **Default (no arg):** generate a **random secret (UUID) per launch**.
-  `group_id = sha256(secret)` ⇒ guaranteed unique per launch, even two apps in
-  the same `cwd`. This **sidesteps any cwd-collision problem**.
+  `group_id = computeGroupId(secret)` ⇒ guaranteed unique per launch, even two
+  apps in the same `cwd`. This **sidesteps any cwd-collision problem**.
+  - **Exact algorithm (per `shared/config.ts`, do not re-derive loosely):**
+    `group_id = sha256(secret) hex, truncated to the first 32 chars`
+    (`computeGroupId`); the TOFU `group_secret_hash` sent to the broker is the
+    **full** sha256 hex (`computeGroupSecretHash`). The app must reuse these two
+    helpers verbatim, not a hand-rolled hash, or the broker's TOFU check fails.
 - **Custom arg:** the scope **secret = the arg string** ⇒ apps sharing the same
   string share the group.
 - **Display name** (human-readable, for the UI and `whoami`/`list_groups`):
@@ -131,15 +136,27 @@ unrelated peers; and two app launches are isolated unless explicitly shared.
 
 ### 6.1 Verified Claude Code facts that shape this design
 
-- `--resume <id>` on a **missing** id → **errors** ("No conversation found"),
-  non-zero exit (does **not** start a new session).
+- `--resume <id>` on a **missing** id → prints `No conversation found with
+  session ID: <id>` and does **not** start a new session. **⚠️ Verified
+  (2026-05-31, CC 2.1.158): the process exits with code 0, NOT non-zero**, and
+  in `-p` mode the prompt is never processed. ⇒ **The app must NOT rely on the
+  exit code to detect an expired session.** Detect it deterministically by
+  **pre-checking `~/.claude/projects/<project>/<id>.jsonl` exists before spawn**
+  (the app knows the id it persisted); the stderr/stdout message is a secondary
+  signal only. (In the interactive PTY mode the exit code is not a signal at all
+  -- the session may simply stay open showing the error.)
 - **Concurrent resume corrupts**: resuming the same id in two terminals
-  interleaves both into one transcript — **no lock, no warning** (documented).
-  ⇒ collision avoidance is **mandatory** and is ours to implement.
+  interleaves both into one transcript — **no lock, no warning** (documented;
+  not re-tested empirically -- destructive). ⇒ collision avoidance is
+  **mandatory** and is ours to implement.
 - `--fork-session` (requires `--resume`/`--continue`) **copies the full history
-  into a NEW id and leaves the original untouched**.
-- **Agent and model are persisted** in the transcript and **auto-restored** on
-  resume ⇒ no need to re-pass `--agent`/`--model` when resuming.
+  into a NEW id and leaves the original untouched** (verified §14.2: original
+  `<old>.jsonl` intact, fork written to the forced `<new>.jsonl`).
+- **Model is persisted and auto-restored on resume** (✅ verified 2026-05-31:
+  a session created with `--model haiku`, forked **without** `--model`, keeps
+  `claude-haiku-4-5-20251001` in the fork transcript). **Agent** is documented as
+  persisted too but **not yet verified empirically** ⇒ low risk: keep the stored
+  `args` and re-pass `--agent` if PTY validation ever shows it dropped.
 - Sessions are **scoped to the project directory** (`~/.claude/projects/<project>/<id>.jsonl`)
   ⇒ each session must be resumed **from its original cwd**.
 - **30-day default retention** (`cleanupPeriodDays`) ⇒ old sessions expire and
@@ -157,16 +174,20 @@ proliferation is the accepted cost.
 
 - **New session (not a restore):** `--session-id <uuid>` (nothing to fork from).
 - **Resume/restore:** `--resume <prevId> --fork-session [--session-id <newUuid>]`.
-- **Knowing the new id (two-track, decided up front):** a one-time **capability
-  probe** at first launch tests whether `--session-id` is honoured on a fork
-  (§14). The result drives `session-service.ts`:
-  - **deterministic track** (honoured) → ids known in advance → **parallel spawn**
-    (instant restore), deterministic peer-id cache;
-  - **discovery track** (ignored) → **discover** the new id right after spawn via
-    `peer-id-<cwdKey>-<newId>.txt` (suffix = new id, content = peer_id — both at
-    once) or the newest `~/.claude/projects/<project>/*.jsonl`. Spawn is
-    **sequential only within the same cwd** (same `cwdKey` = ambiguous files);
-    **parallel across distinct cwds**.
+- **Knowing the new id — deterministic by default (verified §14):** `--session-id`
+  IS honoured on a fork (tested CC 2.1.158, 2026-05-31), so the app **mints the
+  new id up front** and knows it before spawn. Restore ⇒ **parallel spawn**
+  (instant), deterministic peer-id cache `peer-id-<cwdKey>-<newId>.txt`. No probe
+  is needed in the common case.
+  > **Fallback note (kept for forward-compat):** if a future CC version stops
+  > honouring `--session-id` on fork, fall back to the **discovery track** —
+  > **discover** the new id right after spawn via `peer-id-<cwdKey>-<newId>.txt`
+  > (suffix = new id, content = peer_id — both at once) or the newest
+  > `~/.claude/projects/<project>/*.jsonl`, spawning **sequentially within the
+  > same cwd** (ambiguous files) and **parallel across distinct cwds**. A
+  > one-time capability probe at first launch can detect the regression and flip
+  > `session-service.ts` to this mode. Phase 1 ships deterministic-only; the
+  > probe/fallback is implemented only if the regression is ever observed.
 - **Resume passes only `--resume`/`--fork-session`** (agent/model auto-restored);
   stored `args` are kept for display and for the expired-session fallback (§6.6).
 
@@ -219,18 +240,22 @@ A **workspace** = a restorable snapshot:
 - **Launch + restore (empty app):** picker shows **New** / **Restore** (list of
   workspaces for the current cwd, with name, updatedAt, session count, lock
   state). Restore → adopt saved scope, set display mode, spawn sessions
-  (sequentially, fork-on-resume).
+  (**in parallel**, fork-on-resume, ids known up front per §6.2; sequential
+  spawn only under the discovery fallback).
 - **Restore while sessions are running:** warn "current sessions will be
   closed", offer **Save first**. On confirm → **graceful close** of each session
   (write `"/exit\n"`; if still alive after ~1.5 s, send `Esc`/`Ctrl+C`, retry
   `"/exit\n"`; last resort SIGTERM — peer side cleaned by `server.ts`) → adopt
   new scope → reopen. (Alternative "open in a new window" = relaunch a second
   app process — possible later.)
-- **Expired session at restore:** when `--resume` fails ("No conversation
-  found"), the tile shows a **React overlay** ("session expired — [Start a new
-  session]") that spawns a fresh `--session-id <new>` with the stored `args`
-  (re-applying `--agent`). A global "start all" is offered. (UI overlay, not text
-  written into the terminal buffer.)
+- **Expired session at restore:** detect expiry **before spawning** by checking
+  that `~/.claude/projects/<project>/<prevId>.jsonl` exists (the exit code is
+  unreliable -- see §6.1). If missing, the tile shows a **React overlay**
+  ("session expired — [Start a new session]") that spawns a fresh
+  `--session-id <new>` with the stored `args` (re-applying `--agent`). A global
+  "start all" is offered. (UI overlay, not text written into the terminal
+  buffer.) The `No conversation found` string remains a secondary runtime signal
+  if a session expires between the pre-check and the spawn.
 
 ### 6.7 Auto-save, naming, explorable list
 
@@ -410,16 +435,31 @@ these specs. Notable changes:
 
 ## 14. Open items to verify during implementation
 
-1. `--session-id <uuid>` ⇒ `CLAUDE_CODE_SESSION_ID == uuid` reaches the MCP
-   server (peer-id determinism). Fallback documented (§5).
-2. **`--session-id <new>` combined with `--resume <old> --fork-session`** — is
-   the new id honoured? Determines deterministic vs discovery path (§6.2).
-   *Undocumented; must be tested.* Discovery fallback works either way.
-3. `--agent`/`--model` are auto-restored on resume (documented) — confirm the
-   resumed tiles keep their agent/model without re-passing the flags.
-4. `claude "<prompt>"` (positional) starts an **interactive** session (not
-   `-p`/print) — for the onboarding seed prompt (§12).
+1. ✅ **RESOLVED (2026-05-31, CC 2.1.158, Windows):** `--session-id <uuid>` ⇒
+   `CLAUDE_CODE_SESSION_ID == uuid` reaches the MCP server (peer-id determinism).
+   Verified with a minimal MCP probe dumping `process.env` at boot. Note: only
+   `CLAUDE_CODE_SESSION_ID` is set, not `CLAUDE_SESSION_ID`. Fallback (§5) kept.
+2. ✅ **RESOLVED (2026-05-31, CC 2.1.158, Windows):** `--session-id <new>` IS
+   honoured when combined with `--resume <old> --fork-session` — the fork takes
+   the forced id (`<new>.jsonl` created, `<old>.jsonl` left intact). ⇒ the
+   **deterministic** path is the default (§6.2); the discovery path is a
+   forward-compat fallback only. *Re-verify if the CC version changes.*
+3. ⏳ **PARTIAL (2026-05-31):** `--model` is auto-restored on resume/fork
+   (verified — fork without `--model` keeps `haiku`). `--agent` auto-restore is
+   documented but **not yet verified empirically**; keep stored `args` to
+   re-pass `--agent` as a safety net if PTY validation shows it dropped.
+4. ✅ **RESOLVED (2026-05-31):** `claude "<prompt>"` (positional, no `-p`) starts
+   an **interactive** session with the prompt submitted -- confirmed by
+   `claude --help` ("starts an interactive session by default, use -p/--print
+   for..."; positional `[prompt]` = "Your prompt"). Final PTY validation in §13.
 5. node-pty rebuild for Electron on each target OS (toolchain present).
+
+> **Verification method (reusable):** the resolved items above were tested
+> without writing any app code — a throwaway MCP server (`--mcp-config` +
+> `--strict-mcp-config`) that writes `process.env.CLAUDE_CODE_SESSION_ID` to a
+> file at spawn, launched via `claude --session-id <uuid> ... -p "..."` with the
+> caller's own `CLAUDE_CODE_SESSION_ID` scrubbed from the env. Same recipe
+> applies to re-checking items 3 and 4.
 
 ## 15. Security & known limitations
 

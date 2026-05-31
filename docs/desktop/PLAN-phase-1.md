@@ -31,12 +31,19 @@ isolation needs a *secret* not passable by env (see `DESIGN.md` §4).
   - `group_secret_hash = computeGroupSecretHash(secret)`
   - `name = CLAUDE_PEERS_FORCE_GROUP_NAME || "forced-" + group_id.slice(0,8)`
   - This **bypasses** project files, `default_group`, and `CLAUDE_PEERS_GROUP`.
-- [ ] Keep `groups_map` building intact (still include `default`).
+- [ ] **Inject the forced `{ [name]: group_id }` into the returned `groups_map`**
+  (alongside `default`). Without it, `server.ts:groupNameForId` does not find the
+  forced `group_id` in the map and falls back to the `<unknown>` sentinel in
+  `whoami` / `list_peers` / `list_groups`. (Verified: `groupNameForId` iterates
+  `myGroupsMap` and has no other source for the display name.)
+- [ ] Keep the rest of `groups_map` building intact (still include `default`
+  and the user-config `groups`).
 - [ ] Document both env vars in `README.md`.
 - [ ] Test: `tests/config-force-group.test.ts` — forced secret (env **or** file)
   wins over a present `.claude-peers.json`, over `default_group`, and over
   `CLAUDE_PEERS_GROUP`; stable `group_id`/`secret_hash`; unset = no effect; env
-  takes precedence over file when both set.
+  takes precedence over file when both set; **`groups_map[name] === group_id`**
+  for the forced group (so the display name resolves, not `<unknown>`).
 - [ ] `bun test` green; smoke build green (`bun build --target=bun broker.ts
   server.ts cli.ts`).
 
@@ -140,7 +147,8 @@ desktop/
   `cwd = session.cwd`, env/secret-file from §4.
 - [ ] **Resume/restore (fork-on-resume):** `--resume <prevId> --fork-session
   [--session-id <newUuid>]`; do **not** re-pass `--agent`/`--model` (auto-restored);
-  capture & persist the new id per the two-track strategy (§11).
+  mint & persist the new id up front (deterministic, verified §14.2; discovery
+  fallback only on CC regression -- see §11).
 - [ ] Persist `{ uuid, name, cwd, args, createdAt }` per session.
 - [ ] Runtime state per session: `starting | running | exited`, pid, peerId,
   thinking (bool).
@@ -197,10 +205,16 @@ See DESIGN §6 for the full rationale and verified Claude facts.
 
 **Storage & model**
 - [ ] Workspace JSON in-repo: `<project>/.claude/claude-peers/workspaces/<id>.json`
-  (schema in DESIGN §6.3: id, name, pinned, cwd, scopeSecret, scopeName,
-  displayMode, sessions[]).
-- [ ] Discovery = list that one dir. Ensure a `.gitignore` in
-  `.claude/claude-peers/` (workspaces hold the scope secret).
+  (schema in DESIGN §6.3: id, name, pinned, cwd, **`groupId`** (sha256),
+  scopeName, **`scopeKind`** ("ephemeral" | "custom"), displayMode,
+  sessions[]). **No `scopeSecret` is ever persisted** (DESIGN §6.3/§6.8): only
+  `groupId` for display/identification. On restore, ephemeral scopes mint a
+  fresh secret; custom scopes are re-supplied via the launch arg (optional
+  `safeStorage` cache, never the repo).
+- [ ] Discovery = list that one dir. Maintain a `.gitignore` in
+  `.claude/claude-peers/` — **not because the files hold a secret** (they do
+  not), but because session ids + layout are machine/project-local noise. A
+  leaked or cloud-synced workspace cannot join the group (no secret inside).
 - [ ] **Auto-save** the live workspace continuously (unique id, auto name);
   **explicit Save** sets a user name + `pinned`. Optional prune of unpinned
   closed auto-saves > N days.
@@ -218,10 +232,15 @@ See DESIGN §6 for the full rationale and verified Claude facts.
   `--resume <prevId> --fork-session [--session-id <newUuid>]`.
 - [ ] Resume passes **only** `--resume`/`--fork-session` (agent/model
   auto-restored); keep stored `args` for display + expired fallback.
-- [ ] New-id capture: if `--session-id`-on-fork is honoured (verify, DESIGN §14.2)
-  → mint & know it; else **discover** post-spawn via `peer-id-<cwdKey>-<newId>.txt`
-  (or newest `~/.claude/projects/<project>/*.jsonl`). **Persist the new id.**
-- [ ] During restore, spawn sessions **sequentially** to capture each new id.
+- [ ] New-id capture: **deterministic by default** — `--session-id`-on-fork IS
+  honoured (verified DESIGN §14.2, CC 2.1.158), so **mint & know the new id up
+  front** and **persist it**. No post-spawn discovery needed in the common case.
+  - *Forward-compat fallback (implement only if a future CC regresses):* discover
+    post-spawn via `peer-id-<cwdKey>-<newId>.txt` (or newest
+    `~/.claude/projects/<project>/*.jsonl`), with a one-time capability probe to
+    detect the regression.
+- [ ] During restore, spawn sessions **in parallel** (ids known up front). The
+  sequential-per-cwd path belongs to the discovery fallback only.
 
 **Restore flows (DESIGN §6.6)**
 - [ ] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
