@@ -6,6 +6,7 @@ import { SessionService } from './session-service'
 import { registerIpc } from './ipc'
 import { parseCliContext } from './cli-context'
 import { computeScope, buildScopeEnv } from './scope'
+import { resolveLaunchConfig } from './launch-config'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -20,6 +21,9 @@ let config: AppConfig = { ...loadConfig(), projectDir: cliContext.projectDir }
 const scope = computeScope(cliContext.projectDir, cliContext.scopeId)
 const scopeEnv = buildScopeEnv(scope)
 
+// Resolve the base command each session runs (project-local > global > default).
+const launchConfig = resolveLaunchConfig(cliContext.projectDir)
+
 const getConfig = (): AppConfig => config
 const setConfig = (patch: Partial<AppConfig>): AppConfig => {
   config = { ...config, ...patch }
@@ -29,7 +33,7 @@ const setConfig = (patch: Partial<AppConfig>): AppConfig => {
   return config
 }
 
-const service = new SessionService(getConfig, scopeEnv.env)
+const service = new SessionService(getConfig, scopeEnv.env, launchConfig.launchCommand)
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({

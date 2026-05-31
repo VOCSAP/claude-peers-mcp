@@ -132,33 +132,36 @@ desktop/
 
 ## 5. Launch-command config (`launch-config.ts`)
 
-- [ ] Resolve `launchCommand` first-wins: `<project>/.claude/claude-peers/config.json`
+- [x] Resolve `launchCommand` first-wins: `<project>/.claude/claude-peers/config.json`
   → global (`%APPDATA%\claude-peers-desk\config.json` / XDG equiv) → default
   `claude --dangerously-load-development-channels server:claude-peers`.
-- [ ] Schema: `{ launchCommand: string, presets?: {label,args,prompt?}[] }`.
-- [ ] Create the local file on demand (UI action), never silently.
-- [ ] Global config editable from the Settings dialog.
+- [x] Schema: `{ launchCommand: string, presets?: {label,args,prompt?}[] }`.
+- [~] Create the local file on demand (UI action), never silently.
+  (`createLocalConfig` exists; the UI action lands in M5.)
+- [~] Global config editable from the Settings dialog.
+  (`saveGlobalConfig` exists; the Settings dialog lands in M5.)
 
 ## 6. PTY + sessions (`pty-manager.ts`, `session-service.ts`)
 
-- [ ] **Command execution (default = no interactive shell):** run the configured
+- [x] **Command execution (default = no interactive shell):** run the configured
   command **directly**, or via a **login** shell `-l -c` (Unix) /
-  `powershell -NoLogo -Command` (Windows). **Avoid `-i`** by default (rc noise —
-  oh-my-zsh/NVM/conda/pyenv pollutes the PTY, DESIGN §7).
-- [ ] **Opt-in interactive mode** (`-i`) for shell-alias users: emit a unique
-  **start marker** before the command and **strip all PTY output before it**.
-- [ ] **New session:** argv = `<cmd tokens> --session-id <uuid> [extraArgs]`,
+  `powershell -NoLogo -NoProfile -Command` (Windows). **Avoid `-i`** by default
+  (rc noise -- oh-my-zsh/NVM/conda/pyenv pollutes the PTY, DESIGN §7).
+- [x] **Opt-in interactive mode** (`-i`) for shell-alias users: emit a unique
+  **start marker** before the command and **strip all PTY output before it**
+  (with a buffer cap so output is flushed if the marker never appears).
+- [x] **New session:** argv = `<cmd tokens> --session-id <uuid> [extraArgs]`,
   `cwd = session.cwd`, env/secret-file from §4.
-- [ ] **Resume/restore (fork-on-resume):** `--resume <prevId> --fork-session
-  [--session-id <newUuid>]`; do **not** re-pass `--agent`/`--model` (auto-restored);
+- [x] **Resume/restore (fork-on-resume):** `--resume <prevId> --fork-session
+  --session-id <newUuid>`; do **not** re-pass `--agent`/`--model` (auto-restored);
   mint & persist the new id up front (deterministic, verified §14.2; discovery
   fallback only on CC regression -- see §11).
-- [ ] Persist `{ uuid, name, cwd, args, createdAt }` per session.
-- [ ] Runtime state per session: `starting | running | exited`, pid, peerId,
-  thinking (bool).
-- [ ] Events to renderer: `pty:data`, `pty:exit`, `sessions:changed`,
-  `session:thinking`.
-- [ ] Resize via fit addon → `pty:resize`.
+- [x] Persist `{ uuid (sessionId), name, cwd, args, createdAt }` per session.
+- [~] Runtime state per session: `starting | running | exited`, pid, peerId,
+  thinking (bool). (status/pid/peerId done; `thinking` lands in M4.)
+- [~] Events to renderer: `pty:data`, `pty:exit`, `sessions:changed`,
+  `session:thinking`. (`session:thinking` lands in M4.)
+- [x] Resize via fit addon → `pty:resize`.
 
 ## 7. peer_id (`peer-state.ts`)
 

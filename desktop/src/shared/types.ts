@@ -8,8 +8,12 @@ export interface SessionDef {
   name: string
   /** Working directory the peer terminal is launched in. */
   cwd: string
-  /** Command launched inside the PTY (defaults to the app's peerCommand). */
+  /** Base command override; empty => the resolved launchCommand (launch-config). */
   command: string
+  /** Extra launch args appended after --session-id on a fresh launch. */
+  args: string
+  /** Current claude --session-id. Changes on every fork-resume. Empty until first spawn. */
+  sessionId: string
   createdAt: number
 }
 
@@ -29,6 +33,8 @@ export interface AppConfig {
   peerCommand: string
   /** Shell used to wrap the command so login/interactive aliases resolve. Empty = auto. */
   shell: string
+  /** Load the interactive shell / profile (alias resolution) with start-marker stripping. */
+  interactiveShell: boolean
   /** Number of columns in the tile grid. */
   columns: number
   theme: 'dark' | 'light'
@@ -40,7 +46,10 @@ export interface AppConfig {
 export interface CreateSessionInput {
   name?: string
   cwd?: string
+  /** Base command override; empty => the resolved launchCommand. */
   command?: string
+  /** Extra launch args (e.g. "--agent reviewer"). */
+  args?: string
 }
 
 // ----- IPC channel payloads -----

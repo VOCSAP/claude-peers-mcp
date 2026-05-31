@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events'
-import { platform } from 'node:os'
 import * as pty from 'node-pty'
-import type { AppConfig } from '@shared/types'
+import { buildShellInvocation, type SpawnOpts } from './shell-command'
 
 export interface PtyDataPayload {
   id: string
@@ -12,30 +11,17 @@ export interface PtyExitPayload {
   exitCode: number
 }
 
+/** Give up stripping the interactive start marker after this many buffered bytes. */
+const MARKER_BUFFER_CAP = 65536
+
 interface Spawned {
   proc: pty.IPty
   cols: number
   rows: number
-}
-
-/**
- * Build the (file, args) used to launch the peer command inside a real PTY.
- *
- * The command (e.g. the `claudepeers` alias) only resolves when run through the
- * user's shell with its rc loaded, so we wrap it:
- *   - Unix:    <shell> -l -i -c "<command>"   (login + interactive => aliases load)
- *   - Windows: powershell -NoLogo -Command "<command>"   (profile loads the alias)
- *
- * `config.shell` overrides the default shell when set.
- */
-function buildSpawn(config: AppConfig): { file: string; args: string[] } {
-  const command = config.peerCommand.trim() || 'claudepeers'
-  if (platform() === 'win32') {
-    const file = config.shell || 'powershell.exe'
-    return { file, args: ['-NoLogo', '-Command', command] }
-  }
-  const shell = config.shell || process.env.SHELL || '/bin/bash'
-  return { file: shell, args: ['-l', '-i', '-c', command] }
+  /** Start marker to strip (interactive mode), or null. */
+  marker: string | null
+  markerSeen: boolean
+  preBuf: string
 }
 
 /** Owns every live PTY. One instance for the whole app. */
@@ -45,11 +31,12 @@ export class PtyManager extends EventEmitter {
   /**
    * Spawn a peer terminal for `id`. Replaces any existing PTY for that id.
    * `extraEnv` (the scope env from scope.ts) is merged last so its forced-group
-   * vars win over anything inherited from the parent process.
+   * vars win over anything inherited from the parent process. In interactive
+   * mode the rc/profile noise before the start marker is stripped from output.
    */
-  spawn(id: string, cwd: string, config: AppConfig, extraEnv?: Record<string, string>): number {
+  spawn(id: string, cwd: string, opts: SpawnOpts, extraEnv?: Record<string, string>): number {
     this.kill(id)
-    const { file, args } = buildSpawn(config)
+    const { file, args, marker } = buildShellInvocation(opts)
 
     const proc = pty.spawn(file, args, {
       name: 'xterm-256color',
@@ -65,15 +52,43 @@ export class PtyManager extends EventEmitter {
       }
     })
 
-    this.procs.set(id, { proc, cols: 80, rows: 24 })
+    const state: Spawned = { proc, cols: 80, rows: 24, marker, markerSeen: false, preBuf: '' }
+    this.procs.set(id, state)
 
-    proc.onData((data) => this.emit('data', { id, data } satisfies PtyDataPayload))
+    proc.onData((data) => this.handleData(id, data))
     proc.onExit(({ exitCode }) => {
       this.procs.delete(id)
       this.emit('exit', { id, exitCode } satisfies PtyExitPayload)
     })
 
     return proc.pid
+  }
+
+  /** Emit PTY output, stripping everything up to and including the start marker. */
+  private handleData(id: string, data: string): void {
+    const s = this.procs.get(id)
+    if (!s) return
+    if (!s.marker || s.markerSeen) {
+      this.emit('data', { id, data } satisfies PtyDataPayload)
+      return
+    }
+    s.preBuf += data
+    const idx = s.preBuf.indexOf(s.marker)
+    if (idx !== -1) {
+      // Drop up to the end of the marker's line, emit whatever follows.
+      const afterMarker = idx + s.marker.length
+      const nl = s.preBuf.indexOf('\n', afterMarker)
+      const rest = nl !== -1 ? s.preBuf.slice(nl + 1) : ''
+      s.markerSeen = true
+      s.preBuf = ''
+      if (rest) this.emit('data', { id, data: rest } satisfies PtyDataPayload)
+    } else if (s.preBuf.length > MARKER_BUFFER_CAP) {
+      // Marker never showed up; stop swallowing and flush what we have.
+      const buf = s.preBuf
+      s.markerSeen = true
+      s.preBuf = ''
+      this.emit('data', { id, data: buf } satisfies PtyDataPayload)
+    }
   }
 
   write(id: string, data: string): void {

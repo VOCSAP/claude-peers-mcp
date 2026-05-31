@@ -10,6 +10,7 @@ const DEFAULT_CONFIG: AppConfig = {
   // shell (see pty-manager) so the alias resolves.
   peerCommand: 'claudepeers',
   shell: '',
+  interactiveShell: false,
   columns: 2,
   theme: 'dark',
   fontSize: 13,

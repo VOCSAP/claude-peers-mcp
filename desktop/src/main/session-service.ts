@@ -10,6 +10,7 @@ import type {
 import { PtyManager } from './pty-manager'
 import { resolvePeerId } from './peer-state'
 import { loadSessions, saveSessions } from './store'
+import { buildSessionCommandLine, type SpawnMode } from './session-command'
 
 interface RuntimeState {
   status: SessionStatus
@@ -33,10 +34,13 @@ export class SessionService extends EventEmitter {
   constructor(
     private getConfig: () => AppConfig,
     /** Forced-group scope env merged into every spawned PTY (see scope.ts). */
-    private scopeEnv: Record<string, string> = {}
+    private scopeEnv: Record<string, string> = {},
+    /** Resolved base command (launch-config) used when a session has no override. */
+    private launchCommand = ''
   ) {
     super()
-    this.defs = loadSessions()
+    // Normalize older persisted sessions that predate args/sessionId.
+    this.defs = loadSessions().map((d) => ({ command: '', args: '', sessionId: '', ...d }))
     for (const d of this.defs) {
       this.runtime.set(d.id, { status: 'exited', exitCode: null, peerId: null })
     }
@@ -56,7 +60,8 @@ export class SessionService extends EventEmitter {
   /** Spawn persisted sessions (if enabled) and start the peer_id poll. */
   start(): void {
     if (this.getConfig().restoreSessions) {
-      for (const d of this.defs) this.startPty(d)
+      // Restore = fork-on-resume from each session's last id.
+      for (const d of this.defs) this.startPty(d, 'resume')
     }
     this.pollTimer = setInterval(() => this.pollPeerIds(), PEER_POLL_MS)
   }
@@ -77,13 +82,15 @@ export class SessionService extends EventEmitter {
       id: randomUUID(),
       name: input.name?.trim() || this.defaultName(),
       cwd: input.cwd?.trim() || cfg.projectDir,
-      command: input.command?.trim() || cfg.peerCommand,
+      // Empty => the resolved launchCommand; a non-empty value overrides it.
+      command: input.command?.trim() || '',
+      args: input.args?.trim() || '',
+      sessionId: '',
       createdAt: Date.now()
     }
     this.defs.push(def)
     this.runtime.set(def.id, { status: 'starting', exitCode: null, peerId: null })
-    this.persist()
-    this.startPty(def)
+    this.startPty(def, 'fresh')
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -104,10 +111,11 @@ export class SessionService extends EventEmitter {
     this.broadcast()
   }
 
+  /** Fork-resume a session: forks its last claude session id into a fresh one. */
   restart(id: string): SessionRuntime {
     const def = this.defs.find((d) => d.id === id)
     if (!def) throw new Error(`unknown session ${id}`)
-    this.startPty(def)
+    this.startPty(def, 'resume')
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -122,15 +130,45 @@ export class SessionService extends EventEmitter {
 
   // ----- internals -----
 
-  private startPty(def: SessionDef): void {
+  private startPty(def: SessionDef, mode: SpawnMode): void {
     const cfg = this.getConfig()
+    const base = def.command.trim() || this.launchCommand
+
+    let command: string
+    if (mode === 'resume' && def.sessionId) {
+      // Fork the previous claude session into a fresh id (collision avoidance).
+      const prev = def.sessionId
+      def.sessionId = randomUUID()
+      command = buildSessionCommandLine({
+        baseCommand: base,
+        sessionId: def.sessionId,
+        prevSessionId: prev,
+        mode: 'resume'
+      })
+    } else {
+      // Fresh launch (or a session that has never spawned yet).
+      if (!def.sessionId) def.sessionId = randomUUID()
+      command = buildSessionCommandLine({
+        baseCommand: base,
+        sessionId: def.sessionId,
+        args: def.args,
+        mode: 'fresh'
+      })
+    }
+
     const r = this.runtime.get(def.id)
     if (r) {
       r.status = 'running'
       r.exitCode = null
     }
-    // Honour a per-session command override by temporarily swapping it in.
-    this.pty.spawn(def.id, def.cwd, { ...cfg, peerCommand: def.command }, this.scopeEnv)
+    // sessionId may have just changed (fork-resume) -> persist before/after spawn.
+    this.persist()
+    this.pty.spawn(
+      def.id,
+      def.cwd,
+      { command, shell: cfg.shell, interactive: cfg.interactiveShell },
+      this.scopeEnv
+    )
   }
 
   private toRuntime(def: SessionDef): SessionRuntime {
