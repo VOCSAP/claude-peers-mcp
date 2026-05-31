@@ -6,6 +6,9 @@
   "author": "vocsap",
   "license": "MIT",
   "private": true,
+  "bin": {
+    "claude-peers-desk": "./bin/launch.js"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite preview",

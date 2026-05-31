@@ -4,9 +4,21 @@ import type { AppConfig } from '@shared/types'
 import { loadConfig, saveConfig } from './store'
 import { SessionService } from './session-service'
 import { registerIpc } from './ipc'
+import { parseCliContext } from './cli-context'
+import { computeScope, buildScopeEnv } from './scope'
 
 let mainWindow: BrowserWindow | null = null
-let config: AppConfig = loadConfig()
+
+// Resolve the launch context (invocation cwd + optional custom scope id) and
+// scope new sessions to that project dir. The override stays in-memory so the
+// app-wide config.json is not polluted with one project's directory.
+const cliContext = parseCliContext(process.argv, process.env)
+let config: AppConfig = { ...loadConfig(), projectDir: cliContext.projectDir }
+
+// Compute the isolated forced group every session shares, and the child env
+// that pins them to it. The secret lives only here + in a chmod-600 temp file.
+const scope = computeScope(cliContext.projectDir, cliContext.scopeId)
+const scopeEnv = buildScopeEnv(scope)
 
 const getConfig = (): AppConfig => config
 const setConfig = (patch: Partial<AppConfig>): AppConfig => {
@@ -17,7 +29,7 @@ const setConfig = (patch: Partial<AppConfig>): AppConfig => {
   return config
 }
 
-const service = new SessionService(getConfig)
+const service = new SessionService(getConfig, scopeEnv.env)
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -72,4 +84,7 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => service.stop())
+app.on('before-quit', () => {
+  service.stop()
+  scopeEnv.cleanup()
+})

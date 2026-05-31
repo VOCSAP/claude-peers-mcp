@@ -104,27 +104,31 @@ desktop/
 
 ## 3. CLI launcher (`bin/launch.js`)
 
-- [ ] Resolve **project cwd** = `process.cwd()` at invocation.
-- [ ] Parse optional positional arg = **custom scope id**.
-- [ ] Launch Electron pointing at the built `main` (or dev), passing
+- [x] Resolve **project cwd** = `process.cwd()` at invocation.
+- [x] Parse optional positional arg = **custom scope id**.
+- [x] Launch Electron pointing at the built `main` (or dev), passing
   `projectDir` + `scopeId` via argv/env to the main process.
 - [ ] Works after `npm link` / `npm i -g .` from `desktop/`. Document in README.
-- [ ] Cross-platform shebang + resolve electron binary from the local install.
+  (`bin` field added; manual install + README doc pending.)
+- [x] Cross-platform shebang + resolve electron binary from the local install.
 
 ## 4. Scope / group (`scope.ts`)
 
-- [ ] `scopeId` arg present → `secret = scopeId`, `scopeKind = "custom"`; else
+- [x] `scopeId` arg present → `secret = scopeId`, `scopeKind = "custom"`; else
   `secret = randomUUID()`, `scopeKind = "ephemeral"`.
-- [ ] Compute display root from `host` + `basename(projectDir)` (exact
+- [x] Compute display root from `host` + `basename(projectDir)` (exact
   `deriveDefaultId` base algorithm, no suffix — see DESIGN §4).
-- [ ] Provide the secret to each spawned session via **env or file** transport
+- [x] Provide the secret to each spawned session via **env or file** transport
   (`CLAUDE_PEERS_FORCE_GROUP[_FILE]` + `CLAUDE_PEERS_FORCE_GROUP_NAME`) plus
   `CLAUDE_PEERS_STATUS_LINE_CACHE=1`, merged over `process.env` (child only).
-- [ ] Persist **only `groupId`** (sha256) in the workspace, never the secret
+  Prefers the chmod-600 file transport, falls back to the env var on FS failure.
+- [~] Persist **only `groupId`** (sha256) in the workspace, never the secret
   (DESIGN §6.8). On restore: ephemeral → mint a fresh scope; custom → re-supplied
-  via arg (optional `safeStorage` cache).
-- [ ] Scope computed **once**, shared by all sessions; fixed only once the first
-  session spawns (adoptable at restore while empty).
+  via arg (optional `safeStorage` cache). (Secret is never persisted today;
+  workspace persistence + restore lands in M6.)
+- [~] Scope computed **once**, shared by all sessions; fixed only once the first
+  session spawns (adoptable at restore while empty). (Computed once at launch;
+  restore-time adoption lands in M6.)
 
 ## 5. Launch-command config (`launch-config.ts`)
 

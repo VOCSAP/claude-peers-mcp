@@ -30,7 +30,11 @@ export class SessionService extends EventEmitter {
   private pty = new PtyManager()
   private pollTimer: NodeJS.Timeout | null = null
 
-  constructor(private getConfig: () => AppConfig) {
+  constructor(
+    private getConfig: () => AppConfig,
+    /** Forced-group scope env merged into every spawned PTY (see scope.ts). */
+    private scopeEnv: Record<string, string> = {}
+  ) {
     super()
     this.defs = loadSessions()
     for (const d of this.defs) {
@@ -126,7 +130,7 @@ export class SessionService extends EventEmitter {
       r.exitCode = null
     }
     // Honour a per-session command override by temporarily swapping it in.
-    this.pty.spawn(def.id, def.cwd, { ...cfg, peerCommand: def.command })
+    this.pty.spawn(def.id, def.cwd, { ...cfg, peerCommand: def.command }, this.scopeEnv)
   }
 
   private toRuntime(def: SessionDef): SessionRuntime {

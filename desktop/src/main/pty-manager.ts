@@ -42,8 +42,12 @@ function buildSpawn(config: AppConfig): { file: string; args: string[] } {
 export class PtyManager extends EventEmitter {
   private procs = new Map<string, Spawned>()
 
-  /** Spawn a peer terminal for `id`. Replaces any existing PTY for that id. */
-  spawn(id: string, cwd: string, config: AppConfig): number {
+  /**
+   * Spawn a peer terminal for `id`. Replaces any existing PTY for that id.
+   * `extraEnv` (the scope env from scope.ts) is merged last so its forced-group
+   * vars win over anything inherited from the parent process.
+   */
+  spawn(id: string, cwd: string, config: AppConfig, extraEnv?: Record<string, string>): number {
     this.kill(id)
     const { file, args } = buildSpawn(config)
 
@@ -56,7 +60,8 @@ export class PtyManager extends EventEmitter {
         ...process.env,
         // Populate the status-line peer_id cache so the Deck can show peer_id.
         CLAUDE_PEERS_STATUS_LINE_CACHE: '1',
-        TERM: 'xterm-256color'
+        TERM: 'xterm-256color',
+        ...extraEnv
       }
     })
 
