@@ -117,16 +117,119 @@ unrelated peers; and two app launches are isolated unless explicitly shared.
 - **Placeholder before peer_id resolves (~1-2 s):** show `Session <uuid[:8]>`,
   then switch to the peer_id once the file appears.
 
-## 6. Persist / restore (decided, verified)
+## 6. Persistence & Restore (decided)
 
-- Persist per session: `{ uuid, cwd, name, args }` + the workspace layout + app
-  config.
-- **Restore** = relaunch `<launchCommand> --resume <uuid> [original args]`
-  (verified `--resume`/`-r` works in interactive TUI). This **continues the same
-  session** (same id, same history) and **re-applies original invocation
-  constraints** (e.g. `--agent`).
-- `--fork-session` exists if we ever want to clone instead of continue (not the
-  default).
+> The session UUID is **never typed by the user**. `--resume`/`--fork-session`
+> are the app's **internal** per-tile mechanism, replayed from stored state.
+> The user interacts only through the UI (a **File ▸ Save / Restore** menu and
+> auto-save).
+
+### 6.1 Verified Claude Code facts that shape this design
+
+- `--resume <id>` on a **missing** id → **errors** ("No conversation found"),
+  non-zero exit (does **not** start a new session).
+- **Concurrent resume corrupts**: resuming the same id in two terminals
+  interleaves both into one transcript — **no lock, no warning** (documented).
+  ⇒ collision avoidance is **mandatory** and is ours to implement.
+- `--fork-session` (requires `--resume`/`--continue`) **copies the full history
+  into a NEW id and leaves the original untouched**.
+- **Agent and model are persisted** in the transcript and **auto-restored** on
+  resume ⇒ no need to re-pass `--agent`/`--model` when resuming.
+- Sessions are **scoped to the project directory** (`~/.claude/projects/<project>/<id>.jsonl`)
+  ⇒ each session must be resumed **from its original cwd**.
+- **30-day default retention** (`cleanupPeriodDays`) ⇒ old sessions expire and
+  stop resolving.
+
+### 6.2 Fork-on-every-resume (collision avoidance)
+
+Every resume path — explicit free-form `--resume` in advanced-create **and**
+workspace restore — uses **`--fork-session`**: it forks the stored id into a
+**new** id that the app **persists** for the next cycle (id lineage
+id0→id1→id2…; old ids become dead branches, purged by the 30-day cleanup).
+Because each open mints a fresh id, **two terminals never share an id** — even
+if the user separately resumed the original outside the app. Minor transcript
+proliferation is the accepted cost.
+
+- **New session (not a restore):** `--session-id <uuid>` (nothing to fork from).
+- **Resume/restore:** `--resume <prevId> --fork-session [--session-id <newUuid>]`.
+- **Knowing the new id:** if `--session-id` is honoured on a fork (see §14) we
+  mint and know it up front (deterministic peer-id cache). Otherwise we
+  **discover** it right after spawn via the cache file
+  `peer-id-<cwdKey>-<newId>.txt` (suffix = new id, content = peer_id — both at
+  once) or the newest `.jsonl` in `~/.claude/projects/<project>/`. During a
+  restore, sessions are **spawned sequentially** so each new id is captured
+  before the next.
+- **Resume passes only `--resume`/`--fork-session`** (agent/model auto-restored);
+  stored `args` are kept for display and for the expired-session fallback (§6.6).
+
+### 6.3 Workspace model (the persisted unit)
+
+A **workspace** = a restorable snapshot:
+```jsonc
+{
+  "id": "wsp_…", "name": "Team feature-X", "pinned": false,
+  "cwd": "/abs/project", "scopeSecret": "…", "scopeName": "olivier-pc-foo",
+  "displayMode": { "kind": "grid", "x": 2, "y": 2 },
+  "createdAt": 0, "updatedAt": 0,
+  "sessions": [
+    { "claudeSessionId": "…", "name": "reviewer", "cwd": "/abs/project",
+      "args": ["--agent","reviewer"], "position": 0 }
+  ]
+}
+```
+
+### 6.4 Storage & discovery (in-repo)
+
+- Stored **in the project**: `<project>/.claude/claude-peers/workspaces/<id>.json`.
+  Discovery = **list one directory** (no global scan). Consistent with the
+  launch-command config location.
+- The dir is **git-ignored by default** (the workspace holds `scopeSecret`); the
+  app maintains a `.gitignore`. Community sharing of sanitized "team templates"
+  (no secret, no session ids) is a separate Phase 2 export.
+
+### 6.5 Locking (mandatory, per §6.1)
+
+- An app that owns a workspace holds a **lock**: sidecar `<id>.lock` with
+  `{ pid, host, startedAt, heartbeat }`.
+- Restore refuses a workspace whose lock is held by a **live** owner (pid alive
+  same-host, or fresh heartbeat cross-host) → "already open in another
+  instance". A **stale** lock (dead pid / old heartbeat) is reclaimed. (Same
+  liveness logic as the broker.)
+- Belt-and-suspenders: an **open-session-id registry** prevents resuming the
+  same id from two workspaces.
+
+### 6.6 Scope adoption & restore flows
+
+- **Scope is fixed only once the first session spawns.** It is a value the main
+  process holds and injects per spawn — so a freshly-opened (empty) app can
+  **adopt** a workspace's saved scope at restore with **no self-relaunch**.
+- **Launch + restore (empty app):** picker shows **New** / **Restore** (list of
+  workspaces for the current cwd, with name, updatedAt, session count, lock
+  state). Restore → adopt saved scope, set display mode, spawn sessions
+  (sequentially, fork-on-resume).
+- **Restore while sessions are running:** warn "current sessions will be
+  closed", offer **Save first**. On confirm → **graceful close** of each session
+  (write `"/exit\n"`; if still alive after ~1.5 s, send `Esc`/`Ctrl+C`, retry
+  `"/exit\n"`; last resort SIGTERM — peer side cleaned by `server.ts`) → adopt
+  new scope → reopen. (Alternative "open in a new window" = relaunch a second
+  app process — possible later.)
+- **Expired session at restore:** when `--resume` fails ("No conversation
+  found"), the tile shows a **React overlay** ("session expired — [Start a new
+  session]") that spawns a fresh `--session-id <new>` with the stored `args`
+  (re-applying `--agent`). A global "start all" is offered. (UI overlay, not text
+  written into the terminal buffer.)
+
+### 6.7 Auto-save, naming, explorable list
+
+- **Continuous auto-save** of the live workspace (unique id, scope, cwd) with an
+  auto name (e.g. `auto — olivier-pc-foo — 14:32`).
+- **Explicit Save** lets the user **name** it; the same record then persists
+  under that name and is marked `pinned` (kept, not pruned).
+- The **Restore picker lists all** workspaces for the cwd (name, date, session
+  count, lock state) — answers "which is the latest?" when several apps ran on
+  the same cwd.
+- Optional pruning of **unpinned**, closed auto-saves older than N days
+  (aligned with Claude's 30-day retention).
 
 ## 7. Launch-command config (decided)
 
@@ -259,6 +362,11 @@ these specs. Notable changes:
 
 1. `--session-id <uuid>` ⇒ `CLAUDE_CODE_SESSION_ID == uuid` reaches the MCP
    server (peer-id determinism). Fallback documented (§5).
-2. `claude "<prompt>"` (positional) starts an **interactive** session (not
+2. **`--session-id <new>` combined with `--resume <old> --fork-session`** — is
+   the new id honoured? Determines deterministic vs discovery path (§6.2).
+   *Undocumented; must be tested.* Discovery fallback works either way.
+3. `--agent`/`--model` are auto-restored on resume (documented) — confirm the
+   resumed tiles keep their agent/model without re-passing the flags.
+4. `claude "<prompt>"` (positional) starts an **interactive** session (not
    `-p`/print) — for the onboarding seed prompt (§12).
-3. node-pty rebuild for Electron on each target OS (toolchain present).
+5. node-pty rebuild for Electron on each target OS (toolchain present).

@@ -56,10 +56,13 @@ desktop/
       launch-config.ts       # resolve launchCommand: local → global → default
       agent-presets.ts       # read presets from launch-config; scan .claude/agents
       pty-manager.ts         # node-pty spawn/kill, OS-aware command wrapping
-      session-service.ts     # session list, runtime state, --session-id, resume
-      peer-state.ts          # deterministic peer-id from cache file (by uuid)
+      session-service.ts     # session list, runtime state, --session-id, fork-resume
+      peer-state.ts          # peer-id + new-id discovery from cache file
       thinking.ts            # heuristic busy/idle detector over PTY output
-      store.ts               # app UI/state + sessions persistence (userData)
+      workspace-store.ts     # in-repo workspace JSON: save/list/load/auto-save
+      workspace-lock.ts      # <id>.lock acquire/heartbeat/reclaim + open-id registry
+      session-close.ts       # graceful close routine (/exit → Ctrl+C → SIGTERM)
+      store.ts               # app UI/state + global app config (userData)
       ipc.ts                 # IPC handlers + event forwarding
       i18n.ts                # load locale files (app dir + user override)
     preload/
@@ -170,12 +173,47 @@ desktop/
 - [ ] Ship `en.json` + `fr.json`; not bundled (read at runtime / copied as
   resources, user-editable). Expose locale + dict to renderer via IPC/preload.
 
-## 11. Persist / restore (`store.ts`)
+## 11. Persistence & Restore (`workspace-store.ts`, `workspace-lock.ts`)
 
-- [ ] Persist app config, display mode, and session defs `{uuid,name,cwd,args}`.
-- [ ] On launch, if restore enabled: re-spawn each with `--resume <uuid>`.
-- [ ] Tie persistence to the **scope** (per-scope workspace), so a custom-scope
-  relaunch restores the matching set.
+See DESIGN §6 for the full rationale and verified Claude facts.
+
+**Storage & model**
+- [ ] Workspace JSON in-repo: `<project>/.claude/claude-peers/workspaces/<id>.json`
+  (schema in DESIGN §6.3: id, name, pinned, cwd, scopeSecret, scopeName,
+  displayMode, sessions[]).
+- [ ] Discovery = list that one dir. Ensure a `.gitignore` in
+  `.claude/claude-peers/` (workspaces hold the scope secret).
+- [ ] **Auto-save** the live workspace continuously (unique id, auto name);
+  **explicit Save** sets a user name + `pinned`. Optional prune of unpinned
+  closed auto-saves > N days.
+
+**Locking (mandatory)**
+- [ ] On owning a workspace, write sidecar `<id>.lock { pid, host, startedAt,
+  heartbeat }`; refresh heartbeat. Release on close.
+- [ ] Restore refuses a workspace whose lock is held by a live owner (pid alive
+  same-host / fresh heartbeat); reclaim stale locks (mirror broker liveness).
+- [ ] Maintain an **open-session-id registry** to block resuming the same id
+  from two workspaces.
+
+**Fork-on-every-resume (collision avoidance, DESIGN §6.2)**
+- [ ] New session: `--session-id <uuid>`. Resume/restore:
+  `--resume <prevId> --fork-session [--session-id <newUuid>]`.
+- [ ] Resume passes **only** `--resume`/`--fork-session` (agent/model
+  auto-restored); keep stored `args` for display + expired fallback.
+- [ ] New-id capture: if `--session-id`-on-fork is honoured (verify, DESIGN §14.2)
+  → mint & know it; else **discover** post-spawn via `peer-id-<cwdKey>-<newId>.txt`
+  (or newest `~/.claude/projects/<project>/*.jsonl`). **Persist the new id.**
+- [ ] During restore, spawn sessions **sequentially** to capture each new id.
+
+**Restore flows (DESIGN §6.6)**
+- [ ] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
+  count, lock state). Empty app **adopts** the saved scope (no self-relaunch).
+- [ ] Restore while running: warn + offer Save → **graceful close** routine
+  (`/exit\n` → `Esc`/`Ctrl+C` → SIGTERM) → adopt new scope → reopen.
+- [ ] Expired session: **React overlay** on the tile ("session expired — [Start
+  new]") spawning `--session-id <new>` + stored `args`; plus a global "start
+  all".
+- [ ] **File menu**: New / Save / Save As (name) / Restore.
 
 ## 12. Packaging
 
