@@ -15,6 +15,34 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   return () => ipcRenderer.removeListener(channel, listener)
 }
 
+/**
+ * Multiplex a high-cardinality channel: a single ipcRenderer.on fans out to a
+ * Set of subscriber callbacks. Keeps the ipcRenderer listener count at one per
+ * channel regardless of how many tiles subscribe (avoids MaxListenersExceeded).
+ */
+function multiplex<T>(channel: string): (cb: (payload: T) => void) => () => void {
+  const subscribers = new Set<(payload: T) => void>()
+  ipcRenderer.on(channel, (_e, payload: T) => {
+    for (const cb of subscribers) {
+      try {
+        cb(payload)
+      } catch (err) {
+        // One bad subscriber must not break dispatch to the others.
+        console.error(`[preload] ${channel} subscriber threw:`, err)
+      }
+    }
+  })
+  return (cb) => {
+    subscribers.add(cb)
+    return () => {
+      subscribers.delete(cb)
+    }
+  }
+}
+
+const onPtyDataMux = multiplex<PtyDataEvent>('pty:data')
+const onPtyExitMux = multiplex<PtyExitEvent>('pty:exit')
+
 const api: DeckApi = {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   createSession: (input: CreateSessionInput) => ipcRenderer.invoke('sessions:create', input),
@@ -30,8 +58,8 @@ const api: DeckApi = {
   setConfig: (patch: Partial<AppConfig>) => ipcRenderer.invoke('config:set', patch),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDirectory'),
 
-  onPtyData: (cb: (e: PtyDataEvent) => void) => subscribe('pty:data', cb),
-  onPtyExit: (cb: (e: PtyExitEvent) => void) => subscribe('pty:exit', cb),
+  onPtyData: (cb: (e: PtyDataEvent) => void) => onPtyDataMux(cb),
+  onPtyExit: (cb: (e: PtyExitEvent) => void) => onPtyExitMux(cb),
   onSessionsChanged: (cb: (sessions: SessionRuntime[]) => void) =>
     subscribe('sessions:changed', cb),
   onSessionThinking: (cb: (e: SessionThinkingEvent) => void) =>
