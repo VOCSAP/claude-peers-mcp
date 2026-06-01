@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type { AppConfig, CreateSessionInput, I18nPayload, LaunchConfig } from '@shared/types'
 import type { SessionService } from './session-service'
+import type { WorkspaceService } from './workspace-service'
 import { listAgents } from './agents'
 import { resolveLaunchConfig, saveGlobalConfig } from './launch-config'
 import { loadDict, resolveLocale } from './i18n'
@@ -22,12 +23,19 @@ function buildI18n(config: AppConfig): I18nPayload {
 
 interface IpcDeps {
   service: SessionService
+  workspaces: WorkspaceService
   getConfig: () => AppConfig
   setConfig: (patch: Partial<AppConfig>) => AppConfig
   getWindow: () => BrowserWindow | null
 }
 
-export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDeps): void {
+export function registerIpc({
+  service,
+  workspaces,
+  getConfig,
+  setConfig,
+  getWindow
+}: IpcDeps): void {
   // ----- sessions -----
   ipcMain.handle('sessions:list', () => service.list())
   ipcMain.handle('sessions:create', (_e, input: CreateSessionInput) => service.create(input ?? {}))
@@ -58,6 +66,15 @@ export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDep
 
   // ----- i18n -----
   ipcMain.handle('i18n:get', () => buildI18n(getConfig()))
+
+  // ----- workspaces (persistence / restore) -----
+  ipcMain.handle('workspace:list', () => workspaces.listForCwd())
+  ipcMain.handle('workspace:save', (_e, name?: string) =>
+    name && name.trim() ? workspaces.saveNamed(name) : workspaces.saveAuto()
+  )
+  ipcMain.handle('workspace:restore', (_e, id: string) => workspaces.restore(id))
+  ipcMain.handle('workspace:delete', (_e, id: string) => workspaces.deleteWs(id))
+  ipcMain.handle('workspace:current', () => workspaces.currentWorkspaceId)
 
   // ----- create-menu data -----
   ipcMain.handle('agents:list', () => listAgents(getConfig().projectDir))

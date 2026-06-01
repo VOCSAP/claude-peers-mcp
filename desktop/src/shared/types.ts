@@ -31,6 +31,26 @@ export interface SessionRuntime extends SessionDef {
   peerId: string | null
   /** Heuristic busy/idle state (placeholder detector, see thinking.ts). */
   thinking: boolean
+  /**
+   * Restore-time flag: the persisted claude session id has no transcript on disk
+   * (expired / pruned), so it was not resumed. The tile shows a "start new"
+   * overlay instead of a dead terminal. Always false for live/fresh sessions.
+   */
+  expired: boolean
+}
+
+/** Lightweight workspace row for the restore picker (no sessions payload). */
+export interface WorkspaceSummary {
+  id: string
+  name: string
+  pinned: boolean
+  scopeName: string
+  sessionCount: number
+  updatedAt: number
+  /** True if another live owner currently holds this workspace's lock. */
+  locked: boolean
+  /** True if this is the workspace the running app currently owns. */
+  current: boolean
 }
 
 export interface AppConfig {
@@ -131,6 +151,13 @@ export interface DeckApi {
 
   // i18n
   getI18n(): Promise<I18nPayload>
+
+  // workspaces (persistence / restore)
+  listWorkspaces(): Promise<WorkspaceSummary[]>
+  saveWorkspace(name?: string): Promise<WorkspaceSummary>
+  restoreWorkspace(id: string): Promise<void>
+  deleteWorkspace(id: string): Promise<void>
+  currentWorkspace(): Promise<string | null>
 
   // create-menu data
   listAgents(): Promise<string[]>

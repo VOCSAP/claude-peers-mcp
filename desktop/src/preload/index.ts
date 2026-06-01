@@ -63,6 +63,12 @@ const api: DeckApi = {
 
   getI18n: () => ipcRenderer.invoke('i18n:get'),
 
+  listWorkspaces: () => ipcRenderer.invoke('workspace:list'),
+  saveWorkspace: (name?: string) => ipcRenderer.invoke('workspace:save', name),
+  restoreWorkspace: (id: string) => ipcRenderer.invoke('workspace:restore', id),
+  deleteWorkspace: (id: string) => ipcRenderer.invoke('workspace:delete', id),
+  currentWorkspace: () => ipcRenderer.invoke('workspace:current'),
+
   listAgents: () => ipcRenderer.invoke('agents:list'),
   getLaunchConfig: () => ipcRenderer.invoke('launch:get'),
   saveLaunchConfig: (cfg: LaunchConfig) => ipcRenderer.invoke('launch:set-global', cfg),

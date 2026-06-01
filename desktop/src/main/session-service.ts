@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import type {
   AppConfig,
   CreateSessionInput,
@@ -12,12 +13,16 @@ import { resolvePeerId } from './peer-state'
 import { loadSessions, saveSessions } from './store'
 import { buildSessionCommandLine, type SpawnMode } from './session-command'
 import { ThinkingDetector, type ThinkingEvent } from './thinking'
+import { OpenIdRegistry } from './open-id-registry'
+import { transcriptExists } from './session-transcript'
 
 interface RuntimeState {
   status: SessionStatus
   exitCode: number | null
   peerId: string | null
   thinking: boolean
+  /** Restore-time: persisted id had no transcript, so it was not resumed. */
+  expired: boolean
 }
 
 const PEER_POLL_MS = 4000
@@ -52,12 +57,21 @@ export class SessionService extends EventEmitter {
   private thinkingDetector = new ThinkingDetector()
   private pollTimer: NodeJS.Timeout | null = null
 
+  /** Live (post-fork) claude session ids open in this process; double-resume guard. */
+  private registry = new OpenIdRegistry()
+
   constructor(
     private getConfig: () => AppConfig,
-    /** Forced-group scope env merged into every spawned PTY (see scope.ts). */
-    private scopeEnv: Record<string, string> = {},
+    /**
+     * Forced-group scope env merged into every spawned PTY (see scope.ts).
+     * A getter (not a snapshot) so the app can ADOPT a different scope at restore
+     * before any session has spawned (DESIGN 6.6).
+     */
+    private getScopeEnv: () => Record<string, string> = () => ({}),
     /** Resolved base command (launch-config) used when a session has no override. */
-    private launchCommand = ''
+    private launchCommand = '',
+    /** Home dir for transcript existence checks (injectable for tests). */
+    private home: string = homedir()
   ) {
     super()
     // Normalize older persisted sessions that predate args/sessionId.
@@ -69,7 +83,13 @@ export class SessionService extends EventEmitter {
       color: d.color || paletteColor(i)
     }))
     for (const d of this.defs) {
-      this.runtime.set(d.id, { status: 'exited', exitCode: null, peerId: null, thinking: false })
+      this.runtime.set(d.id, {
+        status: 'exited',
+        exitCode: null,
+        peerId: null,
+        thinking: false,
+        expired: false
+      })
     }
 
     this.pty.on('data', (e: { id: string; data: string }) => {
@@ -83,6 +103,10 @@ export class SessionService extends EventEmitter {
         r.exitCode = exitCode
         r.thinking = false
       }
+      // The id is no longer live -> free the double-resume guard (a later restart
+      // re-registers the fresh forked id).
+      const def = this.defs.find((d) => d.id === id)
+      if (def?.sessionId) this.registry.release(def.sessionId)
       this.thinkingDetector.clear(id)
       this.emit('exit', { id, exitCode })
       this.broadcast()
@@ -100,8 +124,9 @@ export class SessionService extends EventEmitter {
   /** Spawn persisted sessions (if enabled) and start the peer_id poll. */
   start(): void {
     if (this.getConfig().restoreSessions) {
-      // Restore = fork-on-resume from each session's last id.
-      for (const d of this.defs) this.startPty(d, 'resume')
+      // Restore = fork-on-resume from each session's last id, with the expired
+      // pre-check (skip + flag sessions whose transcript is gone).
+      for (const d of this.defs) this.resumeOrExpire(d)
     }
     this.pollTimer = setInterval(() => this.pollPeerIds(), PEER_POLL_MS)
   }
@@ -115,6 +140,11 @@ export class SessionService extends EventEmitter {
 
   list(): SessionRuntime[] {
     return this.defs.map((d) => this.toRuntime(d))
+  }
+
+  /** True if any session PTY is currently alive (scope is locked once true). */
+  hasLiveSessions(): boolean {
+    return this.defs.some((d) => this.pty.isAlive(d.id))
   }
 
   create(input: CreateSessionInput): SessionRuntime {
@@ -131,19 +161,62 @@ export class SessionService extends EventEmitter {
       createdAt: Date.now()
     }
     this.defs.push(def)
-    this.runtime.set(def.id, { status: 'starting', exitCode: null, peerId: null, thinking: false })
+    this.runtime.set(def.id, {
+      status: 'starting',
+      exitCode: null,
+      peerId: null,
+      thinking: false,
+      expired: false
+    })
     this.startPty(def, 'fresh')
     this.broadcast()
     return this.toRuntime(def)
   }
 
   remove(id: string): void {
+    const def = this.defs.find((d) => d.id === id)
+    if (def?.sessionId) this.registry.release(def.sessionId)
     this.pty.kill(id)
     this.thinkingDetector.clear(id)
     this.defs = this.defs.filter((d) => d.id !== id)
     this.runtime.delete(id)
     this.persist()
     this.broadcast()
+  }
+
+  /** Snapshot the current persisted session defs (for a workspace save). */
+  captureSessions(): SessionDef[] {
+    return this.defs.map((d) => ({ ...d }))
+  }
+
+  /**
+   * Replace the session set with a restored one and spawn them in parallel
+   * (ids known up front, DESIGN 6.2). Each def is resume-forked unless its
+   * transcript is missing (expired -> flagged, not spawned) or its id is already
+   * open in this process (double-resume guard).
+   */
+  restoreFrom(defs: SessionDef[]): SessionRuntime[] {
+    // Tear down whatever is currently live.
+    this.pty.killAll()
+    this.thinkingDetector.stop()
+    for (const d of this.defs) {
+      if (d.sessionId) this.registry.release(d.sessionId)
+    }
+    this.runtime.clear()
+    this.defs = defs.map((d, i) => ({ ...d, color: d.color || paletteColor(i) }))
+    for (const d of this.defs) {
+      this.runtime.set(d.id, {
+        status: 'exited',
+        exitCode: null,
+        peerId: null,
+        thinking: false,
+        expired: false
+      })
+    }
+    this.persist()
+    for (const d of this.defs) this.resumeOrExpire(d)
+    this.broadcast()
+    return this.list()
   }
 
   rename(id: string, name: string): void {
@@ -162,11 +235,21 @@ export class SessionService extends EventEmitter {
     this.broadcast()
   }
 
-  /** Fork-resume a session: forks its last claude session id into a fresh one. */
+  /**
+   * Restart a session. A normal session fork-resumes its last id; an EXPIRED one
+   * (no transcript) starts fresh with the stored args (the "start new" action of
+   * the expired overlay) by clearing its dead id first.
+   */
   restart(id: string): SessionRuntime {
     const def = this.defs.find((d) => d.id === id)
     if (!def) throw new Error(`unknown session ${id}`)
-    this.startPty(def, 'resume')
+    const r = this.runtime.get(id)
+    if (r?.expired) {
+      def.sessionId = '' // drop the dead lineage -> startPty mints a fresh id
+      this.startPty(def, 'fresh')
+    } else {
+      this.startPty(def, 'resume')
+    }
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -180,6 +263,35 @@ export class SessionService extends EventEmitter {
   }
 
   // ----- internals -----
+
+  /**
+   * Resume a persisted session, or flag it expired without spawning. Skips a def
+   * whose id is already open in this process (double-resume guard). A def that
+   * never spawned (no sessionId) starts fresh.
+   */
+  private resumeOrExpire(def: SessionDef): void {
+    const r = this.runtime.get(def.id)
+    if (!def.sessionId) {
+      this.startPty(def, 'fresh')
+      return
+    }
+    if (this.registry.has(def.sessionId)) {
+      // Same lineage already live elsewhere in this process -> do not resume.
+      return
+    }
+    if (!transcriptExists(this.home, def.cwd, def.sessionId)) {
+      // Transcript gone (expired / pruned): show the "start new" overlay rather
+      // than resume into "No conversation found". The id is unreliable via exit
+      // code (DESIGN 6.1), hence this pre-check.
+      if (r) {
+        r.status = 'exited'
+        r.exitCode = null
+        r.expired = true
+      }
+      return
+    }
+    this.startPty(def, 'resume')
+  }
 
   private startPty(def: SessionDef, mode: SpawnMode): void {
     const cfg = this.getConfig()
@@ -207,10 +319,14 @@ export class SessionService extends EventEmitter {
       })
     }
 
+    // Track the live (post-fork) id for the double-resume guard.
+    this.registry.add(def.sessionId)
+
     const r = this.runtime.get(def.id)
     if (r) {
       r.status = 'running'
       r.exitCode = null
+      r.expired = false
     }
     // sessionId may have just changed (fork-resume) -> persist before/after spawn.
     this.persist()
@@ -218,7 +334,7 @@ export class SessionService extends EventEmitter {
       def.id,
       def.cwd,
       { command, shell: cfg.shell, interactive: cfg.interactiveShell },
-      this.scopeEnv
+      this.getScopeEnv()
     )
   }
 
@@ -231,7 +347,8 @@ export class SessionService extends EventEmitter {
       exitCode: r?.exitCode ?? null,
       pid: this.pty.pid(def.id),
       peerId: r?.peerId ?? null,
-      thinking: r?.thinking ?? false
+      thinking: r?.thinking ?? false,
+      expired: r?.expired ?? false
     }
   }
 

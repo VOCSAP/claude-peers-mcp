@@ -5,8 +5,9 @@ import { loadConfig, saveConfig } from './store'
 import { SessionService } from './session-service'
 import { registerIpc } from './ipc'
 import { parseCliContext } from './cli-context'
-import { computeScope, buildScopeEnv } from './scope'
+import { computeScope, buildScopeEnv, resolveAdoptedScope, type Scope, type ScopeEnv } from './scope'
 import { resolveLaunchConfig } from './launch-config'
+import { WorkspaceService } from './workspace-service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -16,10 +17,12 @@ let mainWindow: BrowserWindow | null = null
 const cliContext = parseCliContext(process.argv, process.env)
 let config: AppConfig = { ...loadConfig(), projectDir: cliContext.projectDir }
 
-// Compute the isolated forced group every session shares, and the child env
-// that pins them to it. The secret lives only here + in a chmod-600 temp file.
-const scope = computeScope(cliContext.projectDir, cliContext.scopeId)
-const scopeEnv = buildScopeEnv(scope)
+// The isolated forced group every session shares + the child env that pins them
+// to it. The secret lives only here + in a chmod-600 temp file. Both are MUTABLE
+// so a freshly-opened (empty) app can adopt a restored workspace's scope without
+// relaunching (DESIGN 6.6).
+let activeScope: Scope = computeScope(cliContext.projectDir, cliContext.scopeId)
+let activeScopeEnv: ScopeEnv = buildScopeEnv(activeScope)
 
 // Resolve the base command each session runs (project-local > global > default).
 const launchConfig = resolveLaunchConfig(cliContext.projectDir)
@@ -33,7 +36,37 @@ const setConfig = (patch: Partial<AppConfig>): AppConfig => {
   return config
 }
 
-const service = new SessionService(getConfig, scopeEnv.env, launchConfig.launchCommand)
+const service = new SessionService(getConfig, () => activeScopeEnv.env, launchConfig.launchCommand)
+
+/**
+ * Adopt a restored workspace's scope. No-op once a session is running (the scope
+ * is fixed at first spawn). Ephemeral workspaces mint a fresh secret; a custom
+ * one is only reused if its groupId matches the launched scope (DESIGN 6.8).
+ */
+const adoptScope = (ws: { groupId: string; scopeKind: 'ephemeral' | 'custom' }): void => {
+  if (service.hasLiveSessions()) return
+  const next = resolveAdoptedScope(ws, activeScope, cliContext.projectDir)
+  if (next === activeScope) return
+  activeScopeEnv.cleanup()
+  activeScope = next
+  activeScopeEnv = buildScopeEnv(activeScope)
+}
+
+const workspaces = new WorkspaceService({
+  projectDir: cliContext.projectDir,
+  service,
+  getConfig,
+  setConfig: (patch) => void setConfig(patch),
+  getScope: () => activeScope,
+  adoptScope
+})
+
+// Continuously auto-save the live workspace (debounced) as sessions change.
+let autoSaveTimer: NodeJS.Timeout | null = null
+service.on('changed', () => {
+  if (autoSaveTimer) clearTimeout(autoSaveTimer)
+  autoSaveTimer = setTimeout(() => workspaces.saveAuto(), 1000)
+})
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -72,8 +105,10 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = config.theme
-  registerIpc({ service, getConfig, setConfig, getWindow: () => mainWindow })
+  registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
   service.start()
+  // Attach an auto-save workspace capturing whatever the service just restored.
+  workspaces.start()
   createWindow()
 
   app.on('activate', () => {
@@ -83,12 +118,14 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    workspaces.releaseOnQuit()
     service.stop()
     app.quit()
   }
 })
 
 app.on('before-quit', () => {
+  workspaces.releaseOnQuit()
   service.stop()
-  scopeEnv.cleanup()
+  activeScopeEnv.cleanup()
 })

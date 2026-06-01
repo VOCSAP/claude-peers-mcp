@@ -241,42 +241,46 @@ See DESIGN §6 for the full rationale and verified Claude facts.
 
 **Locking (mandatory)**  (logic M6b-1; heartbeat loop + registry M6b-2)
 - [x] On owning a workspace, write sidecar `<id>.lock { pid, host, startedAt,
-  heartbeat }`; refresh heartbeat. Release on close. (`workspace-lock.ts`:
-  `acquireLock`/`refreshLock`/`releaseLock`/`readLock`. The periodic heartbeat
-  timer wiring is M6b-2.)
+  heartbeat }`; refresh heartbeat. Release on close. (`workspace-lock.ts` +
+  `WorkspaceService` 30s heartbeat timer, `acquireLock` at start/restore,
+  `releaseOnQuit`.)
 - [x] Restore refuses a workspace whose lock is held by a live owner (pid alive
   same-host / fresh heartbeat); reclaim stale locks (mirror broker liveness).
   (`isLockLive`: same-host injected `process.kill(pid,0)`, cross-host heartbeat
-  freshness, boundary treated as stale.)
-- [ ] Maintain an **open-session-id registry** to block resuming the same id
-  from two workspaces. (Runtime in-process state -> M6b-2.)
+  freshness, boundary treated as stale. `listForCwd` reports the `locked` flag.)
+- [x] Maintain an **open-session-id registry** to block resuming the same id
+  from two workspaces. (`open-id-registry.ts` `OpenIdRegistry`, consulted by
+  `SessionService.restoreFrom`/`resumeOrExpire`.)
 
 **Fork-on-every-resume (collision avoidance, DESIGN §6.2)**
-- [ ] New session: `--session-id <uuid>`. Resume/restore:
-  `--resume <prevId> --fork-session [--session-id <newUuid>]`.
-- [ ] Resume passes **only** `--resume`/`--fork-session` (agent/model
+- [x] New session: `--session-id <uuid>`. Resume/restore:
+  `--resume <prevId> --fork-session [--session-id <newUuid>]`. (M3
+  `session-command.ts` + `SessionService.startPty`.)
+- [x] Resume passes **only** `--resume`/`--fork-session` (agent/model
   auto-restored); keep stored `args` for display + expired fallback.
-- [ ] New-id capture: **deterministic by default** — `--session-id`-on-fork IS
+- [x] New-id capture: **deterministic by default** — `--session-id`-on-fork IS
   honoured (verified DESIGN §14.2, CC 2.1.158), so **mint & know the new id up
   front** and **persist it**. No post-spawn discovery needed in the common case.
-  - *Forward-compat fallback (implement only if a future CC regresses):* discover
-    post-spawn via `peer-id-<cwdKey>-<newId>.txt` (or newest
-    `~/.claude/projects/<project>/*.jsonl`), with a one-time capability probe to
-    detect the regression.
-- [ ] During restore, spawn sessions **in parallel** (ids known up front). The
-  sequential-per-cwd path belongs to the discovery fallback only.
+  (Discovery fallback intentionally not implemented; no CC regression observed.)
+- [x] During restore, spawn sessions **in parallel** (ids known up front).
+  (`SessionService.restoreFrom` loops `resumeOrExpire` with no per-cwd
+  sequencing; the sequential path belongs to the unused discovery fallback.)
 
 **Restore flows (DESIGN §6.6)**
-- [ ] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
+- [~] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
   count, lock state). Empty app **adopts** the saved scope (no self-relaunch).
+  (Main side ready: `WorkspaceService.listForCwd`/`restore` + `adoptScope` in
+  `index.ts`; the picker UI is M6b-3.)
 - [~] Restore while running: warn + offer Save → **graceful close** routine
   (`/exit\n` → `Esc`/`Ctrl+C` → SIGTERM) → adopt new scope → reopen.
-  (`session-close.ts gracefulClose` orchestrator done M6b-1 with injected IO;
-  the warn/Save UI + scope adoption wiring are M6b-2.)
-- [ ] Expired session: **React overlay** on the tile ("session expired — [Start
+  (`gracefulClose` (M6b-1) + `adoptScope`/`restore` (M6b-2) ready; the warn/Save
+  UI is M6b-3.)
+- [~] Expired session: **React overlay** on the tile ("session expired -- [Start
   new]") spawning `--session-id <new>` + stored `args`; plus a global "start
-  all".
-- [ ] **File menu**: New / Save / Save As (name) / Restore.
+  all". (Detection done: `session-transcript.transcriptExists` pre-check sets
+  `SessionRuntime.expired`, `restart` starts fresh on an expired session; the
+  overlay UI is M6b-3.)
+- [ ] **File menu**: New / Save / Save As (name) / Restore. (M6b-3.)
 
 ## 12. Packaging & native-build DX
 
