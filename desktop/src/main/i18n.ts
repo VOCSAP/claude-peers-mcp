@@ -89,6 +89,12 @@ export const EN_DEFAULTS: Record<string, string> = {
   'settings.restoreSessions': 'Re-open saved sessions on launch',
   'settings.language': 'Language',
   'settings.languageAuto': 'Auto (system)',
+  'settings.palette': 'Session colour palette',
+  'settings.paletteHelp':
+    'Colours cycled through for new sessions. Each session can still be recoloured individually.',
+  'settings.paletteAdd': '＋ Add colour',
+  'settings.paletteReset': 'Reset to default',
+  'settings.paletteRemove': 'Remove colour',
 
   'mode.1x1': '1×1 (carousel)',
   'mode.1x2': '1×2',

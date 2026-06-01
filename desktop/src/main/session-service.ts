@@ -15,6 +15,7 @@ import { buildSessionCommandLine, type SpawnMode } from './session-command'
 import { ThinkingDetector, type ThinkingEvent } from './thinking'
 import { OpenIdRegistry } from './open-id-registry'
 import { listTranscriptIds, pickDiscoveredId, transcriptExists } from './session-transcript'
+import { DEFAULT_PALETTE, paletteColor } from '@shared/palette'
 
 interface RuntimeState {
   status: SessionStatus
@@ -29,24 +30,6 @@ const PEER_POLL_MS = 4000
 /** Discovery: poll cadence + deadline to capture Claude's real (minted) session id. */
 const DISCOVERY_POLL_MS = 800
 const DISCOVERY_DEADLINE_MS = 30_000
-
-/** Rotating palette for auto-assigned session colours. */
-const PALETTE = [
-  '#4f86ff',
-  '#3ec46d',
-  '#e0b341',
-  '#e0655b',
-  '#a06bff',
-  '#26b8c4',
-  '#e08a3c',
-  '#d45ec4',
-  '#6aa84f',
-  '#5b8def'
-]
-
-function paletteColor(index: number): string {
-  return PALETTE[((index % PALETTE.length) + PALETTE.length) % PALETTE.length] as string
-}
 
 /**
  * Coordinates the persisted session list, the live PTYs and the resolved
@@ -142,7 +125,7 @@ export class SessionService extends EventEmitter {
       command: input.command?.trim() || '',
       args: input.args?.trim() || '',
       sessionId: '',
-      color: input.color?.trim() || paletteColor(this.defs.length),
+      color: input.color?.trim() || paletteColor(this.getConfig().palette ?? DEFAULT_PALETTE, this.defs.length),
       createdAt: Date.now()
     }
     this.defs.push(def)
@@ -188,7 +171,10 @@ export class SessionService extends EventEmitter {
       if (d.sessionId) this.registry.release(d.sessionId)
     }
     this.runtime.clear()
-    this.defs = defs.map((d, i) => ({ ...d, color: d.color || paletteColor(i) }))
+    this.defs = defs.map((d, i) => ({
+      ...d,
+      color: d.color || paletteColor(this.getConfig().palette ?? DEFAULT_PALETTE, i)
+    }))
     for (const d of this.defs) {
       this.runtime.set(d.id, {
         status: 'exited',

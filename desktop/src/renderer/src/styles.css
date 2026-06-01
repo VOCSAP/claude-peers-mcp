@@ -696,6 +696,46 @@ code {
   border-color: var(--accent);
 }
 
+.palette-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.palette-swatch {
+  position: relative;
+  display: inline-flex;
+}
+
+.palette-swatch input[type='color'] {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.palette-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--fg);
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.palette-swatch:hover .palette-remove {
+  opacity: 1;
+}
+
 .advanced {
   margin-bottom: 14px;
 }

@@ -78,6 +78,8 @@ export interface AppConfig {
   restoreSessions: boolean
   /** UI language: '' = auto (OS), 'en' or 'fr'. Resolved by main/i18n.ts. */
   locale: string
+  /** Rotating palette (hex) for auto-assigned session colours; editable in Settings (D12). */
+  palette: string[]
 }
 
 /** Active locale + flattened translation dict, sent to the renderer. */

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AppConfig, DisplayMode, LaunchPreset } from '@shared/types'
+import { DEFAULT_PALETTE } from '@shared/palette'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
 
@@ -128,6 +129,45 @@ export function SettingsDialog(): React.JSX.Element {
               <option value="fr">Français</option>
             </select>
           </label>
+        </div>
+
+        <div className="field">
+          <span>{t('settings.palette')}</span>
+          <div className="palette-row">
+            {form.palette.map((c, i) => (
+              <span key={i} className="palette-swatch">
+                <input
+                  type="color"
+                  value={c}
+                  onChange={(e) =>
+                    set(
+                      'palette',
+                      form.palette.map((x, j) => (j === i ? e.target.value : x))
+                    )
+                  }
+                />
+                <button
+                  className="palette-remove"
+                  title={t('settings.paletteRemove')}
+                  onClick={() =>
+                    set(
+                      'palette',
+                      form.palette.filter((_, j) => j !== i)
+                    )
+                  }
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <button className="chip" onClick={() => set('palette', [...form.palette, '#888888'])}>
+              {t('settings.paletteAdd')}
+            </button>
+            <button className="chip" onClick={() => set('palette', [...DEFAULT_PALETTE])}>
+              {t('settings.paletteReset')}
+            </button>
+          </div>
+          <small>{t('settings.paletteHelp')}</small>
         </div>
 
         <label className="field field-check">

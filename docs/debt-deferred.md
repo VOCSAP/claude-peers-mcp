@@ -75,13 +75,20 @@ within that window keeps its placeholder id. Harmless (such a session has no
 resumable content) but means no background re-capture after the window.
 **Planned direction:** Subsumed by the D1/D2 back-channel.
 
-### D12. No palette editor in Settings  `OPEN` (minor)
-**What:** Session colours come from a fixed rotating palette; there is no UI to
-edit the palette.
-
 ---
 
 ## Resolved
+
+### D12. Palette editor in Settings  `RESOLVED`
+**Was:** Session colours came from a hardcoded rotating palette with no way to
+edit it.
+**Resolution:** The palette moved to a pure `src/shared/palette.ts`
+(`DEFAULT_PALETTE` + `paletteColor`), is now an `AppConfig.palette` field
+(default = `DEFAULT_PALETTE`, read by `session-service`), and Settings gained an
+editor (per-colour input + remove, add-colour, reset-to-default). New
+`settings.palette*` i18n keys (en/fr). An empty palette safely falls back to the
+default. `@shared` alias added to the main/preload vite builds for the value
+import. Spec `spec_23842072`.
 
 ### D11. Double-click gesture reconciled  `RESOLVED`
 **Was:** Double-click meant rename on a sidebar row but fullscreen on a tile.

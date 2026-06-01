@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppConfig, SessionDef } from '@shared/types'
+import { DEFAULT_PALETTE } from '@shared/palette'
 
 const DEFAULT_CONFIG: AppConfig = {
   projectDir: homedir(),
@@ -20,7 +21,8 @@ const DEFAULT_CONFIG: AppConfig = {
   fontSize: 13,
   restoreSessions: true,
   // '' = auto: main/i18n.ts derives en/fr from the OS locale.
-  locale: ''
+  locale: '',
+  palette: DEFAULT_PALETTE
 }
 
 function dataDir(): string {
