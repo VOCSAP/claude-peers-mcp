@@ -231,8 +231,35 @@ npm run package:mac      # dmg
 npm run package:linux    # AppImage
 ```
 
-> Packaging (pin exact electron/node-pty, copy `locales/` as `extraResources`,
-> per-OS CI) is finalized in milestone M7 -- see the phase-1 plan.
+`electron-builder.yml` ships two things outside the asar archive:
+
+- **`asarUnpack: node_modules/node-pty/**`** -- the native `.node` binary must
+  stay on disk so it can be `dlopen`-ed at runtime.
+- **`extraResources: locales/ -> locales`** -- the locale dictionaries are read
+  at runtime from `process.resourcesPath/locales` when packaged (see
+  `ipc.ts` `buildI18n`). Without this a packaged app silently falls back to the
+  embedded English base for `fr`.
+
+`electron` and `node-pty` are **pinned to exact versions** (no `^`). Every
+Electron bump changes the V8/ABI and forces a node-pty rebuild; a floating
+range would let an install drift onto an ABI the committed binary was not built
+for. Bump both deliberately and re-run `npm run rebuild`.
+
+### macOS arch matching
+
+The `.node` is architecture-specific. Build on (or for) the arch you ship:
+an **arm64** runner produces an arm64 binary that will not load on an **x64**
+host, and vice versa. For a universal artifact, build each arch on its matching
+runner (or cross-compile with the matching `--arch`), don't reuse one arch's
+unpacked `node-pty` for the other.
+
+### Per-OS CI
+
+`.github/workflows/desktop-build.yml` builds on a `windows-latest` /
+`macos-latest` / `ubuntu-latest` matrix: it runs the pure-module bun tests,
+then `npm install`, then the **strict** `npm run rebuild` (the ABI gate that
+fails loudly when a runner's native toolchain is incomplete -- notably the
+Windows Spectre-libs gap above), then `electron-vite build`.
 
 ---
 

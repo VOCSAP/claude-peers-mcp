@@ -24,7 +24,7 @@
     "package:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
-    "node-pty": "^1.0.0"
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.0",
@@ -36,7 +36,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "electron": "^33.2.0",
+    "electron": "33.4.11",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "react": "^19.0.0",

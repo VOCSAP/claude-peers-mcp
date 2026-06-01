@@ -39,13 +39,6 @@ the real id when a transcript appears.
 **Planned direction:** Same back-channel as D1 captures the real id at init,
 making resume reliable even for lightly-used sessions.
 
-### D3. Locales not copied as packaged resources yet  `PLANNED` (M7)
-**What:** `locales/en.json` + `fr.json` are read from the app dir in dev. In a
-packaged build they must be shipped via electron-builder `extraResources`;
-until then a packaged app silently falls back to the embedded English base for
-`fr`.
-**Planned direction:** Add `extraResources` for `locales/` in M7 packaging.
-
 ### D4. Blocking startup New/Restore modal not implemented  `WATCHING`
 **What:** DESIGN 6.6 envisaged a blocking startup picker. The app instead opens
 empty with an on-demand "Restore previous session" button + a Workspaces dialog.
@@ -95,6 +88,19 @@ with the tile double-click (fullscreen). Reconcile the gesture.
 ### D12. No palette editor in Settings  `OPEN` (minor)
 **What:** Session colours come from a fixed rotating palette; there is no UI to
 edit the palette.
+
+---
+
+## Resolved
+
+### D3. Locales now shipped as packaged resources  `RESOLVED` (M7)
+**Was:** `locales/en.json` + `fr.json` were read from the app dir in dev only;
+a packaged build silently fell back to the embedded English base for `fr`.
+**Resolution (M7):** `electron-builder.yml` now ships `locales/` via
+`extraResources` (`from: locales`, `to: locales`). The runtime resolution in
+`ipc.ts` `buildI18n` was already packaged-aware
+(`app.isPackaged ? process.resourcesPath/locales : appPath/locales`), so no code
+change was needed beyond the builder config. Spec `spec_2067c881`.
 
 ---
 

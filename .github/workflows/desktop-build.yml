@@ -1,0 +1,63 @@
+name: desktop-build
+
+# Per-OS build for the claude-peers-desk Electron app. Its job is to catch
+# native (node-pty) rebuild breakage and packaging-config regressions early,
+# on every OS we ship to (win/mac/linux). The pure-module bun tests run first
+# because they need no native toolchain; the native rebuild + electron-vite
+# build follow and fail loudly if the OS toolchain is incomplete.
+
+on:
+  push:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-build.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-build.yml'
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report each OS independently -- a Windows toolchain gap should not hide
+      # a green macOS/Linux build (or vice versa).
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Pure main-process modules (scope, launch-config, session-command, i18n,
+      # ...) import under bun with node builtins only -- no node-pty / electron,
+      # no install needed.
+      - name: Bun tests (desktop pure modules)
+        run: bun test tests/desktop-*.test.ts
+
+      - name: Install desktop deps
+        working-directory: desktop
+        # postinstall runs electron-rebuild but is tolerant (|| echo skipped);
+        # the strict rebuild below is the real ABI gate.
+        run: npm install
+
+      # Rebuild node-pty against Electron's V8/ABI. Fails loudly if the runner
+      # lacks the toolchain -- that is the breakage this workflow exists to
+      # catch. Windows additionally needs the MSVC Spectre-mitigated libs,
+      # because node-pty hardcodes SpectreMitigation in its binding.gyp
+      # (see rules/electron.md / desktop/README.md "Native toolchain").
+      - name: Rebuild node-pty (ABI gate)
+        working-directory: desktop
+        run: npm run rebuild
+
+      - name: Build (electron-vite)
+        working-directory: desktop
+        run: npm run build

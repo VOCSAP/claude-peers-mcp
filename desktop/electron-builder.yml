@@ -9,6 +9,12 @@ files:
 # node-pty ships a native .node binary that must stay outside the asar archive.
 asarUnpack:
   - node_modules/node-pty/**
+# Locale files are read at runtime from process.resourcesPath/locales when
+# packaged (see ipc.ts buildI18n). Ship them as resources so `fr` resolves
+# instead of silently falling back to the embedded English base (debt D3).
+extraResources:
+  - from: locales
+    to: locales
 win:
   target: nsis
 mac:
