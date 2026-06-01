@@ -101,5 +101,6 @@
 
   "area.emptyTitle": "Aucun terminal pair pour l'instant",
   "area.emptyBody": "Ajoute une session pair Claude Code pour l'ancrer ici. Chaque tuile tourne dans un vrai terminal, isolé dans le groupe de cette fenêtre, donc OAuth fonctionne normalement.",
-  "area.addTerminal": "＋ Ajouter un terminal pair"
+  "area.addTerminal": "＋ Ajouter un terminal pair",
+  "area.restorePrevious": "Restaurer la session précédente"
 }

@@ -24,17 +24,27 @@ export function TileArea(): React.JSX.Element {
   const config = useDeck((s) => s.config!)
   const maximizedId = useDeck((s) => s.maximizedId)
   const createSession = useDeck((s) => s.createSession)
+  const workspaces = useDeck((s) => s.workspaces)
+  const restoreWorkspace = useDeck((s) => s.restoreWorkspace)
   const carouselRef = useRef<HTMLDivElement>(null)
 
   if (sessions.length === 0) {
+    const previous = workspaces[0]
     return (
       <main className="area area-empty">
         <div className="empty-card">
           <h2>{t('area.emptyTitle')}</h2>
           <p>{t('area.emptyBody')}</p>
-          <button className="primary" onClick={() => void createSession({})}>
-            {t('area.addTerminal')}
-          </button>
+          <div className="empty-actions">
+            <button className="primary" onClick={() => void createSession({})}>
+              {t('area.addTerminal')}
+            </button>
+            {previous && (
+              <button onClick={() => void restoreWorkspace(previous.id)}>
+                {t('area.restorePrevious')}
+              </button>
+            )}
+          </div>
         </div>
       </main>
     )

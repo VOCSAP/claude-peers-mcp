@@ -85,23 +85,39 @@ export class WorkspaceService {
   }
 
   /**
-   * Attach a workspace on launch. The empty/legacy app gets a fresh auto-save
-   * workspace that captures whatever sessions the SessionService already restored
-   * from userData. The restore PICKER (renderer, M6b-3) drives `restore()`.
+   * Lazy by design: launching empty must NOT create or clobber a workspace
+   * (operator request). A workspace is only minted/locked once sessions exist
+   * (created or restored) via `ensureCurrent`. The previous run's workspace stays
+   * the newest restorable until the user acts.
    */
   start(): void {
-    this.currentId = newWorkspaceId()
-    this.saveAuto()
-    acquireLock(this.deps.projectDir, this.currentId, {
+    /* no-op: see ensureCurrent */
+  }
+
+  /** Own a workspace id: acquire its lock + (re)start the heartbeat. */
+  private own(id: string): void {
+    if (this.currentId && this.currentId !== id) {
+      releaseLock(this.deps.projectDir, this.currentId)
+    }
+    this.currentId = id
+    acquireLock(this.deps.projectDir, id, {
       pid: this.pid,
       host: this.host,
       now: Date.now(),
       isPidAlive: pidAlive,
       staleMs: LOCK_STALE_MS
     })
-    this.heartbeatTimer = setInterval(() => {
-      if (this.currentId) refreshLock(this.deps.projectDir, this.currentId, Date.now())
-    }, HEARTBEAT_MS)
+    if (!this.heartbeatTimer) {
+      this.heartbeatTimer = setInterval(() => {
+        if (this.currentId) refreshLock(this.deps.projectDir, this.currentId, Date.now())
+      }, HEARTBEAT_MS)
+    }
+  }
+
+  /** Mint + own a fresh workspace if none is current yet. */
+  private ensureCurrent(): void {
+    if (this.currentId) return
+    this.own(newWorkspaceId())
   }
 
   /** Persist the live state under the current workspace id (auto name kept). */
@@ -121,18 +137,7 @@ export class WorkspaceService {
     this.deps.adoptScope({ groupId: ws.groupId, scopeKind: ws.scopeKind })
     this.deps.setConfig(fromDisplayMode(ws.displayMode))
     this.deps.service.restoreFrom(fromWorkspaceSessions(ws.sessions))
-    // Hand ownership of the lock from the old workspace to this one.
-    if (this.currentId && this.currentId !== id) {
-      releaseLock(this.deps.projectDir, this.currentId)
-    }
-    this.currentId = id
-    acquireLock(this.deps.projectDir, id, {
-      pid: this.pid,
-      host: this.host,
-      now: Date.now(),
-      isPidAlive: pidAlive,
-      staleMs: LOCK_STALE_MS
-    })
+    this.own(id) // hand the lock from the old workspace to this one + heartbeat
     this.saveAuto()
   }
 
@@ -175,11 +180,12 @@ export class WorkspaceService {
   // ----- internals -----
 
   private persist(name: string | undefined, pin: boolean): WorkspaceSummary {
-    if (!this.currentId) this.currentId = newWorkspaceId()
+    this.ensureCurrent()
+    const id = this.currentId as string
     const scope = this.deps.getScope()
-    const existing = loadWorkspace(this.deps.projectDir, this.currentId)
+    const existing = loadWorkspace(this.deps.projectDir, id)
     const ws: Workspace = {
-      id: this.currentId,
+      id,
       name: name ?? existing?.name ?? autoName(scope.name, new Date()),
       pinned: pin || existing?.pinned || false,
       cwd: this.deps.projectDir,

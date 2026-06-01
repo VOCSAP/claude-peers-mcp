@@ -10,7 +10,7 @@
 //
 // Pure: node fs/path only, with `home` injected, so it is unit-testable.
 
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Encode a working directory into Claude's ~/.claude/projects folder name. */
@@ -27,4 +27,49 @@ export function transcriptPath(home: string, cwd: string, id: string): string {
 export function transcriptExists(home: string, cwd: string, id: string): boolean {
   if (!id) return false
   return existsSync(transcriptPath(home, cwd, id))
+}
+
+export interface TranscriptEntry {
+  /** Claude session id (the .jsonl basename). */
+  id: string
+  mtimeMs: number
+}
+
+/** List the session transcripts present under `cwd`'s projects folder. */
+export function listTranscriptIds(home: string, cwd: string): TranscriptEntry[] {
+  const dir = join(home, '.claude', 'projects', encodeProjectDir(cwd))
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return []
+  }
+  const out: TranscriptEntry[] = []
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue
+    const id = name.slice(0, -'.jsonl'.length)
+    try {
+      out.push({ id, mtimeMs: statSync(join(dir, name)).mtimeMs })
+    } catch {
+      // raced unlink -> skip
+    }
+  }
+  return out
+}
+
+/**
+ * Pick the real session id Claude minted for a just-spawned session: the newest
+ * transcript that did NOT exist before the spawn (`before`) and is not already
+ * claimed by another live session (`claimed`). Returns null if none yet.
+ * Pure -- the testable core of the discovery track (DESIGN 6.2).
+ */
+export function pickDiscoveredId(
+  entries: TranscriptEntry[],
+  before: ReadonlySet<string>,
+  claimed: ReadonlySet<string>
+): string | null {
+  const fresh = entries
+    .filter((e) => !before.has(e.id) && !claimed.has(e.id))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return fresh[0]?.id ?? null
 }

@@ -62,9 +62,12 @@ const workspaces = new WorkspaceService({
   adoptScope
 })
 
-// Continuously auto-save the live workspace (debounced) as sessions change.
+// Continuously auto-save the live workspace (debounced) as sessions change, but
+// only once there ARE sessions -- launching empty must not mint/clobber a
+// workspace (the previous run stays restorable until the user acts).
 let autoSaveTimer: NodeJS.Timeout | null = null
-service.on('changed', () => {
+service.on('changed', (sessions: unknown[]) => {
+  if (!Array.isArray(sessions) || sessions.length === 0) return
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(() => workspaces.saveAuto(), 1000)
 })

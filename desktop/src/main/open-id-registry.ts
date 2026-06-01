@@ -21,6 +21,11 @@ export class OpenIdRegistry {
     return this.open.has(id)
   }
 
+  /** A read-only copy of the currently-open ids (for discovery filtering). */
+  snapshot(): Set<string> {
+    return new Set(this.open)
+  }
+
   get size(): number {
     return this.open.size
   }

@@ -258,20 +258,27 @@ See DESIGN §6 for the full rationale and verified Claude facts.
   `session-command.ts` + `SessionService.startPty`.)
 - [x] Resume passes **only** `--resume`/`--fork-session` (agent/model
   auto-restored); keep stored `args` for display + expired fallback.
-- [x] New-id capture: **deterministic by default** — `--session-id`-on-fork IS
-  honoured (verified DESIGN §14.2, CC 2.1.158), so **mint & know the new id up
-  front** and **persist it**. No post-spawn discovery needed in the common case.
-  (Discovery fallback intentionally not implemented; no CC regression observed.)
-- [x] During restore, spawn sessions **in parallel** (ids known up front).
-  (`SessionService.restoreFrom` loops `resumeOrExpire` with no per-cwd
-  sequencing; the sequential path belongs to the unused discovery fallback.)
+- [x] New-id capture: **discovery track** (the deterministic `--session-id`
+  assumption proved FALSE in the real app context). Claude Code ignores
+  `--session-id` when run interactively in a PTY with the claude-peers MCP loaded
+  and mints its own id; the transcript lands under that id. `SessionService`
+  therefore DISCOVERS the real id post-spawn -- `spawnAndDiscover` snapshots the
+  transcript dir before `startPty`, then `discoverRealId` polls
+  `~/.claude/projects/<encode(cwd)>/` (~800ms, 30s) for the newest new
+  `.jsonl` (`pickDiscoveredId`), adopts it as `sessionId` and persists. (Fixed a
+  bug where every relaunched session showed "expired".)
+- [x] During restore, spawn sessions **serialized per cwd** (so each new
+  transcript is unambiguous for discovery), parallel across distinct cwds
+  (`enqueueSpawn` per-cwd promise chain). Operator-accepted tradeoff: slight
+  startup delay for many same-cwd sessions; revisit later.
 
 **Restore flows (DESIGN §6.6)**
-- [~] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
-  count, lock state). Empty app **adopts** the saved scope (no self-relaunch).
-  (`WorkspacesDialog` provides Restore on demand with name/count/lock badges, and
-  the app auto-restores the last sessions on launch; a blocking startup modal is
-  deliberately deferred.)
+- [x] Startup: the app opens **empty** (no auto-restore -- operator request); the
+  empty state offers a **"Restore previous session"** button (restores the newest
+  workspace) and `WorkspacesDialog` lists all with name/count/lock badges. Empty
+  app **adopts** the restored scope (no self-relaunch). `WorkspaceService` is lazy
+  (mints/locks/auto-saves only once sessions exist) so an empty launch never
+  clobbers the previous run's workspace. A blocking modal picker is deferred.
 - [~] Restore while running: warn + offer Save → **graceful close** routine
   (`/exit\n` → `Esc`/`Ctrl+C` → SIGTERM) → adopt new scope → reopen.
   (`gracefulClose` (M6b-1) + `adoptScope`/`restore` (M6b-2) ready; the warn/Save

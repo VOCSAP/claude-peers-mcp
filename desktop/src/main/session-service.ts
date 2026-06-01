@@ -10,11 +10,11 @@ import type {
 } from '@shared/types'
 import { PtyManager } from './pty-manager'
 import { resolvePeerId } from './peer-state'
-import { loadSessions, saveSessions } from './store'
+import { saveSessions } from './store'
 import { buildSessionCommandLine, type SpawnMode } from './session-command'
 import { ThinkingDetector, type ThinkingEvent } from './thinking'
 import { OpenIdRegistry } from './open-id-registry'
-import { transcriptExists } from './session-transcript'
+import { listTranscriptIds, pickDiscoveredId, transcriptExists } from './session-transcript'
 
 interface RuntimeState {
   status: SessionStatus
@@ -26,6 +26,9 @@ interface RuntimeState {
 }
 
 const PEER_POLL_MS = 4000
+/** Discovery: poll cadence + deadline to capture Claude's real (minted) session id. */
+const DISCOVERY_POLL_MS = 800
+const DISCOVERY_DEADLINE_MS = 30_000
 
 /** Rotating palette for auto-assigned session colours. */
 const PALETTE = [
@@ -59,6 +62,8 @@ export class SessionService extends EventEmitter {
 
   /** Live (post-fork) claude session ids open in this process; double-resume guard. */
   private registry = new OpenIdRegistry()
+  /** Per-cwd spawn serialization: each new transcript is discovered before the next spawn. */
+  private spawnQueues = new Map<string, Promise<unknown>>()
 
   constructor(
     private getConfig: () => AppConfig,
@@ -74,23 +79,10 @@ export class SessionService extends EventEmitter {
     private home: string = homedir()
   ) {
     super()
-    // Normalize older persisted sessions that predate args/sessionId.
-    this.defs = loadSessions().map((d, i) => ({
-      ...d,
-      command: d.command ?? '',
-      args: d.args ?? '',
-      sessionId: d.sessionId ?? '',
-      color: d.color || paletteColor(i)
-    }))
-    for (const d of this.defs) {
-      this.runtime.set(d.id, {
-        status: 'exited',
-        exitCode: null,
-        peerId: null,
-        thinking: false,
-        expired: false
-      })
-    }
+    // Start empty: the app no longer auto-restores the legacy sessions.json on
+    // launch (operator request). The previous run is recovered explicitly via a
+    // workspace restore.
+    this.defs = []
 
     this.pty.on('data', (e: { id: string; data: string }) => {
       this.emit('data', e)
@@ -121,13 +113,8 @@ export class SessionService extends EventEmitter {
     })
   }
 
-  /** Spawn persisted sessions (if enabled) and start the peer_id poll. */
+  /** Start the peer_id poll. No auto-restore: the app opens empty (see ctor). */
   start(): void {
-    if (this.getConfig().restoreSessions) {
-      // Restore = fork-on-resume from each session's last id, with the expired
-      // pre-check (skip + flag sessions whose transcript is gone).
-      for (const d of this.defs) this.resumeOrExpire(d)
-    }
     this.pollTimer = setInterval(() => this.pollPeerIds(), PEER_POLL_MS)
   }
 
@@ -168,7 +155,7 @@ export class SessionService extends EventEmitter {
       thinking: false,
       expired: false
     })
-    this.startPty(def, 'fresh')
+    this.enqueueSpawn(def, 'fresh')
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -214,7 +201,7 @@ export class SessionService extends EventEmitter {
       })
     }
     this.persist()
-    for (const d of this.defs) this.resumeOrExpire(d)
+    for (const d of this.defs) this.enqueueSpawn(d, 'resume')
     this.broadcast()
     return this.list()
   }
@@ -245,10 +232,11 @@ export class SessionService extends EventEmitter {
     if (!def) throw new Error(`unknown session ${id}`)
     const r = this.runtime.get(id)
     if (r?.expired) {
-      def.sessionId = '' // drop the dead lineage -> startPty mints a fresh id
-      this.startPty(def, 'fresh')
+      def.sessionId = '' // drop the dead lineage -> spawn fresh
+      if (r) r.expired = false
+      this.enqueueSpawn(def, 'fresh')
     } else {
-      this.startPty(def, 'resume')
+      this.enqueueSpawn(def, 'resume')
     }
     this.broadcast()
     return this.toRuntime(def)
@@ -265,32 +253,69 @@ export class SessionService extends EventEmitter {
   // ----- internals -----
 
   /**
-   * Resume a persisted session, or flag it expired without spawning. Skips a def
-   * whose id is already open in this process (double-resume guard). A def that
-   * never spawned (no sessionId) starts fresh.
+   * Serialize spawns within the same cwd: each spawn waits for the previous one's
+   * transcript to be discovered, so the newest new .jsonl is unambiguously the
+   * one we just launched (DESIGN 6.2 discovery track). Distinct cwds run on
+   * independent chains (parallel).
    */
-  private resumeOrExpire(def: SessionDef): void {
+  private enqueueSpawn(def: SessionDef, mode: SpawnMode): void {
+    const prev = this.spawnQueues.get(def.cwd) ?? Promise.resolve()
+    const next = prev
+      .catch(() => {})
+      .then(() => this.spawnAndDiscover(def, mode))
+    this.spawnQueues.set(def.cwd, next)
+  }
+
+  /**
+   * Resume/launch a session then DISCOVER the real session id Claude minted
+   * (it ignores our --session-id in an interactive PTY + MCP context). A resume
+   * whose stored REAL id has no transcript is flagged expired and not spawned.
+   */
+  private async spawnAndDiscover(def: SessionDef, mode: SpawnMode): Promise<void> {
     const r = this.runtime.get(def.id)
-    if (!def.sessionId) {
-      this.startPty(def, 'fresh')
-      return
-    }
-    if (this.registry.has(def.sessionId)) {
-      // Same lineage already live elsewhere in this process -> do not resume.
-      return
-    }
-    if (!transcriptExists(this.home, def.cwd, def.sessionId)) {
-      // Transcript gone (expired / pruned): show the "start new" overlay rather
-      // than resume into "No conversation found". The id is unreliable via exit
-      // code (DESIGN 6.1), hence this pre-check.
-      if (r) {
+    // The session may have been removed while queued.
+    if (!r) return
+
+    if (mode === 'resume' && def.sessionId) {
+      if (this.registry.has(def.sessionId)) return // same lineage already live
+      if (!transcriptExists(this.home, def.cwd, def.sessionId)) {
+        // Transcript gone (expired / pruned) -> "start new" overlay, no resume.
         r.status = 'exited'
         r.exitCode = null
         r.expired = true
+        this.broadcast()
+        return
       }
-      return
     }
-    this.startPty(def, 'resume')
+
+    const before = new Set(listTranscriptIds(this.home, def.cwd).map((e) => e.id))
+    this.startPty(def, mode)
+    await this.discoverRealId(def, before)
+  }
+
+  /**
+   * Poll the project's transcript dir until the new (Claude-minted) id appears,
+   * then adopt it as def.sessionId so the next resume targets the right transcript.
+   * Aborts if the PTY dies first or the deadline passes.
+   */
+  private async discoverRealId(def: SessionDef, before: Set<string>): Promise<void> {
+    const placeholder = def.sessionId
+    const deadline = Date.now() + DISCOVERY_DEADLINE_MS
+    while (Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, DISCOVERY_POLL_MS))
+      if (!this.pty.isAlive(def.id)) return // died before writing a transcript
+      const claimed = this.registry.snapshot()
+      claimed.delete(placeholder) // our own placeholder must not block the match
+      const realId = pickDiscoveredId(listTranscriptIds(this.home, def.cwd), before, claimed)
+      if (realId && realId !== def.sessionId) {
+        this.registry.release(placeholder)
+        def.sessionId = realId
+        this.registry.add(realId)
+        this.persist()
+        this.broadcast()
+        return
+      }
+    }
   }
 
   private startPty(def: SessionDef, mode: SpawnMode): void {

@@ -51,15 +51,17 @@ export const useDeck = create<DeckState>((set, get) => ({
   sidebarWidth: 260,
 
   async init() {
-    const [sessions, config, i18n] = await Promise.all([
+    const [sessions, config, i18n, workspaces] = await Promise.all([
       window.api.listSessions(),
       window.api.getConfig(),
-      window.api.getI18n()
+      window.api.getI18n(),
+      window.api.listWorkspaces()
     ])
     set({
       sessions,
       config,
       dict: i18n.dict,
+      workspaces,
       sidebarWidth: config.sidebarWidth,
       selectedId: get().selectedId ?? sessions[0]?.id ?? null
     })
