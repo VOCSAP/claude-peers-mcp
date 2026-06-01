@@ -234,10 +234,10 @@ See DESIGN §6 for the full rationale and verified Claude facts.
   not), but because session ids + layout are machine/project-local noise.
   (`ensureWorkspacesDir` adds `workspaces/` idempotently, keeping `config.json`
   committable.)
-- [~] **Auto-save** the live workspace continuously (unique id, auto name);
-  **explicit Save** sets a user name + `pinned`. (Store supports it:
-  `newWorkspaceId`, `autoName`, `pinned` field, `saveWorkspace`. Continuous
-  auto-save loop + Save UI + prune are M6b-2.)
+- [x] **Auto-save** the live workspace continuously (unique id, auto name);
+  **explicit Save** sets a user name + `pinned`. (`WorkspaceService` debounced
+  auto-save on `sessions:changed` + `releaseOnQuit`; `WorkspacesDialog` Save /
+  Save As. Optional prune of old unpinned auto-saves not implemented.)
 
 **Locking (mandatory)**  (logic M6b-1; heartbeat loop + registry M6b-2)
 - [x] On owning a workspace, write sidecar `<id>.lock { pid, host, startedAt,
@@ -269,18 +269,20 @@ See DESIGN §6 for the full rationale and verified Claude facts.
 **Restore flows (DESIGN §6.6)**
 - [~] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
   count, lock state). Empty app **adopts** the saved scope (no self-relaunch).
-  (Main side ready: `WorkspaceService.listForCwd`/`restore` + `adoptScope` in
-  `index.ts`; the picker UI is M6b-3.)
+  (`WorkspacesDialog` provides Restore on demand with name/count/lock badges, and
+  the app auto-restores the last sessions on launch; a blocking startup modal is
+  deliberately deferred.)
 - [~] Restore while running: warn + offer Save → **graceful close** routine
   (`/exit\n` → `Esc`/`Ctrl+C` → SIGTERM) → adopt new scope → reopen.
   (`gracefulClose` (M6b-1) + `adoptScope`/`restore` (M6b-2) ready; the warn/Save
   UI is M6b-3.)
-- [~] Expired session: **React overlay** on the tile ("session expired -- [Start
-  new]") spawning `--session-id <new>` + stored `args`; plus a global "start
-  all". (Detection done: `session-transcript.transcriptExists` pre-check sets
-  `SessionRuntime.expired`, `restart` starts fresh on an expired session; the
-  overlay UI is M6b-3.)
-- [ ] **File menu**: New / Save / Save As (name) / Restore. (M6b-3.)
+- [x] Expired session: **React overlay** on the tile ("session expired -- [Start
+  new]") spawning `--session-id <new>` + stored `args`. (`TerminalTile`
+  `tile-expired` overlay on `SessionRuntime.expired` -> `restartSession` starts
+  fresh with stored args. A global "start all" is not implemented.)
+- [~] **File menu**: New / Save / Save As (name) / Restore. (`WorkspacesDialog`
+  covers Save / Save As / Restore / Delete from the sidebar; a native menubar
+  File menu + "New (clear)" are deferred.)
 
 ## 12. Packaging & native-build DX
 

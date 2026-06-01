@@ -4,11 +4,13 @@ import { Sidebar } from './Sidebar'
 import { TileArea } from './TileArea'
 import { DisplayModeBar } from './DisplayModeBar'
 import { SettingsDialog } from './SettingsDialog'
+import { WorkspacesDialog } from './WorkspacesDialog'
 
 export function App(): React.JSX.Element {
   const init = useDeck((s) => s.init)
   const config = useDeck((s) => s.config)
   const settingsOpen = useDeck((s) => s.settingsOpen)
+  const workspacesOpen = useDeck((s) => s.workspacesOpen)
   const selectedId = useDeck((s) => s.selectedId)
   const maximizedId = useDeck((s) => s.maximizedId)
   const setMaximized = useDeck((s) => s.setMaximized)
@@ -49,6 +51,7 @@ export function App(): React.JSX.Element {
         <TileArea />
       </div>
       {settingsOpen && <SettingsDialog />}
+      {workspacesOpen && <WorkspacesDialog />}
     </div>
   )
 }

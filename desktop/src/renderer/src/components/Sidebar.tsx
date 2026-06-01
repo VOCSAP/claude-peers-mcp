@@ -121,6 +121,7 @@ export function Sidebar(): React.JSX.Element {
   const config = useDeck((s) => s.config!)
   const createSession = useDeck((s) => s.createSession)
   const openSettings = useDeck((s) => s.openSettings)
+  const openWorkspaces = useDeck((s) => s.openWorkspaces)
   const setSidebarWidth = useDeck((s) => s.setSidebarWidth)
   const updateConfig = useDeck((s) => s.updateConfig)
   const [createOpen, setCreateOpen] = useState(false)
@@ -142,6 +143,13 @@ export function Sidebar(): React.JSX.Element {
     <aside className="sidebar">
       <header className="sidebar-head">
         <span className="brand">{t('app.brand')}</span>
+        <button
+          className="icon-btn"
+          title={t('sidebar.workspaces')}
+          onClick={() => openWorkspaces(true)}
+        >
+          🗂
+        </button>
         <button className="icon-btn" title={t('sidebar.settings')} onClick={() => openSettings(true)}>
           ⚙
         </button>

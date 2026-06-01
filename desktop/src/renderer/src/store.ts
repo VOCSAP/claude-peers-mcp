@@ -1,5 +1,10 @@
 import { create } from 'zustand'
-import type { AppConfig, CreateSessionInput, SessionRuntime } from '@shared/types'
+import type {
+  AppConfig,
+  CreateSessionInput,
+  SessionRuntime,
+  WorkspaceSummary
+} from '@shared/types'
 
 interface DeckState {
   sessions: SessionRuntime[]
@@ -9,6 +14,8 @@ interface DeckState {
   selectedId: string | null
   maximizedId: string | null
   settingsOpen: boolean
+  workspacesOpen: boolean
+  workspaces: WorkspaceSummary[]
   /** Live sidebar width (px); seeded from config, persisted on drag end. */
   sidebarWidth: number
 
@@ -16,6 +23,7 @@ interface DeckState {
   setSelected(id: string | null): void
   setMaximized(id: string | null): void
   openSettings(open: boolean): void
+  openWorkspaces(open: boolean): void
   setSidebarWidth(px: number): void
 
   createSession(input: CreateSessionInput): Promise<void>
@@ -24,6 +32,11 @@ interface DeckState {
   setColor(id: string, color: string): Promise<void>
   restartSession(id: string): Promise<void>
   updateConfig(patch: Partial<AppConfig>): Promise<void>
+
+  refreshWorkspaces(): Promise<void>
+  saveWorkspace(name?: string): Promise<void>
+  restoreWorkspace(id: string): Promise<void>
+  removeWorkspace(id: string): Promise<void>
 }
 
 export const useDeck = create<DeckState>((set, get) => ({
@@ -33,6 +46,8 @@ export const useDeck = create<DeckState>((set, get) => ({
   selectedId: null,
   maximizedId: null,
   settingsOpen: false,
+  workspacesOpen: false,
+  workspaces: [],
   sidebarWidth: 260,
 
   async init() {
@@ -70,6 +85,10 @@ export const useDeck = create<DeckState>((set, get) => ({
   setSelected: (id) => set({ selectedId: id }),
   setMaximized: (id) => set({ maximizedId: id }),
   openSettings: (open) => set({ settingsOpen: open }),
+  openWorkspaces: (open) => {
+    set({ workspacesOpen: open })
+    if (open) void get().refreshWorkspaces()
+  },
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),
 
   async createSession(input) {
@@ -98,5 +117,25 @@ export const useDeck = create<DeckState>((set, get) => ({
   async updateConfig(patch) {
     const config = await window.api.setConfig(patch)
     set({ config })
+  },
+
+  async refreshWorkspaces() {
+    set({ workspaces: await window.api.listWorkspaces() })
+  },
+
+  async saveWorkspace(name) {
+    await window.api.saveWorkspace(name)
+    await get().refreshWorkspaces()
+  },
+
+  async restoreWorkspace(id) {
+    await window.api.restoreWorkspace(id)
+    // Sessions refresh via onSessionsChanged (restoreFrom broadcasts 'changed').
+    await get().refreshWorkspaces()
+  },
+
+  async removeWorkspace(id) {
+    await window.api.deleteWorkspace(id)
+    await get().refreshWorkspaces()
   }
 }))

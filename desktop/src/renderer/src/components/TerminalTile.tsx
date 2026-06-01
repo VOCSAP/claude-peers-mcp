@@ -192,6 +192,23 @@ export function TerminalTile({
         </button>
       </div>
       <div className="tile-body" ref={hostRef} />
+      {session.expired && (
+        <div className="tile-expired">
+          <div className="tile-expired-card">
+            <strong>{t('tile.expiredTitle')}</strong>
+            <p>{t('tile.expiredBody')}</p>
+            <button
+              className="primary"
+              onClick={(e) => {
+                e.stopPropagation()
+                void restartSession(id)
+              }}
+            >
+              {t('tile.startNew')}
+            </button>
+          </div>
+        </div>
+      )}
       {confirmingDelete && (
         <ConfirmDialog
           title={t('confirm.closeTitle')}

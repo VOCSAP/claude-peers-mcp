@@ -28,6 +28,7 @@ export const EN_DEFAULTS: Record<string, string> = {
   'app.loading': 'Loading…',
 
   'sidebar.settings': 'Settings',
+  'sidebar.workspaces': 'Workspaces',
   'sidebar.addPeer': '＋ Add peer',
   'sidebar.addPeerTitle': 'Add in project dir',
   'sidebar.advancedTitle': 'Advanced: agent, args, presets, folder…',
@@ -49,6 +50,25 @@ export const EN_DEFAULTS: Record<string, string> = {
   'confirm.closeTitle': 'Close session?',
   'confirm.closeMessage':
     'Close "{name}"? Its terminal stops; the underlying Claude session can still be resumed later from history.',
+  'confirm.deleteWorkspaceTitle': 'Delete workspace?',
+  'confirm.deleteWorkspaceMessage':
+    'Delete "{name}"? This removes the saved layout only; Claude session history is untouched.',
+
+  'workspaces.title': 'Workspaces',
+  'workspaces.save': 'Save',
+  'workspaces.saveAs': 'Save as…',
+  'workspaces.saveAsPrompt': 'Workspace name',
+  'workspaces.restore': 'Restore',
+  'workspaces.delete': 'Delete',
+  'workspaces.empty': 'No saved workspaces yet.',
+  'workspaces.current': 'current',
+  'workspaces.locked': 'in use',
+  'workspaces.pinned': 'pinned',
+  'workspaces.sessions': '{n} sessions',
+
+  'tile.expiredTitle': 'Session expired',
+  'tile.expiredBody': 'Its transcript is gone. Start a new session with the same setup.',
+  'tile.startNew': 'Start new',
 
   'settings.title': 'Settings',
   'settings.projectDir': 'Project directory',

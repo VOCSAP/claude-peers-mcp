@@ -12,6 +12,7 @@
   "app.loading": "Chargement…",
 
   "sidebar.settings": "Paramètres",
+  "sidebar.workspaces": "Espaces",
   "sidebar.addPeer": "＋ Ajouter un pair",
   "sidebar.addPeerTitle": "Ajouter dans le dossier projet",
   "sidebar.advancedTitle": "Avancé : agent, arguments, préréglages, dossier…",
@@ -31,6 +32,24 @@
   "confirm.deleteMessage": "Retirer « {name} » ? Son terminal est fermé ; la session Claude sous-jacente reste reprenable plus tard depuis l'historique.",
   "confirm.closeTitle": "Fermer la session ?",
   "confirm.closeMessage": "Fermer « {name} » ? Son terminal s'arrête ; la session Claude sous-jacente reste reprenable plus tard depuis l'historique.",
+  "confirm.deleteWorkspaceTitle": "Supprimer l'espace ?",
+  "confirm.deleteWorkspaceMessage": "Supprimer « {name} » ? Cela retire uniquement la disposition enregistrée ; l'historique des sessions Claude reste intact.",
+
+  "workspaces.title": "Espaces de travail",
+  "workspaces.save": "Enregistrer",
+  "workspaces.saveAs": "Enregistrer sous…",
+  "workspaces.saveAsPrompt": "Nom de l'espace",
+  "workspaces.restore": "Restaurer",
+  "workspaces.delete": "Supprimer",
+  "workspaces.empty": "Aucun espace enregistré pour l'instant.",
+  "workspaces.current": "actuel",
+  "workspaces.locked": "en cours d'usage",
+  "workspaces.pinned": "épinglé",
+  "workspaces.sessions": "{n} sessions",
+
+  "tile.expiredTitle": "Session expirée",
+  "tile.expiredBody": "Son transcript a disparu. Démarre une nouvelle session avec la même configuration.",
+  "tile.startNew": "Démarrer une nouvelle",
 
   "settings.title": "Paramètres",
   "settings.projectDir": "Dossier projet",
