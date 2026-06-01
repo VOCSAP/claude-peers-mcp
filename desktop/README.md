@@ -4,6 +4,15 @@ A desktop app that **docks multiple Claude Code peer sessions into a single
 window**, so you stop juggling a dozen floating terminals on your desktop.
 
 - **Left sidebar** — add / remove / rename peer terminals.
+  - **`＋ Add peer`** opens a session in the window's project directory (the cwd
+    you launched `claude-peers-desk` from).
+  - **📁 (Add in another folder)** opens an OS folder picker and starts the
+    session in the directory you choose instead. Useful to point a peer at a
+    sub-project with its own `CLAUDE.md`, or to let a peer explore a different
+    repository. The session still joins this window's isolated group -- only its
+    working directory changes. Use with care: a peer launched in another folder
+    can read and act on that folder. (Planned: fold this into an advanced option
+    of the create menu in a later iteration.)
 - **Right area** — every session runs live, side by side, in a tiled grid.
 - **Maximize button** — blow one tile up to full size while the others keep
   running in the background.

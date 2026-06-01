@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import type { SessionRuntime } from '@shared/types'
 import { useDeck } from '../store'
+import { ConfirmDialog } from './ConfirmDialog'
 
 const THEMES: Record<'dark' | 'light', ITheme> = {
   dark: { background: '#1e1e1e', foreground: '#d4d4d4', cursor: '#d4d4d4', selectionBackground: '#264f78' },
@@ -26,6 +27,8 @@ export function TerminalTile({
   const setMaximized = useDeck((s) => s.setMaximized)
   const setSelected = useDeck((s) => s.setSelected)
   const restartSession = useDeck((s) => s.restartSession)
+  const removeSession = useDeck((s) => s.removeSession)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -127,7 +130,11 @@ export function TerminalTile({
     >
       <div
         className="tile-head"
-        onDoubleClick={() => setMaximized(isMax ? null : id)}
+        onDoubleClick={(e) => {
+          // Ignore double-clicks that land on a button (they have their own handler).
+          if ((e.target as HTMLElement).closest('button')) return
+          setMaximized(isMax ? null : id)
+        }}
         title="Double-click to toggle fullscreen"
       >
         <span
@@ -145,22 +152,53 @@ export function TerminalTile({
         <span className="tile-spacer" />
         {session.status === 'exited' && (
           <button
+            type="button"
             className="tile-btn"
             title="Restart peer"
-            onClick={() => restartSession(id)}
+            onClick={(e) => {
+              e.stopPropagation()
+              void restartSession(id)
+            }}
           >
             ↻
           </button>
         )}
         <button
+          type="button"
           className="tile-btn"
           title={isMax ? 'Restore' : 'Maximize'}
-          onClick={() => setMaximized(isMax ? null : id)}
+          onClick={(e) => {
+            e.stopPropagation()
+            setMaximized(isMax ? null : id)
+          }}
         >
-          {isMax ? '🗗' : '⤢'}
+          {isMax ? '⤡' : '⤢'}
+        </button>
+        <button
+          type="button"
+          className="tile-btn tile-btn-danger"
+          title="Close session"
+          onClick={(e) => {
+            e.stopPropagation()
+            setConfirmingDelete(true)
+          }}
+        >
+          ✕
         </button>
       </div>
       <div className="tile-body" ref={hostRef} />
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Close session?"
+          message={`Close "${session.name}"? Its terminal stops; the underlying Claude session can still be resumed later from history.`}
+          confirmLabel="Close"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={() => {
+            setConfirmingDelete(false)
+            void removeSession(id)
+          }}
+        />
+      )}
     </div>
   )
 }

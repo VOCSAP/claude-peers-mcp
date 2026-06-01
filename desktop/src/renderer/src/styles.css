@@ -444,6 +444,10 @@ body {
   color: var(--fg);
 }
 
+.tile-btn-danger:hover {
+  color: var(--danger);
+}
+
 .tile-body {
   flex: 1;
   min-height: 0;
