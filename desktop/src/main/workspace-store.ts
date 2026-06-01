@@ -160,6 +160,29 @@ export function deleteWorkspace(projectDir: string, id: string): void {
   }
 }
 
+export interface PruneOptions {
+  now: number
+  /** Workspaces older than this (by updatedAt) are prune candidates. */
+  maxAgeMs: number
+  /** Ids to never prune (e.g. the current workspace). */
+  keepIds?: Iterable<string>
+}
+
+/**
+ * Pure selector for D6 auto-save pruning (DESIGN 6.7): pick the ids of
+ * **unpinned** workspaces whose `updatedAt` is older than `now - maxAgeMs`,
+ * excluding any id in `keepIds`. Pinned workspaces are kept regardless of age.
+ * Lock-awareness (don't prune one another live instance holds) is the caller's
+ * job -- this stays pure for unit testing.
+ */
+export function selectPrunableWorkspaces(workspaces: Workspace[], opts: PruneOptions): string[] {
+  const keep = new Set(opts.keepIds ?? [])
+  const cutoff = opts.now - opts.maxAgeMs
+  return workspaces
+    .filter((ws) => !ws.pinned && ws.updatedAt < cutoff && !keep.has(ws.id))
+    .map((ws) => ws.id)
+}
+
 /** Auto-save display name, e.g. "auto · olivier-pc-foo · 14:32". No em dashes. */
 export function autoName(scopeName: string, date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0')

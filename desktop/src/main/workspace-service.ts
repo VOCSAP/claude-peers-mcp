@@ -17,7 +17,8 @@ import {
   listWorkspaces,
   loadWorkspace,
   newWorkspaceId,
-  saveWorkspace
+  saveWorkspace,
+  selectPrunableWorkspaces
 } from './workspace-store'
 import { acquireLock, isLockLive, readLock, refreshLock, releaseLock } from './workspace-lock'
 import { fromWorkspaceSessions, toWorkspaceSessions } from './workspace-session-map'
@@ -25,6 +26,10 @@ import { fromWorkspaceSessions, toWorkspaceSessions } from './workspace-session-
 const HEARTBEAT_MS = 30_000
 /** Cross-host lock is stale after this without a heartbeat (best-effort, DESIGN 15). */
 const LOCK_STALE_MS = 120_000
+/** D6: unpinned auto-saves older than this are pruned, aligned with Claude's ~30-day session retention (DESIGN 6.7). */
+const PRUNE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+/** How often to re-run the prune for long-lived app sessions. */
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 /** True if `pid` is a live process on this machine (EPERM still means alive). */
 function pidAlive(pid: number): boolean {
@@ -74,6 +79,7 @@ export class WorkspaceService {
   private readonly pid: number
   private currentId: string | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
+  private pruneTimer: NodeJS.Timeout | null = null
 
   constructor(private deps: WorkspaceDeps) {
     this.host = deps.host ?? hostname()
@@ -91,7 +97,37 @@ export class WorkspaceService {
    * the newest restorable until the user acts.
    */
   start(): void {
-    /* no-op: see ensureCurrent */
+    // No workspace is minted here (see ensureCurrent). Pruning only deletes
+    // stale OTHER workspaces, so it is safe at startup and on a periodic timer.
+    this.pruneStale()
+    if (!this.pruneTimer) {
+      this.pruneTimer = setInterval(() => this.pruneStale(), PRUNE_INTERVAL_MS)
+    }
+  }
+
+  /**
+   * D6: delete unpinned auto-saves older than PRUNE_MAX_AGE_MS, never touching a
+   * pinned, current, or live-locked-by-another-instance workspace. Returns the
+   * pruned ids. Best-effort: a delete failure is swallowed by deleteWorkspace.
+   */
+  pruneStale(): string[] {
+    const now = Date.now()
+    const keepIds = this.currentId ? [this.currentId] : []
+    const candidates = selectPrunableWorkspaces(listWorkspaces(this.deps.projectDir), {
+      now,
+      maxAgeMs: PRUNE_MAX_AGE_MS,
+      keepIds
+    })
+    const pruned: string[] = []
+    for (const id of candidates) {
+      const lock = readLock(this.deps.projectDir, id)
+      const liveElsewhere =
+        !!lock && isLockLive(lock, { host: this.host, now, isPidAlive: pidAlive, staleMs: LOCK_STALE_MS })
+      if (liveElsewhere) continue
+      deleteWorkspace(this.deps.projectDir, id)
+      pruned.push(id)
+    }
+    return pruned
   }
 
   /** Own a workspace id: acquire its lock + (re)start the heartbeat. */
@@ -172,6 +208,8 @@ export class WorkspaceService {
   releaseOnQuit(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     this.heartbeatTimer = null
+    if (this.pruneTimer) clearInterval(this.pruneTimer)
+    this.pruneTimer = null
     if (!this.currentId) return
     this.saveAuto()
     releaseLock(this.deps.projectDir, this.currentId)

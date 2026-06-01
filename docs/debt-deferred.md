@@ -52,12 +52,6 @@ startup sequence. Revisit if a modal picker is preferred.
 **Why deferred:** Avoided extra IPC + menu wiring; the dialog covers the core
 flows. "New (clear)" needs a graceful-close-all + scope-reset path.
 
-### D6. Auto-save pruning not implemented  `OPEN`
-**What:** Old unpinned auto-saved workspaces are never pruned (DESIGN 6.7
-suggested pruning closed unpinned auto-saves older than N days, aligned with
-Claude's 30-day retention).
-**Planned direction:** A periodic prune in `WorkspaceService`.
-
 ### D7. Cross-host workspace lock is best-effort  `WATCHING`
 **What:** Same-host lock liveness uses `process.kill(pid,0)` (reliable).
 Cross-host relies on heartbeat freshness across two clocks (clock-skew
@@ -92,6 +86,15 @@ edit the palette.
 ---
 
 ## Resolved
+
+### D6. Auto-save pruning implemented  `RESOLVED`
+**Was:** Old unpinned auto-saved workspaces were never pruned (DESIGN 6.7).
+**Resolution:** `workspace-store.ts` gained a pure `selectPrunableWorkspaces`
+(unpinned + older than `maxAgeMs` + not in `keepIds`); `WorkspaceService.pruneStale`
+deletes the selected ids, skipping the current workspace and any workspace whose
+sidecar lock is live for another instance. It runs at `start()` and every 6h
+(timer cleared in `releaseOnQuit`); `PRUNE_MAX_AGE_MS` is 30 days, aligned with
+Claude's session retention. Spec `spec_7bdc3be9`.
 
 ### D3. Locales now shipped as packaged resources  `RESOLVED` (M7)
 **Was:** `locales/en.json` + `fr.json` were read from the app dir in dev only;

@@ -14,6 +14,7 @@ import {
   loadWorkspace,
   newWorkspaceId,
   saveWorkspace,
+  selectPrunableWorkspaces,
   workspacesDir,
 } from "../desktop/src/main/workspace-store.ts";
 import {
@@ -155,6 +156,42 @@ test("autoName has a fixed prefix, no em dash, and the HH:MM", () => {
   expect(name).toContain("olivier-pc-foo");
   expect(name).toContain("14:32");
   expect(name).not.toContain("—"); // em dash banned
+});
+
+// ----- selectPrunableWorkspaces (D6) -----
+
+test("selectPrunableWorkspaces picks only unpinned workspaces past the age cutoff", () => {
+  const now = 1_000_000_000;
+  const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
+  const fresh = sampleWorkspace({ id: "wsp_fresh", updatedAt: now - 1000 });
+  const old = sampleWorkspace({ id: "wsp_old", updatedAt: now - maxAgeMs - 1 });
+  const ids = selectPrunableWorkspaces([fresh, old], { now, maxAgeMs });
+  expect(ids).toEqual(["wsp_old"]);
+});
+
+test("selectPrunableWorkspaces never prunes a pinned workspace however old", () => {
+  const now = 1_000_000_000;
+  const maxAgeMs = 1000;
+  const oldPinned = sampleWorkspace({ id: "wsp_pin", pinned: true, updatedAt: 0 });
+  expect(selectPrunableWorkspaces([oldPinned], { now, maxAgeMs })).toEqual([]);
+});
+
+test("selectPrunableWorkspaces excludes keepIds (the current workspace) even if old", () => {
+  const now = 1_000_000_000;
+  const maxAgeMs = 1000;
+  const a = sampleWorkspace({ id: "wsp_a", updatedAt: 0 });
+  const b = sampleWorkspace({ id: "wsp_b", updatedAt: 0 });
+  const ids = selectPrunableWorkspaces([a, b], { now, maxAgeMs, keepIds: ["wsp_a"] });
+  expect(ids).toEqual(["wsp_b"]);
+});
+
+test("selectPrunableWorkspaces is a no-op on an empty list and respects the exact boundary", () => {
+  const now = 1_000_000_000;
+  const maxAgeMs = 1000;
+  expect(selectPrunableWorkspaces([], { now, maxAgeMs })).toEqual([]);
+  // updatedAt exactly at the cutoff is NOT older-than -> kept.
+  const atCutoff = sampleWorkspace({ id: "wsp_edge", updatedAt: now - maxAgeMs });
+  expect(selectPrunableWorkspaces([atCutoff], { now, maxAgeMs })).toEqual([]);
 });
 
 // ----- workspace-lock -----
