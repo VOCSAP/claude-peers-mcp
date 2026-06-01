@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { SessionRuntime } from '@shared/types'
 import { useDeck } from '../store'
+import { ConfirmDialog } from './ConfirmDialog'
 
 function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element {
   const selectedId = useDeck((s) => s.selectedId)
@@ -11,6 +12,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   const commit = (): void => {
     setEditing(false)
@@ -23,7 +25,10 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
       className={`row ${selectedId === session.id ? 'row-selected' : ''}`}
       onClick={() => setSelected(session.id)}
     >
-      <span className={`dot dot-${session.status}`} title={session.status} />
+      <span
+        className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
+        title={session.thinking ? 'thinking…' : session.status}
+      />
       <div className="row-main">
         {editing ? (
           <input
@@ -54,7 +59,9 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
             {session.name}
           </span>
         )}
-        <span className="row-sub">{session.peerId ?? session.cwd}</span>
+        <span className="row-sub" title={session.cwd}>
+          {session.peerId ?? `Session ${(session.sessionId || session.id).slice(0, 8)}`}
+        </span>
       </div>
       <button
         className="row-btn"
@@ -72,11 +79,23 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
         title="Remove"
         onClick={(e) => {
           e.stopPropagation()
-          removeSession(session.id)
+          setConfirmingDelete(true)
         }}
       >
         ✕
       </button>
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete session?"
+          message={`Remove "${session.name}"? Its terminal is closed; the underlying Claude session can still be resumed later from history.`}
+          confirmLabel="Delete"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={() => {
+            setConfirmingDelete(false)
+            void removeSession(session.id)
+          }}
+        />
+      )}
     </li>
   )
 }

@@ -125,12 +125,23 @@ export function TerminalTile({
         .join(' ')}
       onMouseDown={() => setSelected(id)}
     >
-      <div className="tile-head">
-        <span className={`dot dot-${session.status}`} title={session.status} />
-        <span className="tile-title" title={session.cwd}>
-          {session.name}
-        </span>
-        {session.peerId && <span className="tile-peer">{session.peerId}</span>}
+      <div
+        className="tile-head"
+        onDoubleClick={() => setMaximized(isMax ? null : id)}
+        title="Double-click to toggle fullscreen"
+      >
+        <span
+          className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
+          title={session.thinking ? 'thinking…' : session.status}
+        />
+        <span className="tile-title">{session.name}</span>
+        {session.peerId ? (
+          <span className="tile-peer">{session.peerId}</span>
+        ) : (
+          <span className="tile-peer tile-peer-pending">
+            Session {(session.sessionId || session.id).slice(0, 8)}
+          </span>
+        )}
         <span className="tile-spacer" />
         {session.status === 'exited' && (
           <button

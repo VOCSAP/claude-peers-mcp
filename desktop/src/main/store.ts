@@ -12,6 +12,9 @@ const DEFAULT_CONFIG: AppConfig = {
   shell: '',
   interactiveShell: false,
   columns: 2,
+  displayMode: '2x2',
+  gridCols: 2,
+  gridRows: 2,
   theme: 'dark',
   fontSize: 13,
   restoreSessions: true

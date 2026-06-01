@@ -179,26 +179,28 @@ desktop/
 - [x] Tap the PTY output stream; detect busy markers (spinner / "esc to
   interrupt") vs idle. Debounce. Emit `session:thinking {id, busy}`.
 - [x] Isolated module so rules can be tuned per Claude version / swapped out.
-- [~] Renderer shows a dot in the leading position of each sidebar row + tile.
-  (event plumbed through to the renderer; the dot UI lands in M5.)
+- [x] Renderer shows a (pulsing) dot in the leading position of each sidebar row + tile.
 
 ## 9. UI (renderer)
 
-- [ ] **Sidebar (resizable by drag, persisted width):** rows = `[colour swatch +
+- [~] **Sidebar (resizable by drag, persisted width):** rows = `[colour swatch +
   thinking dot] [editable name — primary] / [peer_id — secondary, dim, tooltip]`;
   `+` (quick create) with `▾` → **CreateMenu** (agent dropdown from
   `.claude/agents`, free args, presets, optional colour); delete with
   **ConfirmDialog**; single-click select; double-click toggles fullscreen.
-- [ ] **TileArea + DisplayModeBar**: modes 1×1 carousel (horizontal scroll +
+  (M5a: thinking dot, peer_id secondary w/ fallback, single-click select,
+  ConfirmDialog-gated delete. M5b: resizable width, colour swatch, CreateMenu ▾.)
+- [~] **TileArea + DisplayModeBar**: modes 1×1 carousel (horizontal scroll +
   wheel), 1×2, 2×2, custom X×Y (free inputs). Overflow scrollable. Each tile is
   **framed in its session colour** (border/header); xterm background untouched.
-- [ ] **Fullscreen**: per-tile `⤢` button + shortcut (`Ctrl+Shift+M`) +
+  (M5a: all modes + carousel wheel + overflow. M5b: per-session colour frame.)
+- [x] **Fullscreen**: per-tile `⤢` button + shortcut (`Ctrl+Shift+M`) +
   double-click **on the tile title bar only** (never the xterm body). All PTYs
   stay alive when hidden; refit on visibility/size change.
 - [ ] **Colour**: auto-assign from a rotating ~8–12 palette; user override via a
-  colour picker; persisted per session.
+  colour picker; persisted per session. (M5b)
 - [ ] **SettingsDialog**: launch command, locale, theme, font size, default
-  display mode, restore behaviour, palette.
+  display mode, restore behaviour, palette. (M5b expands the current dialog.)
 - [ ] All strings via `t()` (§10).
 
 ## 10. i18n (`i18n.ts` main + renderer)

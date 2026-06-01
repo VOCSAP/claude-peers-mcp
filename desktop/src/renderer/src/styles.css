@@ -62,6 +62,80 @@ body {
   height: 100vh;
 }
 
+.main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---------- Display-mode bar ---------- */
+.modebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.modebar-group {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.mode-btn:hover {
+  color: var(--fg);
+}
+
+.mode-btn-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.modebar-custom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.modebar-custom input {
+  width: 46px;
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.modebar-x {
+  color: var(--fg-dim);
+}
+
+.modebar-spacer {
+  flex: 1;
+}
+
+.modebar-count {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
 /* ---------- Sidebar ---------- */
 .sidebar {
   display: flex;
@@ -219,21 +293,66 @@ body {
   background: #7a7a7a;
 }
 
-/* ---------- Grid ---------- */
-.grid {
-  display: grid;
-  gap: var(--gap);
-  padding: var(--gap);
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg);
-  align-content: stretch;
+/* Thinking pulse overrides the status colour while a turn is running. */
+.dot-thinking {
+  background: var(--accent);
+  animation: dot-pulse 1s ease-in-out infinite;
 }
 
-.grid-empty {
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* ---------- Tile area ---------- */
+.area {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--gap);
+  background: var(--bg);
+}
+
+.area-grid {
+  display: grid;
+  gap: var(--gap);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Maximized: single tile fills the area (the others are mounted but hidden). */
+.area-maximized {
+  display: block;
+}
+
+.area-maximized .tile {
+  height: 100%;
+}
+
+/* 1x1 carousel: one tile per view, horizontal scroll-snap. */
+.area-carousel {
+  display: flex;
+  gap: var(--gap);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+}
+
+.area-carousel .tile {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+}
+
+.area-empty {
   display: grid;
   place-items: center;
-  background: var(--bg);
 }
 
 .empty-card {
@@ -274,10 +393,6 @@ body {
   display: none;
 }
 
-.grid-maximized .tile-max {
-  grid-column: 1 / -1;
-}
-
 .tile-head {
   display: flex;
   align-items: center;
@@ -302,6 +417,12 @@ body {
   border-radius: 10px;
   padding: 1px 7px;
   white-space: nowrap;
+}
+
+/* Placeholder shown until the real peer_id resolves. */
+.tile-peer-pending {
+  opacity: 0.6;
+  font-style: italic;
 }
 
 .tile-spacer {
@@ -459,6 +580,20 @@ button {
   border-radius: 6px;
   padding: 7px 12px;
   cursor: pointer;
+}
+
+.modal-confirm {
+  width: 380px;
+}
+
+.confirm-msg {
+  color: var(--fg-dim);
+  line-height: 1.5;
+  margin: 0 0 8px;
+}
+
+.primary.danger {
+  background: var(--danger);
 }
 
 code {

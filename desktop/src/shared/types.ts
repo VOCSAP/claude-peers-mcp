@@ -2,6 +2,9 @@
 
 export type SessionStatus = 'starting' | 'running' | 'exited'
 
+/** Tile layout mode. '1x1' is a horizontal carousel; the rest are cols x rows grids. */
+export type DisplayMode = '1x1' | '1x2' | '2x2' | 'custom'
+
 /** Persisted definition of a peer session. PTY scrollback is NOT persisted. */
 export interface SessionDef {
   id: string
@@ -37,8 +40,14 @@ export interface AppConfig {
   shell: string
   /** Load the interactive shell / profile (alias resolution) with start-marker stripping. */
   interactiveShell: boolean
-  /** Number of columns in the tile grid. */
+  /** Number of columns in the tile grid (legacy; custom mode uses gridCols/gridRows). */
   columns: number
+  /** Tile layout mode. */
+  displayMode: DisplayMode
+  /** Columns for the custom display mode (>= 1). */
+  gridCols: number
+  /** Rows for the custom display mode (>= 1). */
+  gridRows: number
   theme: 'dark' | 'light'
   fontSize: number
   /** Re-spawn persisted sessions on launch. */
