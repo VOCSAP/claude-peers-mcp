@@ -3,6 +3,7 @@ import type {
   AppConfig,
   CreateSessionInput,
   DeckApi,
+  LaunchConfig,
   PtyDataEvent,
   PtyExitEvent,
   SessionRuntime,
@@ -59,6 +60,10 @@ const api: DeckApi = {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (patch: Partial<AppConfig>) => ipcRenderer.invoke('config:set', patch),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDirectory'),
+
+  listAgents: () => ipcRenderer.invoke('agents:list'),
+  getLaunchConfig: () => ipcRenderer.invoke('launch:get'),
+  saveLaunchConfig: (cfg: LaunchConfig) => ipcRenderer.invoke('launch:set-global', cfg),
 
   onPtyData: (cb: (e: PtyDataEvent) => void) => onPtyDataMux(cb),
   onPtyExit: (cb: (e: PtyExitEvent) => void) => onPtyExitMux(cb),

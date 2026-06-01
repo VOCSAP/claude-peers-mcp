@@ -138,8 +138,7 @@ desktop/
 - [x] Schema: `{ launchCommand: string, presets?: {label,args,prompt?}[] }`.
 - [~] Create the local file on demand (UI action), never silently.
   (`createLocalConfig` exists; the UI action lands in M5.)
-- [~] Global config editable from the Settings dialog.
-  (`saveGlobalConfig` exists; the Settings dialog lands in M5.)
+- [x] Global config editable from the Settings dialog (launch command).
 
 ## 6. PTY + sessions (`pty-manager.ts`, `session-service.ts`)
 
@@ -183,24 +182,24 @@ desktop/
 
 ## 9. UI (renderer)
 
-- [~] **Sidebar (resizable by drag, persisted width):** rows = `[colour swatch +
+- [x] **Sidebar (resizable by drag, persisted width):** rows = `[colour swatch +
   thinking dot] [editable name — primary] / [peer_id — secondary, dim, tooltip]`;
   `+` (quick create) with `▾` → **CreateMenu** (agent dropdown from
-  `.claude/agents`, free args, presets, optional colour); delete with
-  **ConfirmDialog**; single-click select; double-click toggles fullscreen.
-  (M5a: thinking dot, peer_id secondary w/ fallback, single-click select,
-  ConfirmDialog-gated delete. M5b: resizable width, colour swatch, CreateMenu ▾.)
-- [~] **TileArea + DisplayModeBar**: modes 1×1 carousel (horizontal scroll +
+  `.claude/agents`, free args, presets, optional colour, advanced folder); delete
+  with **ConfirmDialog**; single-click select. (Note: row double-click edits the
+  name; tile-title double-click toggles fullscreen.)
+- [x] **TileArea + DisplayModeBar**: modes 1×1 carousel (horizontal scroll +
   wheel), 1×2, 2×2, custom X×Y (free inputs). Overflow scrollable. Each tile is
-  **framed in its session colour** (border/header); xterm background untouched.
-  (M5a: all modes + carousel wheel + overflow. M5b: per-session colour frame.)
+  **framed in its session colour** (head accent); xterm background untouched.
 - [x] **Fullscreen**: per-tile `⤢` button + shortcut (`Ctrl+Shift+M`) +
   double-click **on the tile title bar only** (never the xterm body). All PTYs
   stay alive when hidden; refit on visibility/size change.
-- [ ] **Colour**: auto-assign from a rotating ~8–12 palette; user override via a
-  colour picker; persisted per session. (M5b)
-- [ ] **SettingsDialog**: launch command, locale, theme, font size, default
-  display mode, restore behaviour, palette. (M5b expands the current dialog.)
+- [x] **Colour**: auto-assign from a rotating 10-colour palette; user override via a
+  colour picker; persisted per session.
+- [~] **SettingsDialog**: launch command, locale, theme, font size, default
+  display mode, restore behaviour, palette. (Done: launch command (global),
+  theme, font, default display mode, restore, shell, interactive. Pending:
+  locale (M6 i18n), palette editor.)
 - [ ] All strings via `t()` (§10).
 
 ## 10. i18n (`i18n.ts` main + renderer)

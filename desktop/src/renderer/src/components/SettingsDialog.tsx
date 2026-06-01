@@ -1,6 +1,13 @@
-import { useState } from 'react'
-import type { AppConfig } from '@shared/types'
+import { useEffect, useState } from 'react'
+import type { AppConfig, DisplayMode, LaunchPreset } from '@shared/types'
 import { useDeck } from '../store'
+
+const DISPLAY_MODES: { value: DisplayMode; label: string }[] = [
+  { value: '1x1', label: '1×1 (carousel)' },
+  { value: '1x2', label: '1×2' },
+  { value: '2x2', label: '2×2' },
+  { value: 'custom', label: 'Custom' }
+]
 
 export function SettingsDialog(): React.JSX.Element {
   const config = useDeck((s) => s.config!)
@@ -8,6 +15,16 @@ export function SettingsDialog(): React.JSX.Element {
   const openSettings = useDeck((s) => s.openSettings)
 
   const [form, setForm] = useState<AppConfig>(config)
+  // launchCommand lives in the (global) launch config, not AppConfig.
+  const [launchCommand, setLaunchCommand] = useState('')
+  const [presets, setPresets] = useState<LaunchPreset[]>([])
+
+  useEffect(() => {
+    void window.api.getLaunchConfig().then((c) => {
+      setLaunchCommand(c.launchCommand)
+      setPresets(c.presets)
+    })
+  }, [])
 
   const set = <K extends keyof AppConfig>(key: K, value: AppConfig[K]): void =>
     setForm((f) => ({ ...f, [key]: value }))
@@ -19,6 +36,7 @@ export function SettingsDialog(): React.JSX.Element {
 
   const save = async (): Promise<void> => {
     await updateConfig(form)
+    await window.api.saveLaunchConfig({ launchCommand: launchCommand.trim(), presets })
     openSettings(false)
   }
 
@@ -39,11 +57,11 @@ export function SettingsDialog(): React.JSX.Element {
         </label>
 
         <label className="field">
-          <span>Peer command</span>
-          <input value={form.peerCommand} onChange={(e) => set('peerCommand', e.target.value)} />
+          <span>Launch command</span>
+          <input value={launchCommand} onChange={(e) => setLaunchCommand(e.target.value)} />
           <small>
-            Launched inside each terminal (e.g. your <code>claudepeers</code> alias). Resolved via
-            your login shell so aliases load.
+            Run in each terminal, with <code>--session-id</code> appended. Saved to the global
+            launch config; a project <code>.claude/claude-peers/config.json</code> overrides it.
           </small>
         </label>
 
@@ -57,16 +75,28 @@ export function SettingsDialog(): React.JSX.Element {
           <small>Leave empty to auto-detect per OS.</small>
         </label>
 
+        <label className="field field-check">
+          <input
+            type="checkbox"
+            checked={form.interactiveShell}
+            onChange={(e) => set('interactiveShell', e.target.checked)}
+          />
+          <span>Interactive shell (load rc/profile for aliases)</span>
+        </label>
+
         <div className="field-grid">
           <label className="field">
-            <span>Columns</span>
-            <input
-              type="number"
-              min={1}
-              max={6}
-              value={form.columns}
-              onChange={(e) => set('columns', Math.max(1, Number(e.target.value) || 1))}
-            />
+            <span>Display mode</span>
+            <select
+              value={form.displayMode}
+              onChange={(e) => set('displayMode', e.target.value as DisplayMode)}
+            >
+              {DISPLAY_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="field">

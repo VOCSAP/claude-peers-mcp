@@ -648,3 +648,64 @@ code {
   padding: 1px 4px;
   font-family: ui-monospace, monospace;
 }
+
+/* ---------- CreateMenu popover ---------- */
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+}
+
+.popover {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.popover h3 {
+  margin: 0 0 14px;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chip:hover {
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+.advanced {
+  margin-bottom: 14px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+  user-select: none;
+  margin-bottom: 8px;
+}
+
+.advanced summary:hover {
+  color: var(--fg);
+}

@@ -1,6 +1,8 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { AppConfig, CreateSessionInput } from '@shared/types'
+import type { AppConfig, CreateSessionInput, LaunchConfig } from '@shared/types'
 import type { SessionService } from './session-service'
+import { listAgents } from './agents'
+import { resolveLaunchConfig, saveGlobalConfig } from './launch-config'
 
 interface IpcDeps {
   service: SessionService
@@ -37,6 +39,11 @@ export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDep
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })
+
+  // ----- create-menu data -----
+  ipcMain.handle('agents:list', () => listAgents(getConfig().projectDir))
+  ipcMain.handle('launch:get', () => resolveLaunchConfig(getConfig().projectDir))
+  ipcMain.handle('launch:set-global', (_e, cfg: LaunchConfig) => saveGlobalConfig(cfg))
 
   // ----- forward service events to the renderer -----
   const send = (channel: string, payload: unknown): void => {

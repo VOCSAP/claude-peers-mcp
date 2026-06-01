@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { SessionRuntime } from '@shared/types'
 import { useDeck } from '../store'
 import { ConfirmDialog } from './ConfirmDialog'
+import { CreateMenu } from './CreateMenu'
 
 function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element {
   const selectedId = useDeck((s) => s.selectedId)
@@ -117,11 +118,7 @@ export function Sidebar(): React.JSX.Element {
   const openSettings = useDeck((s) => s.openSettings)
   const setSidebarWidth = useDeck((s) => s.setSidebarWidth)
   const updateConfig = useDeck((s) => s.updateConfig)
-
-  const addWithDir = async (): Promise<void> => {
-    const dir = await window.api.pickDirectory()
-    if (dir) createSession({ cwd: dir })
-  }
+  const [createOpen, setCreateOpen] = useState(false)
 
   // Drag the right edge to resize; persist the final width on mouse-up.
   const startResize = (e: React.MouseEvent): void => {
@@ -146,13 +143,18 @@ export function Sidebar(): React.JSX.Element {
       </header>
 
       <div className="sidebar-actions">
-        <button className="primary" onClick={() => createSession({})} title="Add in project dir">
+        <button className="primary" onClick={() => void createSession({})} title="Add in project dir">
           ＋ Add peer
         </button>
-        <button className="icon-btn" title="Add in another folder…" onClick={addWithDir}>
-          📁
+        <button
+          className="icon-btn"
+          title="Advanced: agent, args, presets, folder…"
+          onClick={() => setCreateOpen(true)}
+        >
+          ▾
         </button>
       </div>
+      {createOpen && <CreateMenu onClose={() => setCreateOpen(false)} />}
 
       <ul className="rows">
         {sessions.map((s) => (

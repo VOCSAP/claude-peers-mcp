@@ -58,6 +58,22 @@ export interface AppConfig {
   restoreSessions: boolean
 }
 
+/**
+ * Launch config shapes for the IPC contract. Structurally identical to the ones
+ * in main/launch-config.ts (kept separate so that module stays import-free for
+ * its bun unit tests). Keep the two in sync.
+ */
+export interface LaunchPreset {
+  label: string
+  args: string
+  prompt?: string
+}
+
+export interface LaunchConfig {
+  launchCommand: string
+  presets: LaunchPreset[]
+}
+
 export interface CreateSessionInput {
   name?: string
   cwd?: string
@@ -104,6 +120,11 @@ export interface DeckApi {
   getConfig(): Promise<AppConfig>
   setConfig(patch: Partial<AppConfig>): Promise<AppConfig>
   pickDirectory(): Promise<string | null>
+
+  // create-menu data
+  listAgents(): Promise<string[]>
+  getLaunchConfig(): Promise<LaunchConfig>
+  saveLaunchConfig(cfg: LaunchConfig): Promise<void>
 
   // events (return an unsubscribe fn)
   onPtyData(cb: (e: PtyDataEvent) => void): () => void
