@@ -21,6 +21,21 @@ This fork extends the original [louislva/claude-peers-mcp](https://github.com/lo
 - **Centralized configuration** (env vars + JSON settings file).
 - **isolation by groups** (TOFU), **resume of identity** across reconnects, **WebSocket push** transport, dual `instance_token` + `peer_id` model.
 - **v0.3.3 delivery hardening**: heuristic ack via `send_message` (replying acknowledges prior messages from the same group), capped WS flush at reconnect (no more backlog avalanche), TTL purge of stale undelivered messages.
+- **Desktop app (Claude Peers Deck)**: dock several Claude Code peer sessions in one window (see below).
+
+## Desktop app (Claude Peers Deck)
+
+[`desktop/`](desktop/) is an Electron app that docks multiple Claude Code peer
+sessions into a single window -- each tile a real terminal (PTY) -- with an
+isolated peer group per window, live tiling, and save / restore of session
+workspaces (each tile resumes its Claude conversation). English / French UI.
+
+```bash
+cd desktop && npm install && npm link      # one-time
+cd /path/to/your/project && claude-peers-desk
+```
+
+Full features, usage, build and packaging: **[desktop/README.md](desktop/README.md)**.
 
 ## Two deployment modes
 
