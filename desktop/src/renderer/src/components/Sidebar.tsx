@@ -5,6 +5,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 
 function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element {
   const selectedId = useDeck((s) => s.selectedId)
+  const maximizedId = useDeck((s) => s.maximizedId)
   const setSelected = useDeck((s) => s.setSelected)
   const setMaximized = useDeck((s) => s.setMaximized)
   const removeSession = useDeck((s) => s.removeSession)
@@ -65,14 +66,14 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
       </div>
       <button
         className="row-btn"
-        title="Maximize"
+        title={maximizedId === session.id ? 'Restore' : 'Maximize'}
         onClick={(e) => {
           e.stopPropagation()
           setSelected(session.id)
-          setMaximized(session.id)
+          setMaximized(maximizedId === session.id ? null : session.id)
         }}
       >
-        ⤢
+        {maximizedId === session.id ? '⤡' : '⤢'}
       </button>
       <button
         className="row-btn row-btn-danger"
