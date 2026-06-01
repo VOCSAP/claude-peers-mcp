@@ -17,6 +17,8 @@ export interface SessionDef {
   args: string
   /** Current claude --session-id. Changes on every fork-resume. Empty until first spawn. */
   sessionId: string
+  /** Display colour (hex) framing the tile + sidebar swatch. Auto-assigned, overridable. */
+  color: string
   createdAt: number
 }
 
@@ -48,6 +50,8 @@ export interface AppConfig {
   gridCols: number
   /** Rows for the custom display mode (>= 1). */
   gridRows: number
+  /** Sidebar width in px (resizable, persisted). */
+  sidebarWidth: number
   theme: 'dark' | 'light'
   fontSize: number
   /** Re-spawn persisted sessions on launch. */
@@ -61,6 +65,8 @@ export interface CreateSessionInput {
   command?: string
   /** Extra launch args (e.g. "--agent reviewer"). */
   args?: string
+  /** Optional explicit colour (hex); falls back to the rotating palette. */
+  color?: string
 }
 
 // ----- IPC channel payloads -----
@@ -87,6 +93,7 @@ export interface DeckApi {
   createSession(input: CreateSessionInput): Promise<SessionRuntime>
   removeSession(id: string): Promise<void>
   renameSession(id: string, name: string): Promise<void>
+  setSessionColor(id: string, color: string): Promise<void>
   restartSession(id: string): Promise<SessionRuntime>
 
   // pty io

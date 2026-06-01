@@ -48,6 +48,8 @@ const api: DeckApi = {
   createSession: (input: CreateSessionInput) => ipcRenderer.invoke('sessions:create', input),
   removeSession: (id: string) => ipcRenderer.invoke('sessions:remove', id),
   renameSession: (id: string, name: string) => ipcRenderer.invoke('sessions:rename', id, name),
+  setSessionColor: (id: string, color: string) =>
+    ipcRenderer.invoke('sessions:set-color', id, color),
   restartSession: (id: string) => ipcRenderer.invoke('sessions:restart', id),
 
   ptyInput: (id: string, data: string) => ipcRenderer.send('pty:input', id, data),

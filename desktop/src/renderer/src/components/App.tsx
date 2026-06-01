@@ -12,6 +12,7 @@ export function App(): React.JSX.Element {
   const selectedId = useDeck((s) => s.selectedId)
   const maximizedId = useDeck((s) => s.maximizedId)
   const setMaximized = useDeck((s) => s.setMaximized)
+  const sidebarWidth = useDeck((s) => s.sidebarWidth)
 
   useEffect(() => {
     void init()
@@ -39,7 +40,7 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className="app">
+    <div className="app" style={{ '--sidebar-w': `${sidebarWidth}px` } as React.CSSProperties}>
       <Sidebar />
       <div className="main-pane">
         <DisplayModeBar />

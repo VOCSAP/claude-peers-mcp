@@ -15,6 +15,7 @@ const DEFAULT_CONFIG: AppConfig = {
   displayMode: '2x2',
   gridCols: 2,
   gridRows: 2,
+  sidebarWidth: 260,
   theme: 'dark',
   fontSize: 13,
   restoreSessions: true

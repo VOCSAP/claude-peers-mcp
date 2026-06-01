@@ -10,6 +10,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
   const setMaximized = useDeck((s) => s.setMaximized)
   const removeSession = useDeck((s) => s.removeSession)
   const renameSession = useDeck((s) => s.renameSession)
+  const setColor = useDeck((s) => s.setColor)
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
@@ -26,6 +27,14 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
       className={`row ${selectedId === session.id ? 'row-selected' : ''}`}
       onClick={() => setSelected(session.id)}
     >
+      <input
+        type="color"
+        className="swatch"
+        value={session.color || '#4f86ff'}
+        title="Session colour"
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => void setColor(session.id, e.target.value)}
+      />
       <span
         className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
         title={session.thinking ? 'thinking…' : session.status}
@@ -106,10 +115,25 @@ export function Sidebar(): React.JSX.Element {
   const config = useDeck((s) => s.config!)
   const createSession = useDeck((s) => s.createSession)
   const openSettings = useDeck((s) => s.openSettings)
+  const setSidebarWidth = useDeck((s) => s.setSidebarWidth)
+  const updateConfig = useDeck((s) => s.updateConfig)
 
   const addWithDir = async (): Promise<void> => {
     const dir = await window.api.pickDirectory()
     if (dir) createSession({ cwd: dir })
+  }
+
+  // Drag the right edge to resize; persist the final width on mouse-up.
+  const startResize = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    const onMove = (ev: MouseEvent): void => setSidebarWidth(ev.clientX)
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      void updateConfig({ sidebarWidth: useDeck.getState().sidebarWidth })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   return (
@@ -141,6 +165,8 @@ export function Sidebar(): React.JSX.Element {
         <span className="foot-label">project</span>
         <span className="foot-path">{config.projectDir}</span>
       </footer>
+
+      <div className="sidebar-resize" onMouseDown={startResize} title="Drag to resize" />
     </aside>
   )
 }

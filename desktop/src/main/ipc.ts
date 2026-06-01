@@ -15,6 +15,9 @@ export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDep
   ipcMain.handle('sessions:create', (_e, input: CreateSessionInput) => service.create(input ?? {}))
   ipcMain.handle('sessions:remove', (_e, id: string) => service.remove(id))
   ipcMain.handle('sessions:rename', (_e, id: string, name: string) => service.rename(id, name))
+  ipcMain.handle('sessions:set-color', (_e, id: string, color: string) =>
+    service.setColor(id, color)
+  )
   ipcMain.handle('sessions:restart', (_e, id: string) => service.restart(id))
 
   // ----- pty io (fire-and-forget) -----

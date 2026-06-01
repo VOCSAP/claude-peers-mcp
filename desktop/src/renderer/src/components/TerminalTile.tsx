@@ -126,6 +126,7 @@ export function TerminalTile({
       ]
         .filter(Boolean)
         .join(' ')}
+      style={{ '--tile-color': session.color || 'transparent' } as React.CSSProperties}
       onMouseDown={() => setSelected(id)}
     >
       <div

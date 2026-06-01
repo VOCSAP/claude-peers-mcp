@@ -143,6 +143,46 @@ body {
   background: var(--bg-2);
   border-right: 1px solid var(--border);
   min-width: 0;
+  position: relative;
+}
+
+/* Drag handle on the sidebar's right edge. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.sidebar-resize:hover {
+  background: var(--accent);
+  opacity: 0.4;
+}
+
+/* Per-session colour swatch (native colour input, restyled). */
+.swatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
 }
 
 .sidebar-head {
@@ -400,6 +440,8 @@ body {
   padding: 5px 8px;
   background: var(--bg-3);
   border-bottom: 1px solid var(--border);
+  border-top: 2px solid var(--tile-color, transparent);
+  cursor: default;
 }
 
 .tile-title {
