@@ -1,7 +1,8 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, Menu, nativeTheme, shell } from 'electron'
 import type { AppConfig } from '@shared/types'
 import { loadConfig, saveConfig } from './store'
+import { buildAppMenu } from './menu'
 import { SessionService } from './session-service'
 import { registerIpc } from './ipc'
 import { parseCliContext } from './cli-context'
@@ -105,6 +106,8 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = config.theme
+  // Tailored menu (drops the confusing default Edit roles); no auto-open DevTools.
+  Menu.setApplicationMenu(buildAppMenu())
   registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
   service.start()
   // Attach an auto-save workspace capturing whatever the service just restored.
