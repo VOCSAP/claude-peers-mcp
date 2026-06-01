@@ -75,10 +75,6 @@ within that window keeps its placeholder id. Harmless (such a session has no
 resumable content) but means no background re-capture after the window.
 **Planned direction:** Subsumed by the D1/D2 back-channel.
 
-### D11. Double-click on a sidebar row: rename vs fullscreen  `OPEN` (minor)
-**What:** Double-click semantics on a sidebar session row (rename) can conflict
-with the tile double-click (fullscreen). Reconcile the gesture.
-
 ### D12. No palette editor in Settings  `OPEN` (minor)
 **What:** Session colours come from a fixed rotating palette; there is no UI to
 edit the palette.
@@ -86,6 +82,13 @@ edit the palette.
 ---
 
 ## Resolved
+
+### D11. Double-click gesture reconciled  `RESOLVED`
+**Was:** Double-click meant rename on a sidebar row but fullscreen on a tile.
+**Resolution:** Double-click on a sidebar row now toggles maximize (mirrors the
+tile head, guarded to ignore clicks on buttons/inputs); rename moved to an
+explicit pencil (✎) button in the row. New i18n key `sidebar.renameTitle`
+(en/fr) keeps the parity tests green. Spec `spec_23d449df`.
 
 ### D6. Auto-save pruning implemented  `RESOLVED`
 **Was:** Old unpinned auto-saved workspaces were never pruned (DESIGN 6.7).

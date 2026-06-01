@@ -36,6 +36,7 @@ export const EN_DEFAULTS: Record<string, string> = {
   'sidebar.project': 'project',
   'sidebar.resizeTitle': 'Drag to resize',
   'sidebar.sessionColour': 'Session colour',
+  'sidebar.renameTitle': 'Rename',
   'sidebar.removeTitle': 'Remove',
 
   'status.running': 'running',

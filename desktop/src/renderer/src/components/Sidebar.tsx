@@ -29,6 +29,13 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
     <li
       className={`row ${selectedId === session.id ? 'row-selected' : ''}`}
       onClick={() => setSelected(session.id)}
+      onDoubleClick={(e) => {
+        // Mirror the tile head: double-click toggles maximize. Ignore
+        // double-clicks that land on a button/input (they own their gesture).
+        if ((e.target as HTMLElement).closest('button, input')) return
+        setSelected(session.id)
+        setMaximized(maximizedId === session.id ? null : session.id)
+      }}
     >
       <input
         type="color"
@@ -60,16 +67,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span
-            className="row-name"
-            title={session.cwd}
-            style={{ color: session.color || undefined }}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              setDraft(session.name)
-              setEditing(true)
-            }}
-          >
+          <span className="row-name" title={session.cwd} style={{ color: session.color || undefined }}>
             {session.name}
           </span>
         )}
@@ -78,6 +76,19 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
             t('session.pending', { id: (session.sessionId || session.id).slice(0, 8) })}
         </span>
       </div>
+      {!editing && (
+        <button
+          className="row-btn"
+          title={t('sidebar.renameTitle')}
+          onClick={(e) => {
+            e.stopPropagation()
+            setDraft(session.name)
+            setEditing(true)
+          }}
+        >
+          ✎
+        </button>
+      )}
       <button
         className="row-btn"
         title={maximizedId === session.id ? t('common.restore') : t('common.maximize')}
