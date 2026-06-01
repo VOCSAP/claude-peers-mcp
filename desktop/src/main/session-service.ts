@@ -228,14 +228,9 @@ export class SessionService extends EventEmitter {
   restart(id: string): SessionRuntime {
     const def = this.defs.find((d) => d.id === id)
     if (!def) throw new Error(`unknown session ${id}`)
-    const r = this.runtime.get(id)
-    if (r?.expired) {
-      def.sessionId = '' // drop the dead lineage -> spawn fresh
-      if (r) r.expired = false
-      this.spawnSession(def, 'fresh')
-    } else {
-      this.spawnSession(def, 'resume')
-    }
+    // spawnSession downgrades to a fresh launch automatically when there is no
+    // transcript to resume, so a single 'resume' request covers both cases.
+    this.spawnSession(def, 'resume')
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -262,20 +257,22 @@ export class SessionService extends EventEmitter {
     const r = this.runtime.get(def.id)
     if (!r) return // removed before we got here
 
-    if (mode === 'resume' && def.sessionId) {
-      if (this.registry.has(def.sessionId)) return // same lineage already live
-      if (!transcriptExists(this.home, def.cwd, def.sessionId)) {
-        // Transcript gone (expired / pruned) -> "start new" overlay, no resume.
-        r.status = 'exited'
-        r.exitCode = null
-        r.expired = true
-        this.broadcast()
-        return
+    let effectiveMode: SpawnMode = mode
+    if (mode === 'resume') {
+      if (def.sessionId && this.registry.has(def.sessionId)) return // already live
+      // Resume only if there is actually a transcript to resume. A session that
+      // was opened but never used leaves no transcript -> there is nothing to
+      // resume, so start it FRESH (a working terminal) rather than show a scary
+      // "expired" overlay. Claude writes the transcript only after real activity.
+      if (!def.sessionId || !transcriptExists(this.home, def.cwd, def.sessionId)) {
+        effectiveMode = 'fresh'
+        def.sessionId = '' // -> startPty mints a new id
       }
     }
+    r.expired = false
 
     const before = new Set(listTranscriptIds(this.home, def.cwd).map((e) => e.id))
-    this.startPty(def, mode) // INSTANT
+    this.startPty(def, effectiveMode) // INSTANT
     // Fire-and-forget: discovery must never block terminal visibility.
     void this.discoverRealId(def, before)
   }
