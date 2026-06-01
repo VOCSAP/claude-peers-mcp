@@ -3,3 +3,5 @@ out/
 dist/
 *.log
 .DS_Store
+# Local, machine-specific node-gyp pin (e.g. msvs_version on Windows). Not shared.
+.npmrc

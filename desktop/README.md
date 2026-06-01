@@ -15,17 +15,21 @@ terminal stack that powers VS Code.
 
 ## How it works
 
-Each tile spawns your peer command (the `claudepeers` alias by default) inside a
-real pseudo-terminal:
+Each tile spawns the resolved launch command (default
+`claude --dangerously-load-development-channels server:claude-peers`, see
+`launch-config.ts`) inside a real pseudo-terminal, with `--session-id <uuid>`
+appended (and `--resume <prev> --fork-session` on restore):
 
-- **Linux / macOS** — `"$SHELL" -l -i -c "claudepeers"` so your login shell rc
-  loads and the alias resolves.
-- **Windows** — `powershell.exe -NoLogo -Command claudepeers` so your PowerShell
-  profile loads the alias/function.
+- **Default (login, non-interactive)** — `"$SHELL" -l -c "<command>"` (Unix) /
+  `powershell -NoLogo -NoProfile -Command "<command>"` (Windows). This keeps rc
+  / profile noise out of the terminal.
+- **Interactive opt-in** (`interactiveShell`) — adds `-i` (Unix) / loads the
+  profile (Windows) for users whose launch command is a shell alias; a unique
+  start marker is emitted and all output before it is stripped.
 
-The command, shell, default project directory, grid columns, theme and font size
-are all configurable in **Settings** (⚙). Sessions and settings persist to the
-Electron `userData` directory and are restored on launch.
+Shell, default project directory, grid columns, theme and font size are
+configurable in **Settings** (⚙). Sessions and settings persist to the Electron
+`userData` directory and are restored on launch.
 
 ### Peer id display
 
@@ -52,6 +56,32 @@ npm run rebuild      # electron-rebuild -f -w node-pty
 > `node-pty` is a native module. Building it needs a C/C++ toolchain:
 > **Windows** — "Desktop development with C++" (Visual Studio Build Tools);
 > **macOS** — Xcode Command Line Tools; **Linux** — `build-essential` + `python3`.
+
+### Windows build gotchas
+
+`node-pty` hardcodes `SpectreMitigation=Spectre` in its `binding.gyp`, so the
+Visual Studio toolset you build with **must** have the matching
+**"MSVC … C++ x64/x86 Spectre-mitigated libs (Latest)"** component installed
+(Visual Studio Installer → Individual components → search "Spectre"). Without it
+the build fails with `error MSB8040`.
+
+If `node-gyp` keeps picking the wrong toolchain (some apps register phantom
+Visual Studio instances that `vswhere` reports), pin the year explicitly so it
+selects your real install — set it for the build:
+
+```powershell
+$env:npm_config_msvs_version = "2019"   # or "2022", matching your VS
+npm run rebuild
+```
+
+or persist it for this clone in a local, git-ignored `desktop/.npmrc`:
+
+```
+msvs_version=2019
+```
+
+(`.npmrc` is git-ignored on purpose: the right value is machine-specific and a
+committed pin would break clones with a different Visual Studio.)
 
 ## Type-check & build
 
