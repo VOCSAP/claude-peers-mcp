@@ -221,29 +221,35 @@ desktop/
 
 See DESIGN §6 for the full rationale and verified Claude facts.
 
-**Storage & model**
-- [ ] Workspace JSON in-repo: `<project>/.claude/claude-peers/workspaces/<id>.json`
+**Storage & model**  (data layer M6b-1, commit see git log; UI/runtime wiring M6b-2)
+- [x] Workspace JSON in-repo: `<project>/.claude/claude-peers/workspaces/<id>.json`
   (schema in DESIGN §6.3: id, name, pinned, cwd, **`groupId`** (sha256),
   scopeName, **`scopeKind`** ("ephemeral" | "custom"), displayMode,
   sessions[]). **No `scopeSecret` is ever persisted** (DESIGN §6.3/§6.8): only
-  `groupId` for display/identification. On restore, ephemeral scopes mint a
-  fresh secret; custom scopes are re-supplied via the launch arg (optional
-  `safeStorage` cache, never the repo).
-- [ ] Discovery = list that one dir. Maintain a `.gitignore` in
+  `groupId` for display/identification. (`workspace-store.ts`: atomic save,
+  defensive `scopeSecret` strip, `loadWorkspace`/`listWorkspaces`. On-restore
+  scope minting is M6b-2.)
+- [x] Discovery = list that one dir. Maintain a `.gitignore` in
   `.claude/claude-peers/` — **not because the files hold a secret** (they do
-  not), but because session ids + layout are machine/project-local noise. A
-  leaked or cloud-synced workspace cannot join the group (no secret inside).
-- [ ] **Auto-save** the live workspace continuously (unique id, auto name);
-  **explicit Save** sets a user name + `pinned`. Optional prune of unpinned
-  closed auto-saves > N days.
+  not), but because session ids + layout are machine/project-local noise.
+  (`ensureWorkspacesDir` adds `workspaces/` idempotently, keeping `config.json`
+  committable.)
+- [~] **Auto-save** the live workspace continuously (unique id, auto name);
+  **explicit Save** sets a user name + `pinned`. (Store supports it:
+  `newWorkspaceId`, `autoName`, `pinned` field, `saveWorkspace`. Continuous
+  auto-save loop + Save UI + prune are M6b-2.)
 
-**Locking (mandatory)**
-- [ ] On owning a workspace, write sidecar `<id>.lock { pid, host, startedAt,
-  heartbeat }`; refresh heartbeat. Release on close.
-- [ ] Restore refuses a workspace whose lock is held by a live owner (pid alive
+**Locking (mandatory)**  (logic M6b-1; heartbeat loop + registry M6b-2)
+- [x] On owning a workspace, write sidecar `<id>.lock { pid, host, startedAt,
+  heartbeat }`; refresh heartbeat. Release on close. (`workspace-lock.ts`:
+  `acquireLock`/`refreshLock`/`releaseLock`/`readLock`. The periodic heartbeat
+  timer wiring is M6b-2.)
+- [x] Restore refuses a workspace whose lock is held by a live owner (pid alive
   same-host / fresh heartbeat); reclaim stale locks (mirror broker liveness).
+  (`isLockLive`: same-host injected `process.kill(pid,0)`, cross-host heartbeat
+  freshness, boundary treated as stale.)
 - [ ] Maintain an **open-session-id registry** to block resuming the same id
-  from two workspaces.
+  from two workspaces. (Runtime in-process state -> M6b-2.)
 
 **Fork-on-every-resume (collision avoidance, DESIGN §6.2)**
 - [ ] New session: `--session-id <uuid>`. Resume/restore:
@@ -263,8 +269,10 @@ See DESIGN §6 for the full rationale and verified Claude facts.
 **Restore flows (DESIGN §6.6)**
 - [ ] Startup picker: **New** / **Restore** (list for cwd: name, updatedAt,
   count, lock state). Empty app **adopts** the saved scope (no self-relaunch).
-- [ ] Restore while running: warn + offer Save → **graceful close** routine
+- [~] Restore while running: warn + offer Save → **graceful close** routine
   (`/exit\n` → `Esc`/`Ctrl+C` → SIGTERM) → adopt new scope → reopen.
+  (`session-close.ts gracefulClose` orchestrator done M6b-1 with injected IO;
+  the warn/Save UI + scope adoption wiring are M6b-2.)
 - [ ] Expired session: **React overlay** on the tile ("session expired — [Start
   new]") spawning `--session-id <new>` + stored `args`; plus a global "start
   all".
