@@ -1,0 +1,170 @@
+// Runtime i18n for the main process. Pure (node fs/path only, no electron import)
+// so it stays unit-testable under `bun test`. The electron-specific directory
+// resolution (app dir / userData override) is wired in ipc.ts.
+//
+// Locale files live at desktop/locales/<lang>.json and are read at runtime, then
+// merged user-override-on-top. EN_DEFAULTS below is the embedded last-resort
+// fallback (DESIGN section 11) and MUST stay in sync with locales/en.json --
+// the parity is asserted by tests/i18n.test.ts.
+
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+export const SUPPORTED_LOCALES = ['en', 'fr'] as const
+export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number]
+
+/** Embedded English base, mirror of locales/en.json (parity-tested). */
+export const EN_DEFAULTS: Record<string, string> = {
+  'common.cancel': 'Cancel',
+  'common.save': 'Save',
+  'common.create': 'Create',
+  'common.delete': 'Delete',
+  'common.close': 'Close',
+  'common.browse': 'Browse…',
+  'common.restore': 'Restore',
+  'common.maximize': 'Maximize',
+
+  'app.brand': 'Claude Peers Deck',
+  'app.loading': 'Loading…',
+
+  'sidebar.settings': 'Settings',
+  'sidebar.addPeer': '＋ Add peer',
+  'sidebar.addPeerTitle': 'Add in project dir',
+  'sidebar.advancedTitle': 'Advanced: agent, args, presets, folder…',
+  'sidebar.noSessions': 'No sessions',
+  'sidebar.project': 'project',
+  'sidebar.resizeTitle': 'Drag to resize',
+  'sidebar.sessionColour': 'Session colour',
+  'sidebar.removeTitle': 'Remove',
+
+  'status.running': 'running',
+  'status.starting': 'starting',
+  'status.exited': 'exited',
+  'status.thinking': 'thinking…',
+  'session.pending': 'Session {id}',
+
+  'confirm.deleteTitle': 'Delete session?',
+  'confirm.deleteMessage':
+    'Remove "{name}"? Its terminal is closed; the underlying Claude session can still be resumed later from history.',
+  'confirm.closeTitle': 'Close session?',
+  'confirm.closeMessage':
+    'Close "{name}"? Its terminal stops; the underlying Claude session can still be resumed later from history.',
+
+  'settings.title': 'Settings',
+  'settings.projectDir': 'Project directory',
+  'settings.projectDirHelp': 'Default working directory for new peer terminals.',
+  'settings.launchCommand': 'Launch command',
+  'settings.launchCommandHelp':
+    'Run in each terminal, with --session-id appended. Saved to the global launch config; a project .claude/claude-peers/config.json overrides it.',
+  'settings.shellOverride': 'Shell override',
+  'settings.shellPlaceholder': 'auto ($SHELL / powershell.exe)',
+  'settings.shellHelp': 'Leave empty to auto-detect per OS.',
+  'settings.interactiveShell': 'Interactive shell (load rc/profile for aliases)',
+  'settings.displayMode': 'Display mode',
+  'settings.fontSize': 'Font size',
+  'settings.theme': 'Theme',
+  'settings.themeDark': 'Dark',
+  'settings.themeLight': 'Light',
+  'settings.restoreSessions': 'Re-open saved sessions on launch',
+  'settings.language': 'Language',
+  'settings.languageAuto': 'Auto (system)',
+
+  'mode.1x1': '1×1 (carousel)',
+  'mode.1x2': '1×2',
+  'mode.2x2': '2×2',
+  'mode.custom': 'Custom',
+
+  'modebar.1x1Title': 'Carousel (one at a time)',
+  'modebar.1x2Title': 'One row, two columns',
+  'modebar.2x2Title': 'Two by two grid',
+  'modebar.customTitle': 'Custom grid',
+  'modebar.columns': 'Columns',
+  'modebar.rows': 'Rows',
+  'modebar.countOne': '{n} session',
+  'modebar.countOther': '{n} sessions',
+
+  'create.title': 'New peer session',
+  'create.agent': 'Agent',
+  'create.agentDefault': 'default (none)',
+  'create.extraArgs': 'Extra launch args',
+  'create.extraArgsPlaceholder': 'e.g. --model opus',
+  'create.presets': 'Presets',
+  'create.customColour': 'Custom colour',
+  'create.advanced': 'Advanced',
+  'create.workingFolder': 'Working folder',
+  'create.workingFolderPlaceholder': '(project dir)',
+  'create.workingFolderHelp':
+    "Run this peer in another directory. It still joins this window's group; only its working directory changes. Use with care -- the peer can act on that folder.",
+
+  'tile.fullscreenTitle': 'Double-click to toggle fullscreen',
+  'tile.restartTitle': 'Restart peer',
+  'tile.closeTitle': 'Close session',
+
+  'area.emptyTitle': 'No peer terminals yet',
+  'area.emptyBody':
+    "Add a Claude Code peer session to dock it here. Each tile runs in a real terminal, scoped to this window's isolated group, so OAuth works normally.",
+  'area.addTerminal': '＋ Add peer terminal'
+}
+
+/**
+ * Resolve the effective locale: an explicit `en`/`fr` config wins; anything else
+ * (empty = "auto", or an unsupported tag) falls back to the OS locale, mapping
+ * any `fr*` tag to French and everything else to English.
+ */
+export function resolveLocale(configLocale: string, osLocale: string): SupportedLocale {
+  if (configLocale === 'en' || configLocale === 'fr') return configLocale
+  return osLocale.toLowerCase().startsWith('fr') ? 'fr' : 'en'
+}
+
+function readDictFile(dir: string, lang: string): Record<string, string> | null {
+  try {
+    const file = join(dir, `${lang}.json`)
+    if (!existsSync(file)) return null
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>
+    }
+    return null
+  } catch {
+    // Malformed JSON / unreadable file -> ignore, embedded defaults stand in.
+    return null
+  }
+}
+
+/**
+ * Build the dictionary for `lang`, layered low-to-high:
+ *   EN_DEFAULTS (embedded) < shipped en.json < shipped <lang>.json
+ *               < user en.json < user <lang>.json
+ * `dirs` is ordered shipped-first, user-override-last. Missing/broken files are
+ * skipped so a key always resolves (eventually to the embedded English value).
+ */
+export function loadDict(lang: string, dirs: string[]): Record<string, string> {
+  const dict: Record<string, string> = { ...EN_DEFAULTS }
+  // For a non-English locale, layer English files first as the fallback base,
+  // then the target language on top so its keys win.
+  const langs = lang === 'en' ? ['en'] : ['en', lang]
+  for (const l of langs) {
+    for (const dir of dirs) {
+      const fileDict = readDictFile(dir, l)
+      if (fileDict) Object.assign(dict, fileDict)
+    }
+  }
+  return dict
+}
+
+/**
+ * Look up `key` and interpolate `{name}` placeholders from `params`. A missing
+ * key returns the key verbatim; a placeholder with no matching param is left
+ * untouched (never prints "undefined").
+ */
+export function t(
+  dict: Record<string, string>,
+  key: string,
+  params?: Record<string, string | number>
+): string {
+  const template = dict[key] ?? key
+  if (!params) return template
+  return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match
+  )
+}

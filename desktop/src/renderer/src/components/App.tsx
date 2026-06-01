@@ -36,7 +36,9 @@ export function App(): React.JSX.Element {
   }, [selectedId, maximizedId, setMaximized])
 
   if (!config) {
-    return <div className="loading">Loading…</div>
+    // Bootstrap splash shown before init() resolves (config + locale dict load
+    // together), so there is no dictionary to translate against yet.
+    return <div className="loading" aria-busy="true" />
   }
 
   return (

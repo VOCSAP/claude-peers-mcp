@@ -204,10 +204,18 @@ desktop/
 
 ## 10. i18n (`i18n.ts` main + renderer)
 
-- [ ] Load `locales/<lang>.json` from app dir; merge user-override dir on top.
-- [ ] `t(key, params)` with `{placeholder}` interpolation.
-- [ ] Ship `en.json` + `fr.json`; not bundled (read at runtime / copied as
-  resources, user-editable). Expose locale + dict to renderer via IPC/preload.
+- [x] Load `locales/<lang>.json` from app dir; merge user-override dir on top.
+  (`main/i18n.ts loadDict` layers EN_DEFAULTS < shipped en < shipped lang <
+  user en < user lang; shipped dir = resources when packaged / `app.getAppPath()`
+  in dev, user dir = `userData/locales`.)
+- [x] `t(key, params)` with `{placeholder}` interpolation (missing key -> key,
+  missing param -> token left verbatim).
+- [x] Ship `en.json` + `fr.json` (committed, identical key sets). Read at runtime;
+  embedded `EN_DEFAULTS` is the last-resort fallback (parity-tested vs en.json).
+  Expose locale + dict to renderer via IPC `i18n:get` / preload `getI18n`;
+  renderer `useT()` re-renders on locale change. Locale selector in Settings
+  (`locale: '' | 'en' | 'fr'`, `''` = OS-derived). (Packaging `extraResources`
+  copy of `locales/` deferred to M7.)
 
 ## 11. Persistence & Restore (`workspace-store.ts`, `workspace-lock.ts`)
 

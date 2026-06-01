@@ -1,8 +1,24 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
-import type { AppConfig, CreateSessionInput, LaunchConfig } from '@shared/types'
+import { join } from 'node:path'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import type { AppConfig, CreateSessionInput, I18nPayload, LaunchConfig } from '@shared/types'
 import type { SessionService } from './session-service'
 import { listAgents } from './agents'
 import { resolveLaunchConfig, saveGlobalConfig } from './launch-config'
+import { loadDict, resolveLocale } from './i18n'
+
+/**
+ * Build the renderer i18n payload from the current config. Reads shipped locale
+ * files (resources dir when packaged, app dir in dev) plus a user-override dir
+ * under userData, then falls back to the embedded English base for any gap.
+ */
+function buildI18n(config: AppConfig): I18nPayload {
+  const locale = resolveLocale(config.locale, app.getLocale())
+  const shippedDir = app.isPackaged
+    ? join(process.resourcesPath, 'locales')
+    : join(app.getAppPath(), 'locales')
+  const userDir = join(app.getPath('userData'), 'locales')
+  return { locale, dict: loadDict(locale, [shippedDir, userDir]) }
+}
 
 interface IpcDeps {
   service: SessionService
@@ -39,6 +55,9 @@ export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDep
     })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })
+
+  // ----- i18n -----
+  ipcMain.handle('i18n:get', () => buildI18n(getConfig()))
 
   // ----- create-menu data -----
   ipcMain.handle('agents:list', () => listAgents(getConfig().projectDir))

@@ -4,6 +4,8 @@ import type { AppConfig, CreateSessionInput, SessionRuntime } from '@shared/type
 interface DeckState {
   sessions: SessionRuntime[]
   config: AppConfig | null
+  /** Active translation dict (flat key->template), fetched from main. */
+  dict: Record<string, string>
   selectedId: string | null
   maximizedId: string | null
   settingsOpen: boolean
@@ -27,19 +29,22 @@ interface DeckState {
 export const useDeck = create<DeckState>((set, get) => ({
   sessions: [],
   config: null,
+  dict: {},
   selectedId: null,
   maximizedId: null,
   settingsOpen: false,
   sidebarWidth: 260,
 
   async init() {
-    const [sessions, config] = await Promise.all([
+    const [sessions, config, i18n] = await Promise.all([
       window.api.listSessions(),
-      window.api.getConfig()
+      window.api.getConfig(),
+      window.api.getI18n()
     ])
     set({
       sessions,
       config,
+      dict: i18n.dict,
       sidebarWidth: config.sidebarWidth,
       selectedId: get().selectedId ?? sessions[0]?.id ?? null
     })
@@ -52,7 +57,14 @@ export const useDeck = create<DeckState>((set, get) => ({
         selectedId: stillExists ? selectedId : (next[0]?.id ?? null)
       })
     })
-    window.api.onConfigChanged((next) => set({ config: next }))
+    window.api.onConfigChanged((next) => {
+      const prevLocale = get().config?.locale
+      set({ config: next })
+      // Locale changed -> refetch the dict so the UI re-renders in the new language.
+      if (next.locale !== prevLocale) {
+        void window.api.getI18n().then((i18n) => set({ dict: i18n.dict }))
+      }
+    })
   },
 
   setSelected: (id) => set({ selectedId: id }),

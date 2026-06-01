@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import type { SessionRuntime } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CreateMenu } from './CreateMenu'
 
 function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element {
+  const t = useT()
   const selectedId = useDeck((s) => s.selectedId)
   const maximizedId = useDeck((s) => s.maximizedId)
   const setSelected = useDeck((s) => s.setSelected)
@@ -32,13 +34,13 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
         type="color"
         className="swatch"
         value={session.color || '#4f86ff'}
-        title="Session colour"
+        title={t('sidebar.sessionColour')}
         onClick={(e) => e.stopPropagation()}
         onChange={(e) => void setColor(session.id, e.target.value)}
       />
       <span
         className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
-        title={session.thinking ? 'thinking…' : session.status}
+        title={session.thinking ? t('status.thinking') : t(`status.${session.status}`)}
       />
       <div className="row-main">
         {editing ? (
@@ -72,12 +74,13 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
           </span>
         )}
         <span className="row-sub" title={session.cwd}>
-          {session.peerId ?? `Session ${(session.sessionId || session.id).slice(0, 8)}`}
+          {session.peerId ??
+            t('session.pending', { id: (session.sessionId || session.id).slice(0, 8) })}
         </span>
       </div>
       <button
         className="row-btn"
-        title={maximizedId === session.id ? 'Restore' : 'Maximize'}
+        title={maximizedId === session.id ? t('common.restore') : t('common.maximize')}
         onClick={(e) => {
           e.stopPropagation()
           setSelected(session.id)
@@ -88,7 +91,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
       </button>
       <button
         className="row-btn row-btn-danger"
-        title="Remove"
+        title={t('sidebar.removeTitle')}
         onClick={(e) => {
           e.stopPropagation()
           setConfirmingDelete(true)
@@ -98,9 +101,9 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
       </button>
       {confirmingDelete && (
         <ConfirmDialog
-          title="Delete session?"
-          message={`Remove "${session.name}"? Its terminal is closed; the underlying Claude session can still be resumed later from history.`}
-          confirmLabel="Delete"
+          title={t('confirm.deleteTitle')}
+          message={t('confirm.deleteMessage', { name: session.name })}
+          confirmLabel={t('common.delete')}
           onCancel={() => setConfirmingDelete(false)}
           onConfirm={() => {
             setConfirmingDelete(false)
@@ -113,6 +116,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
 }
 
 export function Sidebar(): React.JSX.Element {
+  const t = useT()
   const sessions = useDeck((s) => s.sessions)
   const config = useDeck((s) => s.config!)
   const createSession = useDeck((s) => s.createSession)
@@ -137,19 +141,23 @@ export function Sidebar(): React.JSX.Element {
   return (
     <aside className="sidebar">
       <header className="sidebar-head">
-        <span className="brand">Claude Peers Deck</span>
-        <button className="icon-btn" title="Settings" onClick={() => openSettings(true)}>
+        <span className="brand">{t('app.brand')}</span>
+        <button className="icon-btn" title={t('sidebar.settings')} onClick={() => openSettings(true)}>
           ⚙
         </button>
       </header>
 
       <div className="sidebar-actions">
-        <button className="primary" onClick={() => void createSession({})} title="Add in project dir">
-          ＋ Add peer
+        <button
+          className="primary"
+          onClick={() => void createSession({})}
+          title={t('sidebar.addPeerTitle')}
+        >
+          {t('sidebar.addPeer')}
         </button>
         <button
           className="icon-btn"
-          title="Advanced: agent, args, presets, folder…"
+          title={t('sidebar.advancedTitle')}
           onClick={() => setCreateOpen(true)}
         >
           ▾
@@ -161,15 +169,15 @@ export function Sidebar(): React.JSX.Element {
         {sessions.map((s) => (
           <SessionRow key={s.id} session={s} />
         ))}
-        {sessions.length === 0 && <li className="rows-empty">No sessions</li>}
+        {sessions.length === 0 && <li className="rows-empty">{t('sidebar.noSessions')}</li>}
       </ul>
 
       <footer className="sidebar-foot" title={config.projectDir}>
-        <span className="foot-label">project</span>
+        <span className="foot-label">{t('sidebar.project')}</span>
         <span className="foot-path">{config.projectDir}</span>
       </footer>
 
-      <div className="sidebar-resize" onMouseDown={startResize} title="Drag to resize" />
+      <div className="sidebar-resize" onMouseDown={startResize} title={t('sidebar.resizeTitle')} />
     </aside>
   )
 }

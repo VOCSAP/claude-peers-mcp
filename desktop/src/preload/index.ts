@@ -61,6 +61,8 @@ const api: DeckApi = {
   setConfig: (patch: Partial<AppConfig>) => ipcRenderer.invoke('config:set', patch),
   pickDirectory: () => ipcRenderer.invoke('dialog:pickDirectory'),
 
+  getI18n: () => ipcRenderer.invoke('i18n:get'),
+
   listAgents: () => ipcRenderer.invoke('agents:list'),
   getLaunchConfig: () => ipcRenderer.invoke('launch:get'),
   saveLaunchConfig: (cfg: LaunchConfig) => ipcRenderer.invoke('launch:set-global', cfg),

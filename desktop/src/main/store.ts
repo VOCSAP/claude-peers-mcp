@@ -18,7 +18,9 @@ const DEFAULT_CONFIG: AppConfig = {
   sidebarWidth: 260,
   theme: 'dark',
   fontSize: 13,
-  restoreSessions: true
+  restoreSessions: true,
+  // '' = auto: main/i18n.ts derives en/fr from the OS locale.
+  locale: ''
 }
 
 function dataDir(): string {

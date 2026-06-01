@@ -1,14 +1,17 @@
 import type { DisplayMode } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 
-const MODES: { mode: DisplayMode; label: string; title: string }[] = [
-  { mode: '1x1', label: '1×1', title: 'Carousel (one at a time)' },
-  { mode: '1x2', label: '1×2', title: 'One row, two columns' },
-  { mode: '2x2', label: '2×2', title: 'Two by two grid' },
-  { mode: 'custom', label: 'X×Y', title: 'Custom grid' }
+// Short labels are language-neutral glyphs; the hover title carries the meaning.
+const MODES: { mode: DisplayMode; label: string; titleKey: string }[] = [
+  { mode: '1x1', label: '1×1', titleKey: 'modebar.1x1Title' },
+  { mode: '1x2', label: '1×2', titleKey: 'modebar.1x2Title' },
+  { mode: '2x2', label: '2×2', titleKey: 'modebar.2x2Title' },
+  { mode: 'custom', label: 'X×Y', titleKey: 'modebar.customTitle' }
 ]
 
 export function DisplayModeBar(): React.JSX.Element {
+  const t = useT()
   const config = useDeck((s) => s.config!)
   const updateConfig = useDeck((s) => s.updateConfig)
   const sessions = useDeck((s) => s.sessions)
@@ -18,11 +21,11 @@ export function DisplayModeBar(): React.JSX.Element {
   return (
     <div className="modebar">
       <div className="modebar-group">
-        {MODES.map(({ mode, label, title }) => (
+        {MODES.map(({ mode, label, titleKey }) => (
           <button
             key={mode}
             className={`mode-btn ${config.displayMode === mode ? 'mode-btn-active' : ''}`}
-            title={title}
+            title={t(titleKey)}
             onClick={() => void updateConfig({ displayMode: mode })}
           >
             {label}
@@ -37,7 +40,7 @@ export function DisplayModeBar(): React.JSX.Element {
             min={1}
             max={12}
             value={config.gridCols}
-            title="Columns"
+            title={t('modebar.columns')}
             onChange={(e) => void updateConfig({ gridCols: clamp(Number(e.target.value)) })}
           />
           <span className="modebar-x">×</span>
@@ -46,7 +49,7 @@ export function DisplayModeBar(): React.JSX.Element {
             min={1}
             max={12}
             value={config.gridRows}
-            title="Rows"
+            title={t('modebar.rows')}
             onChange={(e) => void updateConfig({ gridRows: clamp(Number(e.target.value)) })}
           />
         </div>
@@ -54,7 +57,9 @@ export function DisplayModeBar(): React.JSX.Element {
 
       <span className="modebar-spacer" />
       <span className="modebar-count">
-        {sessions.length} session{sessions.length === 1 ? '' : 's'}
+        {t(sessions.length === 1 ? 'modebar.countOne' : 'modebar.countOther', {
+          n: sessions.length
+        })}
       </span>
     </div>
   )

@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import type { DisplayMode } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 import { TerminalTile } from './TerminalTile'
 
 /** Visible columns/rows for the grid modes (1x1 is rendered as a carousel). */
@@ -18,6 +19,7 @@ function gridShape(mode: DisplayMode, cols: number, rows: number): { cols: numbe
 }
 
 export function TileArea(): React.JSX.Element {
+  const t = useT()
   const sessions = useDeck((s) => s.sessions)
   const config = useDeck((s) => s.config!)
   const maximizedId = useDeck((s) => s.maximizedId)
@@ -28,13 +30,10 @@ export function TileArea(): React.JSX.Element {
     return (
       <main className="area area-empty">
         <div className="empty-card">
-          <h2>No peer terminals yet</h2>
-          <p>
-            Add a Claude Code peer session to dock it here. Each tile runs in a real terminal,
-            scoped to this window&apos;s isolated group, so OAuth works normally.
-          </p>
+          <h2>{t('area.emptyTitle')}</h2>
+          <p>{t('area.emptyBody')}</p>
           <button className="primary" onClick={() => void createSession({})}>
-            ＋ Add peer terminal
+            {t('area.addTerminal')}
           </button>
         </div>
       </main>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { LaunchPreset } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 
 /**
  * Advanced create popover: pick a subagent, free args, a preset, an optional
@@ -8,6 +9,7 @@ import { useDeck } from '../store'
  * CreateSessionInput and spawns the session.
  */
 export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Element {
+  const t = useT()
   const createSession = useDeck((s) => s.createSession)
 
   const [agents, setAgents] = useState<string[]>([])
@@ -53,12 +55,12 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
   return (
     <div className="popover-backdrop" onMouseDown={onClose}>
       <div className="popover" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>New peer session</h3>
+        <h3>{t('create.title')}</h3>
 
         <label className="field">
-          <span>Agent</span>
+          <span>{t('create.agent')}</span>
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-            <option value="">default (none)</option>
+            <option value="">{t('create.agentDefault')}</option>
             {agents.map((a) => (
               <option key={a} value={a}>
                 {a}
@@ -68,17 +70,17 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
         </label>
 
         <label className="field">
-          <span>Extra launch args</span>
+          <span>{t('create.extraArgs')}</span>
           <input
             value={extraArgs}
-            placeholder="e.g. --model opus"
+            placeholder={t('create.extraArgsPlaceholder')}
             onChange={(e) => setExtraArgs(e.target.value)}
           />
         </label>
 
         {presets.length > 0 && (
           <div className="field">
-            <span>Presets</span>
+            <span>{t('create.presets')}</span>
             <div className="preset-row">
               {presets.map((p) => (
                 <button key={p.label} className="chip" onClick={() => applyPreset(p)} title={p.args}>
@@ -91,37 +93,34 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
 
         <label className="field field-check">
           <input type="checkbox" checked={useColor} onChange={(e) => setUseColor(e.target.checked)} />
-          <span>Custom colour</span>
+          <span>{t('create.customColour')}</span>
           {useColor && (
             <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
           )}
         </label>
 
         <details className="advanced">
-          <summary>Advanced</summary>
+          <summary>{t('create.advanced')}</summary>
           <div className="field">
-            <span>Working folder</span>
+            <span>{t('create.workingFolder')}</span>
             <div className="field-row">
               <input
                 value={folder ?? ''}
-                placeholder="(project dir)"
+                placeholder={t('create.workingFolderPlaceholder')}
                 onChange={(e) => setFolder(e.target.value || null)}
               />
-              <button className="icon-btn" onClick={browse} title="Browse…">
+              <button className="icon-btn" onClick={browse} title={t('common.browse')}>
                 📁
               </button>
             </div>
-            <small>
-              Run this peer in another directory. It still joins this window&apos;s group; only
-              its working directory changes. Use with care -- the peer can act on that folder.
-            </small>
+            <small>{t('create.workingFolderHelp')}</small>
           </div>
         </details>
 
         <div className="modal-actions">
-          <button onClick={onClose}>Cancel</button>
+          <button onClick={onClose}>{t('common.cancel')}</button>
           <button className="primary" onClick={submit}>
-            Create
+            {t('common.create')}
           </button>
         </div>
       </div>

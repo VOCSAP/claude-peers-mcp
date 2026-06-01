@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import type { SessionRuntime } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
 
 const THEMES: Record<'dark' | 'light', ITheme> = {
@@ -21,6 +22,7 @@ export function TerminalTile({
   session: SessionRuntime
   hidden: boolean
 }): React.JSX.Element {
+  const t = useT()
   const config = useDeck((s) => s.config!)
   const maximizedId = useDeck((s) => s.maximizedId)
   const selectedId = useDeck((s) => s.selectedId)
@@ -136,11 +138,11 @@ export function TerminalTile({
           if ((e.target as HTMLElement).closest('button')) return
           setMaximized(isMax ? null : id)
         }}
-        title="Double-click to toggle fullscreen"
+        title={t('tile.fullscreenTitle')}
       >
         <span
           className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
-          title={session.thinking ? 'thinking…' : session.status}
+          title={session.thinking ? t('status.thinking') : t(`status.${session.status}`)}
         />
         <span className="tile-title" style={{ color: session.color || undefined }}>
           {session.name}
@@ -149,7 +151,7 @@ export function TerminalTile({
           <span className="tile-peer">{session.peerId}</span>
         ) : (
           <span className="tile-peer tile-peer-pending">
-            Session {(session.sessionId || session.id).slice(0, 8)}
+            {t('session.pending', { id: (session.sessionId || session.id).slice(0, 8) })}
           </span>
         )}
         <span className="tile-spacer" />
@@ -157,7 +159,7 @@ export function TerminalTile({
           <button
             type="button"
             className="tile-btn"
-            title="Restart peer"
+            title={t('tile.restartTitle')}
             onClick={(e) => {
               e.stopPropagation()
               void restartSession(id)
@@ -169,7 +171,7 @@ export function TerminalTile({
         <button
           type="button"
           className="tile-btn"
-          title={isMax ? 'Restore' : 'Maximize'}
+          title={isMax ? t('common.restore') : t('common.maximize')}
           onClick={(e) => {
             e.stopPropagation()
             setMaximized(isMax ? null : id)
@@ -180,7 +182,7 @@ export function TerminalTile({
         <button
           type="button"
           className="tile-btn tile-btn-danger"
-          title="Close session"
+          title={t('tile.closeTitle')}
           onClick={(e) => {
             e.stopPropagation()
             setConfirmingDelete(true)
@@ -192,9 +194,9 @@ export function TerminalTile({
       <div className="tile-body" ref={hostRef} />
       {confirmingDelete && (
         <ConfirmDialog
-          title="Close session?"
-          message={`Close "${session.name}"? Its terminal stops; the underlying Claude session can still be resumed later from history.`}
-          confirmLabel="Close"
+          title={t('confirm.closeTitle')}
+          message={t('confirm.closeMessage', { name: session.name })}
+          confirmLabel={t('common.close')}
           onCancel={() => setConfirmingDelete(false)}
           onConfirm={() => {
             setConfirmingDelete(false)

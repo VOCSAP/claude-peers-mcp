@@ -56,6 +56,14 @@ export interface AppConfig {
   fontSize: number
   /** Re-spawn persisted sessions on launch. */
   restoreSessions: boolean
+  /** UI language: '' = auto (OS), 'en' or 'fr'. Resolved by main/i18n.ts. */
+  locale: string
+}
+
+/** Active locale + flattened translation dict, sent to the renderer. */
+export interface I18nPayload {
+  locale: string
+  dict: Record<string, string>
 }
 
 /**
@@ -120,6 +128,9 @@ export interface DeckApi {
   getConfig(): Promise<AppConfig>
   setConfig(patch: Partial<AppConfig>): Promise<AppConfig>
   pickDirectory(): Promise<string | null>
+
+  // i18n
+  getI18n(): Promise<I18nPayload>
 
   // create-menu data
   listAgents(): Promise<string[]>

@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import type { AppConfig, DisplayMode, LaunchPreset } from '@shared/types'
 import { useDeck } from '../store'
+import { useT } from '../i18n'
 
-const DISPLAY_MODES: { value: DisplayMode; label: string }[] = [
-  { value: '1x1', label: '1×1 (carousel)' },
-  { value: '1x2', label: '1×2' },
-  { value: '2x2', label: '2×2' },
-  { value: 'custom', label: 'Custom' }
+const DISPLAY_MODE_KEYS: { value: DisplayMode; key: string }[] = [
+  { value: '1x1', key: 'mode.1x1' },
+  { value: '1x2', key: 'mode.1x2' },
+  { value: '2x2', key: 'mode.2x2' },
+  { value: 'custom', key: 'mode.custom' }
 ]
 
 export function SettingsDialog(): React.JSX.Element {
+  const t = useT()
   const config = useDeck((s) => s.config!)
   const updateConfig = useDeck((s) => s.updateConfig)
   const openSettings = useDeck((s) => s.openSettings)
@@ -43,36 +45,33 @@ export function SettingsDialog(): React.JSX.Element {
   return (
     <div className="modal-backdrop" onMouseDown={() => openSettings(false)}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
+        <h2>{t('settings.title')}</h2>
 
         <label className="field">
-          <span>Project directory</span>
+          <span>{t('settings.projectDir')}</span>
           <div className="field-row">
             <input value={form.projectDir} onChange={(e) => set('projectDir', e.target.value)} />
-            <button className="icon-btn" onClick={browse} title="Browse…">
+            <button className="icon-btn" onClick={browse} title={t('common.browse')}>
               📁
             </button>
           </div>
-          <small>Default working directory for new peer terminals.</small>
+          <small>{t('settings.projectDirHelp')}</small>
         </label>
 
         <label className="field">
-          <span>Launch command</span>
+          <span>{t('settings.launchCommand')}</span>
           <input value={launchCommand} onChange={(e) => setLaunchCommand(e.target.value)} />
-          <small>
-            Run in each terminal, with <code>--session-id</code> appended. Saved to the global
-            launch config; a project <code>.claude/claude-peers/config.json</code> overrides it.
-          </small>
+          <small>{t('settings.launchCommandHelp')}</small>
         </label>
 
         <label className="field">
-          <span>Shell override</span>
+          <span>{t('settings.shellOverride')}</span>
           <input
             value={form.shell}
-            placeholder="auto ($SHELL / powershell.exe)"
+            placeholder={t('settings.shellPlaceholder')}
             onChange={(e) => set('shell', e.target.value)}
           />
-          <small>Leave empty to auto-detect per OS.</small>
+          <small>{t('settings.shellHelp')}</small>
         </label>
 
         <label className="field field-check">
@@ -81,26 +80,26 @@ export function SettingsDialog(): React.JSX.Element {
             checked={form.interactiveShell}
             onChange={(e) => set('interactiveShell', e.target.checked)}
           />
-          <span>Interactive shell (load rc/profile for aliases)</span>
+          <span>{t('settings.interactiveShell')}</span>
         </label>
 
         <div className="field-grid">
           <label className="field">
-            <span>Display mode</span>
+            <span>{t('settings.displayMode')}</span>
             <select
               value={form.displayMode}
               onChange={(e) => set('displayMode', e.target.value as DisplayMode)}
             >
-              {DISPLAY_MODES.map((m) => (
+              {DISPLAY_MODE_KEYS.map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {t(m.key)}
                 </option>
               ))}
             </select>
           </label>
 
           <label className="field">
-            <span>Font size</span>
+            <span>{t('settings.fontSize')}</span>
             <input
               type="number"
               min={8}
@@ -111,13 +110,22 @@ export function SettingsDialog(): React.JSX.Element {
           </label>
 
           <label className="field">
-            <span>Theme</span>
+            <span>{t('settings.theme')}</span>
             <select
               value={form.theme}
               onChange={(e) => set('theme', e.target.value as AppConfig['theme'])}
             >
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
+              <option value="dark">{t('settings.themeDark')}</option>
+              <option value="light">{t('settings.themeLight')}</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>{t('settings.language')}</span>
+            <select value={form.locale} onChange={(e) => set('locale', e.target.value)}>
+              <option value="">{t('settings.languageAuto')}</option>
+              <option value="en">English</option>
+              <option value="fr">Français</option>
             </select>
           </label>
         </div>
@@ -128,13 +136,13 @@ export function SettingsDialog(): React.JSX.Element {
             checked={form.restoreSessions}
             onChange={(e) => set('restoreSessions', e.target.checked)}
           />
-          <span>Re-open saved sessions on launch</span>
+          <span>{t('settings.restoreSessions')}</span>
         </label>
 
         <div className="modal-actions">
-          <button onClick={() => openSettings(false)}>Cancel</button>
+          <button onClick={() => openSettings(false)}>{t('common.cancel')}</button>
           <button className="primary" onClick={save}>
-            Save
+            {t('common.save')}
           </button>
         </div>
       </div>
