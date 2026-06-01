@@ -142,7 +142,9 @@ export function TerminalTile({
           className={`dot dot-${session.status}${session.thinking ? ' dot-thinking' : ''}`}
           title={session.thinking ? 'thinking…' : session.status}
         />
-        <span className="tile-title">{session.name}</span>
+        <span className="tile-title" style={{ color: session.color || undefined }}>
+          {session.name}
+        </span>
         {session.peerId ? (
           <span className="tile-peer">{session.peerId}</span>
         ) : (

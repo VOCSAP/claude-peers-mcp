@@ -61,6 +61,7 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
           <span
             className="row-name"
             title={session.cwd}
+            style={{ color: session.color || undefined }}
             onDoubleClick={(e) => {
               e.stopPropagation()
               setDraft(session.name)
