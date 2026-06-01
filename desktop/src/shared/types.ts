@@ -24,6 +24,8 @@ export interface SessionRuntime extends SessionDef {
   pid: number | null
   /** Display peer_id resolved from the claude-peers status-line cache, if any. */
   peerId: string | null
+  /** Heuristic busy/idle state (placeholder detector, see thinking.ts). */
+  thinking: boolean
 }
 
 export interface AppConfig {
@@ -64,6 +66,11 @@ export interface PtyExitEvent {
   exitCode: number
 }
 
+export interface SessionThinkingEvent {
+  id: string
+  busy: boolean
+}
+
 /** The typed surface exposed on `window.api` by the preload script. */
 export interface DeckApi {
   // sessions
@@ -86,5 +93,6 @@ export interface DeckApi {
   onPtyData(cb: (e: PtyDataEvent) => void): () => void
   onPtyExit(cb: (e: PtyExitEvent) => void): () => void
   onSessionsChanged(cb: (sessions: SessionRuntime[]) => void): () => void
+  onSessionThinking(cb: (e: SessionThinkingEvent) => void): () => void
   onConfigChanged(cb: (config: AppConfig) => void): () => void
 }

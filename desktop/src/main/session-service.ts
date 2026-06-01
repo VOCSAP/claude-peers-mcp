@@ -11,11 +11,13 @@ import { PtyManager } from './pty-manager'
 import { resolvePeerId } from './peer-state'
 import { loadSessions, saveSessions } from './store'
 import { buildSessionCommandLine, type SpawnMode } from './session-command'
+import { ThinkingDetector, type ThinkingEvent } from './thinking'
 
 interface RuntimeState {
   status: SessionStatus
   exitCode: number | null
   peerId: string | null
+  thinking: boolean
 }
 
 const PEER_POLL_MS = 4000
@@ -29,6 +31,7 @@ export class SessionService extends EventEmitter {
   private defs: SessionDef[]
   private runtime = new Map<string, RuntimeState>()
   private pty = new PtyManager()
+  private thinkingDetector = new ThinkingDetector()
   private pollTimer: NodeJS.Timeout | null = null
 
   constructor(
@@ -40,20 +43,38 @@ export class SessionService extends EventEmitter {
   ) {
     super()
     // Normalize older persisted sessions that predate args/sessionId.
-    this.defs = loadSessions().map((d) => ({ command: '', args: '', sessionId: '', ...d }))
+    this.defs = loadSessions().map((d) => ({
+      ...d,
+      command: d.command ?? '',
+      args: d.args ?? '',
+      sessionId: d.sessionId ?? ''
+    }))
     for (const d of this.defs) {
-      this.runtime.set(d.id, { status: 'exited', exitCode: null, peerId: null })
+      this.runtime.set(d.id, { status: 'exited', exitCode: null, peerId: null, thinking: false })
     }
 
-    this.pty.on('data', (e) => this.emit('data', e))
+    this.pty.on('data', (e: { id: string; data: string }) => {
+      this.emit('data', e)
+      this.thinkingDetector.feed(e.id, e.data)
+    })
     this.pty.on('exit', ({ id, exitCode }: { id: string; exitCode: number }) => {
       const r = this.runtime.get(id)
       if (r) {
         r.status = 'exited'
         r.exitCode = exitCode
+        r.thinking = false
       }
+      this.thinkingDetector.clear(id)
       this.emit('exit', { id, exitCode })
       this.broadcast()
+    })
+
+    // Forward busy/idle transitions as `thinking` (ipc -> session:thinking).
+    this.thinkingDetector.on('thinking', ({ id, busy }: ThinkingEvent) => {
+      const r = this.runtime.get(id)
+      if (!r) return
+      r.thinking = busy
+      this.emit('thinking', { id, busy })
     })
   }
 
@@ -69,6 +90,7 @@ export class SessionService extends EventEmitter {
   stop(): void {
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
+    this.thinkingDetector.stop()
     this.pty.killAll()
   }
 
@@ -89,7 +111,7 @@ export class SessionService extends EventEmitter {
       createdAt: Date.now()
     }
     this.defs.push(def)
-    this.runtime.set(def.id, { status: 'starting', exitCode: null, peerId: null })
+    this.runtime.set(def.id, { status: 'starting', exitCode: null, peerId: null, thinking: false })
     this.startPty(def, 'fresh')
     this.broadcast()
     return this.toRuntime(def)
@@ -97,6 +119,7 @@ export class SessionService extends EventEmitter {
 
   remove(id: string): void {
     this.pty.kill(id)
+    this.thinkingDetector.clear(id)
     this.defs = this.defs.filter((d) => d.id !== id)
     this.runtime.delete(id)
     this.persist()
@@ -179,7 +202,8 @@ export class SessionService extends EventEmitter {
       status: alive ? (r?.status === 'starting' ? 'starting' : 'running') : 'exited',
       exitCode: r?.exitCode ?? null,
       pid: this.pty.pid(def.id),
-      peerId: r?.peerId ?? null
+      peerId: r?.peerId ?? null,
+      thinking: r?.thinking ?? false
     }
   }
 
@@ -188,7 +212,7 @@ export class SessionService extends EventEmitter {
     for (const def of this.defs) {
       const r = this.runtime.get(def.id)
       if (!r) continue
-      const next = this.pty.isAlive(def.id) ? resolvePeerId(def.cwd) : null
+      const next = this.pty.isAlive(def.id) ? resolvePeerId(def.cwd, def.sessionId) : null
       if (next !== r.peerId) {
         r.peerId = next
         changed = true

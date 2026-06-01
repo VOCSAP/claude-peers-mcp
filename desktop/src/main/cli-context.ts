@@ -25,6 +25,7 @@ export function parseCliContext(argv: string[], env: NodeJS.ProcessEnv): CliCont
   let argScope: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
+    if (a === undefined) continue
     if (a === '--scope' && i + 1 < argv.length) {
       argScope = argv[i + 1]
       break

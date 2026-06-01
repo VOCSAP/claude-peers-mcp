@@ -42,4 +42,5 @@ export function registerIpc({ service, getConfig, setConfig, getWindow }: IpcDep
   service.on('data', (e) => send('pty:data', e))
   service.on('exit', (e) => send('pty:exit', e))
   service.on('changed', (sessions) => send('sessions:changed', sessions))
+  service.on('thinking', (e) => send('session:thinking', e))
 }

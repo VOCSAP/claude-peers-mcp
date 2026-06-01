@@ -157,28 +157,30 @@ desktop/
   mint & persist the new id up front (deterministic, verified §14.2; discovery
   fallback only on CC regression -- see §11).
 - [x] Persist `{ uuid (sessionId), name, cwd, args, createdAt }` per session.
-- [~] Runtime state per session: `starting | running | exited`, pid, peerId,
-  thinking (bool). (status/pid/peerId done; `thinking` lands in M4.)
-- [~] Events to renderer: `pty:data`, `pty:exit`, `sessions:changed`,
-  `session:thinking`. (`session:thinking` lands in M4.)
+- [x] Runtime state per session: `starting | running | exited`, pid, peerId,
+  thinking (bool).
+- [x] Events to renderer: `pty:data`, `pty:exit`, `sessions:changed`,
+  `session:thinking`.
 - [x] Resize via fit addon → `pty:resize`.
 
 ## 7. peer_id (`peer-state.ts`)
 
-- [ ] Deterministic: read `~/.claude/peers/peer-id-<cwdKey>-<uuid>.txt`
+- [x] Deterministic: read `~/.claude/peers/peer-id-<cwdKey>-<uuid>.txt`
   (`cwdKey` per existing `computeCwdKey`). Poll until present, then cache.
-- [ ] Fallback (if §14.1 verification fails): newest `peer-id-<cwdKey>-*.txt`.
-- [ ] Until resolved, UI shows `Session <uuid[:8]>`.
+- [x] Fallback (if §14.1 verification fails): newest `peer-id-<cwdKey>-*.txt`.
+- [~] Until resolved, UI shows `Session <uuid[:8]>`. (main exposes `peerId: null`
+  until resolved; the placeholder label is a renderer concern, M5.)
 
 ## 8. Thinking heuristic (`thinking.ts`) — PLACEHOLDER (to be replaced)
 
 > Explicitly temporary (DESIGN §10). Non-deterministic; the real, hook-based
 > solution lands in Phase 2.
 
-- [ ] Tap the PTY output stream; detect busy markers (spinner / "esc to
+- [x] Tap the PTY output stream; detect busy markers (spinner / "esc to
   interrupt") vs idle. Debounce. Emit `session:thinking {id, busy}`.
-- [ ] Isolated module so rules can be tuned per Claude version / swapped out.
-- [ ] Renderer shows a dot in the leading position of each sidebar row + tile.
+- [x] Isolated module so rules can be tuned per Claude version / swapped out.
+- [~] Renderer shows a dot in the leading position of each sidebar row + tile.
+  (event plumbed through to the renderer; the dot UI lands in M5.)
 
 ## 9. UI (renderer)
 

@@ -5,7 +5,8 @@ import type {
   DeckApi,
   PtyDataEvent,
   PtyExitEvent,
-  SessionRuntime
+  SessionRuntime,
+  SessionThinkingEvent
 } from '@shared/types'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -33,6 +34,8 @@ const api: DeckApi = {
   onPtyExit: (cb: (e: PtyExitEvent) => void) => subscribe('pty:exit', cb),
   onSessionsChanged: (cb: (sessions: SessionRuntime[]) => void) =>
     subscribe('sessions:changed', cb),
+  onSessionThinking: (cb: (e: SessionThinkingEvent) => void) =>
+    subscribe('session:thinking', cb),
   onConfigChanged: (cb: (config: AppConfig) => void) => subscribe('config:changed', cb)
 }
 
