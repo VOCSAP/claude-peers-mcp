@@ -267,10 +267,13 @@ See DESIGN §6 for the full rationale and verified Claude facts.
   `~/.claude/projects/<encode(cwd)>/` (~800ms, 30s) for the newest new
   `.jsonl` (`pickDiscoveredId`), adopts it as `sessionId` and persists. (Fixed a
   bug where every relaunched session showed "expired".)
-- [x] During restore, spawn sessions **serialized per cwd** (so each new
-  transcript is unambiguous for discovery), parallel across distinct cwds
-  (`enqueueSpawn` per-cwd promise chain). Operator-accepted tradeoff: slight
-  startup delay for many same-cwd sessions; revisit later.
+- [x] During restore, spawn sessions **immediately and in parallel** (terminals
+  visible at once); discovery runs **fire-and-forget in the background**
+  (`spawnSession` -> `void discoverRealId`). The earlier per-cwd serialization
+  blocked the 2nd/3rd same-cwd terminal for 30-60s and was reverted. Tradeoff:
+  perfect tile<->id attribution under simultaneous same-cwd boots is best-effort
+  (OpenIdRegistry distinct-claim); a deterministic back-channel via server.ts is
+  the planned refinement.
 
 **Restore flows (DESIGN §6.6)**
 - [x] Startup: the app opens **empty** (no auto-restore -- operator request); the

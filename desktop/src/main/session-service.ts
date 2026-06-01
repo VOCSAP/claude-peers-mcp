@@ -62,8 +62,6 @@ export class SessionService extends EventEmitter {
 
   /** Live (post-fork) claude session ids open in this process; double-resume guard. */
   private registry = new OpenIdRegistry()
-  /** Per-cwd spawn serialization: each new transcript is discovered before the next spawn. */
-  private spawnQueues = new Map<string, Promise<unknown>>()
 
   constructor(
     private getConfig: () => AppConfig,
@@ -155,7 +153,7 @@ export class SessionService extends EventEmitter {
       thinking: false,
       expired: false
     })
-    this.enqueueSpawn(def, 'fresh')
+    this.spawnSession(def, 'fresh')
     this.broadcast()
     return this.toRuntime(def)
   }
@@ -201,7 +199,7 @@ export class SessionService extends EventEmitter {
       })
     }
     this.persist()
-    for (const d of this.defs) this.enqueueSpawn(d, 'resume')
+    for (const d of this.defs) this.spawnSession(d, 'resume')
     this.broadcast()
     return this.list()
   }
@@ -234,9 +232,9 @@ export class SessionService extends EventEmitter {
     if (r?.expired) {
       def.sessionId = '' // drop the dead lineage -> spawn fresh
       if (r) r.expired = false
-      this.enqueueSpawn(def, 'fresh')
+      this.spawnSession(def, 'fresh')
     } else {
-      this.enqueueSpawn(def, 'resume')
+      this.spawnSession(def, 'resume')
     }
     this.broadcast()
     return this.toRuntime(def)
@@ -253,28 +251,16 @@ export class SessionService extends EventEmitter {
   // ----- internals -----
 
   /**
-   * Serialize spawns within the same cwd: each spawn waits for the previous one's
-   * transcript to be discovered, so the newest new .jsonl is unambiguously the
-   * one we just launched (DESIGN 6.2 discovery track). Distinct cwds run on
-   * independent chains (parallel).
+   * Spawn a session's PTY IMMEDIATELY (terminal visible at once), then discover
+   * Claude's real (minted) session id in the BACKGROUND -- it ignores our
+   * --session-id in an interactive PTY + MCP context (see session-transcript).
+   * The spawn is never gated behind another session's discovery, so adding /
+   * restoring multiple sessions is instant and parallel. A resume whose stored
+   * REAL id has no transcript is flagged expired and not spawned.
    */
-  private enqueueSpawn(def: SessionDef, mode: SpawnMode): void {
-    const prev = this.spawnQueues.get(def.cwd) ?? Promise.resolve()
-    const next = prev
-      .catch(() => {})
-      .then(() => this.spawnAndDiscover(def, mode))
-    this.spawnQueues.set(def.cwd, next)
-  }
-
-  /**
-   * Resume/launch a session then DISCOVER the real session id Claude minted
-   * (it ignores our --session-id in an interactive PTY + MCP context). A resume
-   * whose stored REAL id has no transcript is flagged expired and not spawned.
-   */
-  private async spawnAndDiscover(def: SessionDef, mode: SpawnMode): Promise<void> {
+  private spawnSession(def: SessionDef, mode: SpawnMode): void {
     const r = this.runtime.get(def.id)
-    // The session may have been removed while queued.
-    if (!r) return
+    if (!r) return // removed before we got here
 
     if (mode === 'resume' && def.sessionId) {
       if (this.registry.has(def.sessionId)) return // same lineage already live
@@ -289,8 +275,9 @@ export class SessionService extends EventEmitter {
     }
 
     const before = new Set(listTranscriptIds(this.home, def.cwd).map((e) => e.id))
-    this.startPty(def, mode)
-    await this.discoverRealId(def, before)
+    this.startPty(def, mode) // INSTANT
+    // Fire-and-forget: discovery must never block terminal visibility.
+    void this.discoverRealId(def, before)
   }
 
   /**
