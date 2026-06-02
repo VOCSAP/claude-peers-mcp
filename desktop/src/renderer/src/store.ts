@@ -15,6 +15,8 @@ interface DeckState {
   maximizedId: string | null
   settingsOpen: boolean
   workspacesOpen: boolean
+  /** Workspaces window opened in load-only mode (startup arrow): hides Delete. */
+  workspacesLoadOnly: boolean
   /** "New (clear)" confirm dialog visibility (triggered by the File menu). */
   confirmNewClearOpen: boolean
   /** Save As prompt window visibility. */
@@ -33,7 +35,7 @@ interface DeckState {
   setSelected(id: string | null): void
   setMaximized(id: string | null): void
   openSettings(open: boolean): void
-  openWorkspaces(open: boolean): void
+  openWorkspaces(open: boolean, opts?: { loadOnly?: boolean }): void
   openNewClearConfirm(open: boolean): void
   openSaveAs(open: boolean): void
   setSidebarWidth(px: number): void
@@ -69,6 +71,7 @@ export const useDeck = create<DeckState>((set, get) => ({
   maximizedId: null,
   settingsOpen: false,
   workspacesOpen: false,
+  workspacesLoadOnly: false,
   confirmNewClearOpen: false,
   saveAsOpen: false,
   restoreLossId: null,
@@ -122,8 +125,8 @@ export const useDeck = create<DeckState>((set, get) => ({
   setSelected: (id) => set({ selectedId: id }),
   setMaximized: (id) => set({ maximizedId: id }),
   openSettings: (open) => set({ settingsOpen: open }),
-  openWorkspaces: (open) => {
-    set({ workspacesOpen: open })
+  openWorkspaces: (open, opts) => {
+    set({ workspacesOpen: open, workspacesLoadOnly: open ? !!opts?.loadOnly : false })
     if (open) void get().refreshWorkspaces()
   },
   openNewClearConfirm: (open) => set({ confirmNewClearOpen: open }),
@@ -213,6 +216,8 @@ export const useDeck = create<DeckState>((set, get) => ({
     await window.api.restoreWorkspace(id)
     // Sessions refresh via onSessionsChanged (restoreFrom broadcasts 'changed').
     await get().refreshWorkspaces()
+    // Close the selection window once a workspace has been loaded.
+    set({ workspacesOpen: false })
   },
 
   async removeWorkspace(id) {

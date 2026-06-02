@@ -48,7 +48,7 @@ export function TileArea(): React.JSX.Element {
             <button
               className="restore-prev empty-open-ws"
               title={t('area.openWorkspacesTitle')}
-              onClick={() => openWorkspaces(true)}
+              onClick={() => openWorkspaces(true, { loadOnly: true })}
             >
               ▸
             </button>

@@ -544,15 +544,15 @@ button {
   line-height: 1;
 }
 
-/* Bottom-of-window transient status message. */
+/* Bottom-of-window transient status message: green success background. */
 .toast {
   position: fixed;
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
-  background: var(--bg-3);
-  color: var(--fg);
-  border: 1px solid var(--border);
+  background: #2f7d4f;
+  color: #fff;
+  border: 1px solid #3a9560;
   border-radius: 6px;
   padding: 8px 14px;
   font-size: 13px;
@@ -888,9 +888,17 @@ code {
   opacity: 0.4;
   cursor: default;
 }
+/* Filled red delete, symmetric with the blue primary restore. */
+.ws-btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+}
 .ws-btn-danger:hover:not(:disabled) {
-  border-color: var(--danger);
-  color: var(--danger);
+  filter: brightness(1.08);
+}
+.ws-btn-danger:disabled {
+  opacity: 0.4;
 }
 /* Primary (blue) restore in the workspaces list. More specific than .ws-btn,
    which is declared later and would otherwise override .primary's background. */

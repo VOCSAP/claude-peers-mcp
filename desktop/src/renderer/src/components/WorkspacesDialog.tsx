@@ -14,11 +14,21 @@ import { ConfirmDialog } from './ConfirmDialog'
 export function WorkspacesDialog(): React.JSX.Element {
   const t = useT()
   const workspaces = useDeck((s) => s.workspaces)
+  const loadOnly = useDeck((s) => s.workspacesLoadOnly)
   const openWorkspaces = useDeck((s) => s.openWorkspaces)
   const requestRestore = useDeck((s) => s.requestRestore)
   const removeWorkspace = useDeck((s) => s.removeWorkspace)
 
   const [deleting, setDeleting] = useState<WorkspaceSummary | null>(null)
+
+  // Compact local date + time, e.g. "2 Jun, 15:42", as a temporal cue.
+  const fmt = (ms: number): string =>
+    new Date(ms).toLocaleString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
 
   return (
     <div className="modal-backdrop" onMouseDown={() => openWorkspaces(false)}>
@@ -31,7 +41,7 @@ export function WorkspacesDialog(): React.JSX.Element {
               <div className="ws-main">
                 <span className="ws-name">{ws.name}</span>
                 <span className="ws-sub">
-                  {ws.scopeName} · {t('workspaces.sessions', { n: ws.sessionCount })}
+                  {ws.scopeName} · {t('workspaces.sessions', { n: ws.sessionCount })} · {fmt(ws.updatedAt)}
                 </span>
               </div>
               <div className="ws-badges">
@@ -48,13 +58,15 @@ export function WorkspacesDialog(): React.JSX.Element {
               >
                 {t('workspaces.restore')}
               </button>
-              <button
-                className="ws-btn ws-btn-danger"
-                disabled={ws.current}
-                onClick={() => setDeleting(ws)}
-              >
-                {t('workspaces.delete')}
-              </button>
+              {!loadOnly && (
+                <button
+                  className="ws-btn ws-btn-danger"
+                  disabled={ws.current}
+                  onClick={() => setDeleting(ws)}
+                >
+                  {t('workspaces.delete')}
+                </button>
+              )}
             </li>
           ))}
           {workspaces.length === 0 && <li className="ws-empty">{t('workspaces.empty')}</li>}
