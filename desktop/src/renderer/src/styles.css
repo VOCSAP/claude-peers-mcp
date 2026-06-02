@@ -537,6 +537,29 @@ button {
   color: #1e1e1e;
 }
 
+/* Square arrow next to "Restore previous": opens the workspaces list. */
+.empty-open-ws {
+  padding: 7px 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Bottom-of-window transient status message. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 50;
+}
+
 .icon-btn {
   background: var(--bg-3);
   color: var(--fg);
@@ -868,6 +891,16 @@ code {
 .ws-btn-danger:hover:not(:disabled) {
   border-color: var(--danger);
   color: var(--danger);
+}
+/* Primary (blue) restore in the workspaces list. More specific than .ws-btn,
+   which is declared later and would otherwise override .primary's background. */
+.ws-btn.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+}
+.ws-btn.primary:disabled {
+  opacity: 0.4;
 }
 .ws-empty {
   color: var(--fg-dim);

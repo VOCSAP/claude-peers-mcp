@@ -45,13 +45,6 @@ empty with an on-demand "Restore previous session" button + a Workspaces dialog.
 **Why deferred:** The on-demand affordance covers the need without reworking the
 startup sequence. Revisit if a modal picker is preferred.
 
-### D5. Workspace actions not in the native File menu  `WATCHING`
-**What:** Workspace actions (Save / Save As / Restore / Delete) live in the
-`WorkspacesDialog`, not a native File menu. (The "New (clear)" action is now
-implemented in the File menu -- see Resolved.)
-**Why deferred:** The dialog covers these flows; mirroring them in a native
-menu is low value. Revisit if menu-driven workspace management is wanted.
-
 ### D7. Cross-host workspace lock is best-effort  `WATCHING`
 **What:** Same-host lock liveness uses `process.kill(pid,0)` (reliable).
 Cross-host relies on heartbeat freshness across two clocks (clock-skew
@@ -88,17 +81,19 @@ group, it recalls and rebuilds the scope to rejoin. Gated by the
 it no-ops (relaunch-arg fallback). The plaintext never hits disk and never the
 workspace JSON. 7 bun tests with a fake cipher. Spec `spec_bc9273f3`.
 
-### D5 (part). "New (clear)" action  `RESOLVED`
-**Was:** No way to close all sessions and return to the empty add-peers state.
-**Resolution:** A `File > New (clear)` menu item (CmdOrCtrl+Shift+N) sends
-`menu:new-clear` to the renderer, which confirms then invokes `app:new-clear`.
-Main runs `WorkspaceService.startNew()` (final auto-save + lock release + detach,
-so the prior workspace stays restorable) then `SessionService.closeAll()` (kills
-all PTYs, clears the set, broadcasts empty -- the auto-save guard ignores the
-empty list so nothing is clobbered). The window keeps its launch group (no
-silent scope change). New `confirm.newClear*` i18n keys (en/fr). The remaining
-D5 bit (workspace actions in a native File menu) stays `WATCHING`. Spec
-`spec_2416bad2`.
+### D5. File menu + workspace UX  `RESOLVED`
+**Was:** No "New (clear)" action and no workspace actions in a native File menu.
+**Resolution:** A File menu now hosts `New (clear)` (close all + return to empty,
+behind a confirm; spec `spec_2416bad2`), plus `Save`, `Save as…`, `Restore…`,
+`List workspaces` (spec `spec_feecd2d3`). Save/Save as show a bottom toast
+(`Workspace saved`/`Espace enregistré`); Save as opens a free-text prompt window.
+The workspaces list lost its inline Save/Save As (moved to the menu); its Restore
+is primary (blue) and Delete danger (red), both disabled for the current
+workspace; restoring while the current window has sessions shows a loss-warning.
+The window title shows the current workspace name. The empty state gained an
+arrow button to open the list. `New (clear)` keeps the window's launch group (no
+silent scope change). New i18n keys (`confirm.newClear*`, `confirm.restoreLoss*`,
+`saveas.title`, `toast.workspaceSaved`, `area.openWorkspacesTitle`) en/fr.
 
 ### D12. Palette editor in Settings  `RESOLVED`
 **Was:** Session colours came from a hardcoded rotating palette with no way to

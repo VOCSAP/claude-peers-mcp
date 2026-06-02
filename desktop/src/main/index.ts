@@ -102,7 +102,11 @@ let autoSaveTimer: NodeJS.Timeout | null = null
 service.on('changed', (sessions: unknown[]) => {
   if (!Array.isArray(sessions) || sessions.length === 0) return
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
-  autoSaveTimer = setTimeout(() => workspaces.saveAuto(), 1000)
+  autoSaveTimer = setTimeout(() => {
+    const summary = workspaces.saveAuto()
+    // Keep the renderer's window title in sync with the current workspace.
+    mainWindow?.webContents.send('workspace:current', summary)
+  }, 1000)
 })
 
 function createWindow(): void {
@@ -144,8 +148,16 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = config.theme
   // Tailored menu (drops the confusing default Edit roles); no auto-open DevTools.
   // "New (clear)" routes through the renderer so it can confirm before clearing.
+  const toRenderer = (channel: string, payload?: unknown): void =>
+    mainWindow?.webContents.send(channel, payload)
   Menu.setApplicationMenu(
-    buildAppMenu({ onNewClear: () => mainWindow?.webContents.send('menu:new-clear') })
+    buildAppMenu({
+      onNewClear: () => toRenderer('menu:new-clear'),
+      onSave: () => toRenderer('menu:save'),
+      onSaveAs: () => toRenderer('menu:save-as'),
+      onRestore: () => toRenderer('menu:restore'),
+      onListWorkspaces: () => toRenderer('menu:list')
+    })
   )
   registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
   service.start()

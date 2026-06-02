@@ -9,9 +9,23 @@ import { app, Menu, type MenuItemConstructorOptions } from 'electron'
 export interface AppMenuActions {
   /** "New (clear)": close all sessions and return to the empty add-peers state. */
   onNewClear: () => void
+  /** Save the current workspace (quick, keeps its name). */
+  onSave: () => void
+  /** Save the current workspace under a new name (prompt window). */
+  onSaveAs: () => void
+  /** Open the workspaces list to restore one. */
+  onRestore: () => void
+  /** Open the workspaces list. */
+  onListWorkspaces: () => void
 }
 
-export function buildAppMenu({ onNewClear }: AppMenuActions): Menu {
+export function buildAppMenu({
+  onNewClear,
+  onSave,
+  onSaveAs,
+  onRestore,
+  onListWorkspaces
+}: AppMenuActions): Menu {
   const isMac = process.platform === 'darwin'
   const isDev = !app.isPackaged
 
@@ -36,6 +50,11 @@ export function buildAppMenu({ onNewClear }: AppMenuActions): Menu {
     label: 'File',
     submenu: [
       { label: 'New (clear)', accelerator: 'CmdOrCtrl+Shift+N', click: onNewClear },
+      { type: 'separator' },
+      { label: 'Save', accelerator: 'CmdOrCtrl+S', click: onSave },
+      { label: 'Save as…', accelerator: 'CmdOrCtrl+Shift+S', click: onSaveAs },
+      { label: 'Restore…', click: onRestore },
+      { label: 'List workspaces', click: onListWorkspaces },
       { type: 'separator' },
       isMac ? { role: 'close' } : { role: 'quit' }
     ]

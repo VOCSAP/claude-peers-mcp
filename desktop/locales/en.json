@@ -36,6 +36,8 @@
   "confirm.newClearTitle": "Close all sessions?",
   "confirm.newClearMessage": "Close all peer terminals and return to an empty window? They are auto-saved and can be reopened later from Workspaces.",
   "confirm.newClearConfirm": "Close all",
+  "confirm.restoreLossTitle": "Restore workspace?",
+  "confirm.restoreLossMessage": "Restoring will close the current sessions and load this workspace instead. The current sessions are auto-saved and can be reopened later.",
   "confirm.deleteWorkspaceTitle": "Delete workspace?",
   "confirm.deleteWorkspaceMessage": "Delete \"{name}\"? This removes the saved layout only; Claude session history is untouched.",
 
@@ -50,6 +52,8 @@
   "workspaces.locked": "in use",
   "workspaces.pinned": "pinned",
   "workspaces.sessions": "{n} sessions",
+  "saveas.title": "Save workspace as",
+  "toast.workspaceSaved": "Workspace saved",
 
   "tile.expiredTitle": "Session expired",
   "tile.expiredBody": "Its transcript is gone. Start a new session with the same setup.",
@@ -113,5 +117,6 @@
   "area.emptyTitle": "No peer terminals yet",
   "area.emptyBody": "Add a Claude Code peer session to dock it here. Each tile runs in a real terminal, scoped to this window's isolated group, so OAuth works normally.",
   "area.addTerminal": "＋ Add peer terminal",
-  "area.restorePrevious": "Restore previous session"
+  "area.restorePrevious": "Restore previous session",
+  "area.openWorkspacesTitle": "Open workspaces"
 }

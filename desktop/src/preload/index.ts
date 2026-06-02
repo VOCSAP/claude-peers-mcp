@@ -7,7 +7,8 @@ import type {
   PtyDataEvent,
   PtyExitEvent,
   SessionRuntime,
-  SessionThinkingEvent
+  SessionThinkingEvent,
+  WorkspaceSummary
 } from '@shared/types'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -81,7 +82,13 @@ const api: DeckApi = {
   onSessionThinking: (cb: (e: SessionThinkingEvent) => void) =>
     subscribe('session:thinking', cb),
   onConfigChanged: (cb: (config: AppConfig) => void) => subscribe('config:changed', cb),
-  onMenuNewClear: (cb: () => void) => subscribe('menu:new-clear', () => cb())
+  onMenuNewClear: (cb: () => void) => subscribe('menu:new-clear', () => cb()),
+  onMenuSave: (cb: () => void) => subscribe('menu:save', () => cb()),
+  onMenuSaveAs: (cb: () => void) => subscribe('menu:save-as', () => cb()),
+  onMenuRestore: (cb: () => void) => subscribe('menu:restore', () => cb()),
+  onMenuListWorkspaces: (cb: () => void) => subscribe('menu:list', () => cb()),
+  onWorkspaceCurrent: (cb: (ws: WorkspaceSummary | null) => void) =>
+    subscribe('workspace:current', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

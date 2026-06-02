@@ -178,4 +178,11 @@ export interface DeckApi {
   onConfigChanged(cb: (config: AppConfig) => void): () => void
   /** Fired when the File > New (clear) menu item is chosen (renderer confirms). */
   onMenuNewClear(cb: () => void): () => void
+  /** File menu workspace actions (renderer handles the UI/confirms). */
+  onMenuSave(cb: () => void): () => void
+  onMenuSaveAs(cb: () => void): () => void
+  onMenuRestore(cb: () => void): () => void
+  onMenuListWorkspaces(cb: () => void): () => void
+  /** Current workspace summary (or null after New clear) for the window title. */
+  onWorkspaceCurrent(cb: (ws: WorkspaceSummary | null) => void): () => void
 }

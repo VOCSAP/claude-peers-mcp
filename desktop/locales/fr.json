@@ -36,6 +36,8 @@
   "confirm.newClearTitle": "Fermer toutes les sessions ?",
   "confirm.newClearMessage": "Fermer tous les terminaux peers et revenir à une fenêtre vide ? Ils sont sauvegardés automatiquement et peuvent être rouverts plus tard depuis les espaces.",
   "confirm.newClearConfirm": "Tout fermer",
+  "confirm.restoreLossTitle": "Restaurer l'espace ?",
+  "confirm.restoreLossMessage": "Restaurer fermera les sessions courantes et chargera cet espace à la place. Les sessions courantes sont sauvegardées automatiquement et peuvent être rouvertes plus tard.",
   "confirm.deleteWorkspaceTitle": "Supprimer l'espace ?",
   "confirm.deleteWorkspaceMessage": "Supprimer « {name} » ? Cela retire uniquement la disposition enregistrée ; l'historique des sessions Claude reste intact.",
 
@@ -50,6 +52,8 @@
   "workspaces.locked": "en cours d'usage",
   "workspaces.pinned": "épinglé",
   "workspaces.sessions": "{n} sessions",
+  "saveas.title": "Enregistrer l'espace sous",
+  "toast.workspaceSaved": "Espace enregistré",
 
   "tile.expiredTitle": "Session expirée",
   "tile.expiredBody": "Son transcript a disparu. Démarre une nouvelle session avec la même configuration.",
@@ -113,5 +117,6 @@
   "area.emptyTitle": "Aucun terminal pair pour l'instant",
   "area.emptyBody": "Ajoute une session pair Claude Code pour l'ancrer ici. Chaque tuile tourne dans un vrai terminal, isolé dans le groupe de cette fenêtre, donc OAuth fonctionne normalement.",
   "area.addTerminal": "＋ Ajouter un terminal pair",
-  "area.restorePrevious": "Restaurer la session précédente"
+  "area.restorePrevious": "Restaurer la session précédente",
+  "area.openWorkspacesTitle": "Ouvrir les espaces"
 }

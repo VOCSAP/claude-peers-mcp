@@ -7,6 +7,8 @@ import { DisplayModeBar } from './DisplayModeBar'
 import { SettingsDialog } from './SettingsDialog'
 import { WorkspacesDialog } from './WorkspacesDialog'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Toast } from './Toast'
+import { SaveAsDialog } from './SaveAsDialog'
 
 export function App(): React.JSX.Element {
   const t = useT()
@@ -17,6 +19,11 @@ export function App(): React.JSX.Element {
   const confirmNewClearOpen = useDeck((s) => s.confirmNewClearOpen)
   const openNewClearConfirm = useDeck((s) => s.openNewClearConfirm)
   const newClear = useDeck((s) => s.newClear)
+  const saveAsOpen = useDeck((s) => s.saveAsOpen)
+  const restoreLossId = useDeck((s) => s.restoreLossId)
+  const confirmRestore = useDeck((s) => s.confirmRestore)
+  const cancelRestore = useDeck((s) => s.cancelRestore)
+  const currentWorkspaceName = useDeck((s) => s.currentWorkspaceName)
   const selectedId = useDeck((s) => s.selectedId)
   const maximizedId = useDeck((s) => s.maximizedId)
   const setMaximized = useDeck((s) => s.setMaximized)
@@ -29,6 +36,13 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (config) document.documentElement.dataset.theme = config.theme
   }, [config])
+
+  // Reflect the current workspace name in the window title.
+  useEffect(() => {
+    document.title = currentWorkspaceName
+      ? `Claude Peers Deck — ${currentWorkspaceName}`
+      : 'Claude Peers Deck'
+  }, [currentWorkspaceName])
 
   // Ctrl+Shift+M toggles fullscreen of the selected tile.
   useEffect(() => {
@@ -58,6 +72,7 @@ export function App(): React.JSX.Element {
       </div>
       {settingsOpen && <SettingsDialog />}
       {workspacesOpen && <WorkspacesDialog />}
+      {saveAsOpen && <SaveAsDialog />}
       {confirmNewClearOpen && (
         <ConfirmDialog
           title={t('confirm.newClearTitle')}
@@ -67,6 +82,16 @@ export function App(): React.JSX.Element {
           onConfirm={() => void newClear()}
         />
       )}
+      {restoreLossId && (
+        <ConfirmDialog
+          title={t('confirm.restoreLossTitle')}
+          message={t('confirm.restoreLossMessage')}
+          confirmLabel={t('workspaces.restore')}
+          onCancel={cancelRestore}
+          onConfirm={() => void confirmRestore()}
+        />
+      )}
+      <Toast />
     </div>
   )
 }

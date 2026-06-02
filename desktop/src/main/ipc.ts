@@ -50,6 +50,7 @@ export function registerIpc({
   ipcMain.handle('app:new-clear', () => {
     workspaces.startNew()
     service.closeAll()
+    getWindow()?.webContents.send('workspace:current', null)
   })
 
   // ----- pty io (fire-and-forget) -----
@@ -78,7 +79,11 @@ export function registerIpc({
   ipcMain.handle('workspace:save', (_e, name?: string) =>
     name && name.trim() ? workspaces.saveNamed(name) : workspaces.saveAuto()
   )
-  ipcMain.handle('workspace:restore', (_e, id: string) => workspaces.restore(id))
+  ipcMain.handle('workspace:restore', (_e, id: string) => {
+    workspaces.restore(id)
+    const current = workspaces.listForCwd().find((w) => w.current) ?? null
+    getWindow()?.webContents.send('workspace:current', current)
+  })
   ipcMain.handle('workspace:delete', (_e, id: string) => workspaces.deleteWs(id))
   ipcMain.handle('workspace:current', () => workspaces.currentWorkspaceId)
 

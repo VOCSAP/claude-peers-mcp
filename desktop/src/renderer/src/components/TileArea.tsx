@@ -26,6 +26,7 @@ export function TileArea(): React.JSX.Element {
   const createSession = useDeck((s) => s.createSession)
   const workspaces = useDeck((s) => s.workspaces)
   const restoreWorkspace = useDeck((s) => s.restoreWorkspace)
+  const openWorkspaces = useDeck((s) => s.openWorkspaces)
   const carouselRef = useRef<HTMLDivElement>(null)
 
   if (sessions.length === 0) {
@@ -44,6 +45,13 @@ export function TileArea(): React.JSX.Element {
                 {t('area.restorePrevious')}
               </button>
             )}
+            <button
+              className="restore-prev empty-open-ws"
+              title={t('area.openWorkspacesTitle')}
+              onClick={() => openWorkspaces(true)}
+            >
+              ▸
+            </button>
           </div>
         </div>
       </main>

@@ -17,6 +17,14 @@ interface DeckState {
   workspacesOpen: boolean
   /** "New (clear)" confirm dialog visibility (triggered by the File menu). */
   confirmNewClearOpen: boolean
+  /** Save As prompt window visibility. */
+  saveAsOpen: boolean
+  /** Workspace id pending a restore confirm (loss warning), or null. */
+  restoreLossId: string | null
+  /** Transient toast message (an i18n key), or null. */
+  toast: string | null
+  /** Name of the current workspace, shown in the window title. */
+  currentWorkspaceName: string | null
   workspaces: WorkspaceSummary[]
   /** Live sidebar width (px); seeded from config, persisted on drag end. */
   sidebarWidth: number
@@ -27,8 +35,15 @@ interface DeckState {
   openSettings(open: boolean): void
   openWorkspaces(open: boolean): void
   openNewClearConfirm(open: boolean): void
+  openSaveAs(open: boolean): void
   setSidebarWidth(px: number): void
 
+  showToast(key: string): void
+  saveCurrent(): Promise<void>
+  saveAs(name: string): Promise<void>
+  requestRestore(id: string): void
+  confirmRestore(): Promise<void>
+  cancelRestore(): void
   newClear(): Promise<void>
   createSession(input: CreateSessionInput): Promise<void>
   removeSession(id: string): Promise<void>
@@ -43,6 +58,9 @@ interface DeckState {
   removeWorkspace(id: string): Promise<void>
 }
 
+// Monotonic token so a newer toast cancels the prior auto-clear timer.
+let toastToken = 0
+
 export const useDeck = create<DeckState>((set, get) => ({
   sessions: [],
   config: null,
@@ -52,6 +70,10 @@ export const useDeck = create<DeckState>((set, get) => ({
   settingsOpen: false,
   workspacesOpen: false,
   confirmNewClearOpen: false,
+  saveAsOpen: false,
+  restoreLossId: null,
+  toast: null,
+  currentWorkspaceName: null,
   workspaces: [],
   sidebarWidth: 260,
 
@@ -82,6 +104,11 @@ export const useDeck = create<DeckState>((set, get) => ({
       })
     })
     window.api.onMenuNewClear(() => set({ confirmNewClearOpen: true }))
+    window.api.onMenuSave(() => void get().saveCurrent())
+    window.api.onMenuSaveAs(() => set({ saveAsOpen: true }))
+    window.api.onMenuRestore(() => get().openWorkspaces(true))
+    window.api.onMenuListWorkspaces(() => get().openWorkspaces(true))
+    window.api.onWorkspaceCurrent((ws) => set({ currentWorkspaceName: ws?.name ?? null }))
     window.api.onConfigChanged((next) => {
       const prevLocale = get().config?.locale
       set({ config: next })
@@ -100,7 +127,43 @@ export const useDeck = create<DeckState>((set, get) => ({
     if (open) void get().refreshWorkspaces()
   },
   openNewClearConfirm: (open) => set({ confirmNewClearOpen: open }),
+  openSaveAs: (open) => set({ saveAsOpen: open }),
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),
+
+  showToast: (key) => {
+    set({ toast: key })
+    const token = ++toastToken
+    setTimeout(() => {
+      if (toastToken === token) set({ toast: null })
+    }, 3000)
+  },
+
+  async saveCurrent() {
+    await get().saveWorkspace()
+    get().showToast('toast.workspaceSaved')
+  },
+
+  async saveAs(name) {
+    const n = name.trim()
+    if (!n) return
+    await get().saveWorkspace(n)
+    set({ saveAsOpen: false })
+    get().showToast('toast.workspaceSaved')
+  },
+
+  requestRestore: (id) => {
+    // Loss warning only when the current window already has sessions.
+    if (get().sessions.length > 0) set({ restoreLossId: id })
+    else void get().restoreWorkspace(id)
+  },
+
+  async confirmRestore() {
+    const id = get().restoreLossId
+    set({ restoreLossId: null })
+    if (id) await get().restoreWorkspace(id)
+  },
+
+  cancelRestore: () => set({ restoreLossId: null }),
 
   async newClear() {
     await window.api.newClear()
@@ -137,7 +200,8 @@ export const useDeck = create<DeckState>((set, get) => ({
   },
 
   async refreshWorkspaces() {
-    set({ workspaces: await window.api.listWorkspaces() })
+    const workspaces = await window.api.listWorkspaces()
+    set({ workspaces, currentWorkspaceName: workspaces.find((w) => w.current)?.name ?? null })
   },
 
   async saveWorkspace(name) {
