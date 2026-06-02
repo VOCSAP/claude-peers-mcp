@@ -103,9 +103,14 @@ service.on('changed', (sessions: unknown[]) => {
   if (!Array.isArray(sessions) || sessions.length === 0) return
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   autoSaveTimer = setTimeout(() => {
-    const summary = workspaces.saveAuto()
-    // Keep the renderer's window title in sync with the current workspace.
-    mainWindow?.webContents.send('workspace:current', summary)
+    // A workspace I/O error must never take down the main process.
+    try {
+      const summary = workspaces.saveAuto()
+      // Keep the renderer's window title in sync with the current workspace.
+      mainWindow?.webContents.send('workspace:current', summary)
+    } catch (e) {
+      console.error('[claude-peers-desk] auto-save failed:', e)
+    }
   }, 1000)
 })
 

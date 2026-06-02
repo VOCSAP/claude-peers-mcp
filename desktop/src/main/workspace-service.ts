@@ -14,6 +14,7 @@ import {
   type WorkspaceDisplayMode,
   autoName,
   deleteWorkspace,
+  ensureWorkspacesDir,
   listWorkspaces,
   loadWorkspace,
   newWorkspaceId,
@@ -132,6 +133,10 @@ export class WorkspaceService {
 
   /** Own a workspace id: acquire its lock + (re)start the heartbeat. */
   private own(id: string): void {
+    // The lock is written before saveWorkspace would create the tree, so a
+    // fresh project dir (no .claude/claude-peers/workspaces yet) would ENOENT.
+    // Create it up front -- own() is the first writer of any workspace file.
+    ensureWorkspacesDir(this.deps.projectDir)
     if (this.currentId && this.currentId !== id) {
       releaseLock(this.deps.projectDir, this.currentId)
     }
