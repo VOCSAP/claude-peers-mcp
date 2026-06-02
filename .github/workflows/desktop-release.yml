@@ -1,0 +1,63 @@
+name: desktop-release
+
+# Build the claude-peers-desk installers + portable zips for every OS and attach
+# them to the GitHub Release. Triggered by a desktop-v* tag (distinct from any
+# core release tag). Runs on hosted runners, which have the privileges to extract
+# electron-builder's winCodeSign archive -- so it avoids the local Windows
+# Developer-Mode / admin requirement.
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      # Rebuild node-pty against Electron's ABI (the gate that fails loudly if a
+      # runner's native toolchain is incomplete -- notably the Windows Spectre libs).
+      - name: Rebuild node-pty (ABI gate)
+        working-directory: desktop
+        run: npm run rebuild
+
+      - name: Build (electron-vite)
+        working-directory: desktop
+        run: npm run build
+
+      # Host-OS targets only (electron-builder defaults to the runner's platform).
+      - name: Package installers + zip
+        working-directory: desktop
+        run: npx electron-builder --publish never
+
+      - name: Attach artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            desktop/dist/*.exe
+            desktop/dist/*.zip
+            desktop/dist/*.dmg
+            desktop/dist/*.AppImage

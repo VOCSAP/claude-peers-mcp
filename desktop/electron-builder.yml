@@ -16,11 +16,17 @@ extraResources:
   - from: locales
     to: locales
 win:
-  target: nsis
+  # NSIS installer plus a portable .zip (run anywhere, no install).
+  target:
+    - nsis
+    - zip
 mac:
-  target: dmg
+  target:
+    - dmg
+    - zip
   category: public.app-category.developer-tools
 linux:
+  # AppImage is already a single portable binary.
   target:
     - AppImage
   category: Development
