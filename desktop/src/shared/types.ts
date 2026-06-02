@@ -80,6 +80,8 @@ export interface AppConfig {
   locale: string
   /** Rotating palette (hex) for auto-assigned session colours; editable in Settings (D12). */
   palette: string[]
+  /** Remember custom (shared) scope secrets on this machine, encrypted (D8). */
+  rememberScopeSecrets: boolean
 }
 
 /** Active locale + flattened translation dict, sent to the renderer. */

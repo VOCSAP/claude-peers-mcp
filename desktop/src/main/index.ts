@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, Menu, nativeTheme, safeStorage, shell } from 'electron'
 import type { AppConfig } from '@shared/types'
 import { loadConfig, saveConfig } from './store'
 import { buildAppMenu } from './menu'
@@ -7,6 +7,11 @@ import { SessionService } from './session-service'
 import { registerIpc } from './ipc'
 import { parseCliContext } from './cli-context'
 import { computeScope, buildScopeEnv, resolveAdoptedScope, type Scope, type ScopeEnv } from './scope'
+import {
+  rememberScopeSecret,
+  recallScopeSecret,
+  type SecretCipher
+} from './scope-secrets'
 import { resolveLaunchConfig } from './launch-config'
 import { WorkspaceService } from './workspace-service'
 
@@ -24,6 +29,27 @@ let config: AppConfig = { ...loadConfig(), projectDir: cliContext.projectDir }
 // relaunching (DESIGN 6.6).
 let activeScope: Scope = computeScope(cliContext.projectDir, cliContext.scopeId)
 let activeScopeEnv: ScopeEnv = buildScopeEnv(activeScope)
+
+// D8: remember a custom scope's secret on this machine (encrypted via the OS
+// credential store) so a custom-scope workspace can be restored without
+// re-supplying the secret via the launch arg. Keyed by groupId in userData.
+const secretCipher: SecretCipher = {
+  isAvailable: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (plain) => safeStorage.encryptString(plain),
+  decrypt: (buf) => safeStorage.decryptString(buf)
+}
+const secretsDir = (): string => app.getPath('userData')
+
+// If this window was launched with a custom scope, remember its secret (opt-out
+// via the rememberScopeSecrets setting). The plaintext never hits disk -- only
+// the encrypted blob, in a userData file separate from the workspace JSON.
+if (activeScope.scopeKind === 'custom' && config.rememberScopeSecrets) {
+  try {
+    rememberScopeSecret(secretsDir(), secretCipher, activeScope.groupId, activeScope.secret)
+  } catch (e) {
+    console.error('[claude-peers-desk] could not remember scope secret:', e)
+  }
+}
 
 // Resolve the base command each session runs (project-local > global > default).
 const launchConfig = resolveLaunchConfig(cliContext.projectDir)
@@ -46,7 +72,14 @@ const service = new SessionService(getConfig, () => activeScopeEnv.env, launchCo
  */
 const adoptScope = (ws: { groupId: string; scopeKind: 'ephemeral' | 'custom' }): void => {
   if (service.hasLiveSessions()) return
-  const next = resolveAdoptedScope(ws, activeScope, cliContext.projectDir)
+  let next = resolveAdoptedScope(ws, activeScope, cliContext.projectDir)
+  // D8: resolveAdoptedScope falls back to a fresh ephemeral when the launched
+  // scope does not match the workspace's custom group. If we remembered that
+  // group's secret, rebuild the scope from it to rejoin the same group.
+  if (next.groupId !== ws.groupId && ws.scopeKind === 'custom' && config.rememberScopeSecrets) {
+    const remembered = recallScopeSecret(secretsDir(), secretCipher, ws.groupId)
+    if (remembered) next = computeScope(cliContext.projectDir, remembered)
+  }
   if (next === activeScope) return
   activeScopeEnv.cleanup()
   activeScope = next

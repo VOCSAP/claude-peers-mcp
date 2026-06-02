@@ -179,6 +179,16 @@ export function SettingsDialog(): React.JSX.Element {
           <span>{t('settings.restoreSessions')}</span>
         </label>
 
+        <label className="field field-check">
+          <input
+            type="checkbox"
+            checked={form.rememberScopeSecrets}
+            onChange={(e) => set('rememberScopeSecrets', e.target.checked)}
+          />
+          <span>{t('settings.rememberScope')}</span>
+        </label>
+        <small className="field-check-help">{t('settings.rememberScopeHelp')}</small>
+
         <div className="modal-actions">
           <button onClick={() => openSettings(false)}>{t('common.cancel')}</button>
           <button className="primary" onClick={save}>

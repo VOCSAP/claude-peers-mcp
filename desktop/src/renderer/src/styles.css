@@ -613,6 +613,15 @@ button {
   height: 16px;
 }
 
+/* Help text under a checkbox row (the help cannot sit inside the inline label). */
+.field-check-help {
+  display: block;
+  margin: -4px 0 4px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

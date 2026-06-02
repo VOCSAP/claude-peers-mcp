@@ -59,11 +59,6 @@ dependent, DESIGN 15).
 **Planned direction:** Delegate cross-host locking to the broker (single
 authoritative clock) -- a Phase 2 enhancement.
 
-### D8. Custom-scope secret is not cached (`safeStorage`)  `OPEN`
-**What:** A custom (shared) scope's secret must be re-supplied via the launch arg
-to rejoin the same group on restore. The optional `safeStorage` "remember on this
-machine" convenience (DESIGN 6.8) is not implemented.
-
 ### D9. "Thinking" indicator is a placeholder heuristic  `PLANNED` (Phase 2)
 **What:** The busy/idle dot uses a fragile PTY-output heuristic that does not
 reliably match real Claude Code output (the dot tends to stay green).
@@ -78,6 +73,20 @@ resumable content) but means no background re-capture after the window.
 ---
 
 ## Resolved
+
+### D8. Custom-scope secret cached via safeStorage  `RESOLVED`
+**Was:** A custom (shared) scope's secret had to be re-supplied via the launch
+arg to rejoin the group on restore.
+**Resolution:** A pure `src/main/scope-secrets.ts` (injectable `SecretCipher` +
+storage dir) persists `{ groupId -> base64(encrypted) }` in userData;
+`index.ts` wires Electron `safeStorage` (DPAPI / Keychain / libsecret) and the
+userData dir. On launch with a custom scope it remembers the secret; in
+`adoptScope`, when the resolved scope would fall off the workspace's custom
+group, it recalls and rebuilds the scope to rejoin. Gated by the
+`rememberScopeSecrets` AppConfig toggle (default on, Settings checkbox,
+`settings.rememberScope*` i18n en/fr). When `isEncryptionAvailable()` is false
+it no-ops (relaunch-arg fallback). The plaintext never hits disk and never the
+workspace JSON. 7 bun tests with a fake cipher. Spec `spec_bc9273f3`.
 
 ### D5 (part). "New (clear)" action  `RESOLVED`
 **Was:** No way to close all sessions and return to the empty add-peers state.

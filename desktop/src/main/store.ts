@@ -22,7 +22,8 @@ const DEFAULT_CONFIG: AppConfig = {
   restoreSessions: true,
   // '' = auto: main/i18n.ts derives en/fr from the OS locale.
   locale: '',
-  palette: DEFAULT_PALETTE
+  palette: DEFAULT_PALETTE,
+  rememberScopeSecrets: true
 }
 
 function dataDir(): string {
