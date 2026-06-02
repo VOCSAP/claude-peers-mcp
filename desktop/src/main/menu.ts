@@ -6,7 +6,12 @@
 
 import { app, Menu, type MenuItemConstructorOptions } from 'electron'
 
-export function buildAppMenu(): Menu {
+export interface AppMenuActions {
+  /** "New (clear)": close all sessions and return to the empty add-peers state. */
+  onNewClear: () => void
+}
+
+export function buildAppMenu({ onNewClear }: AppMenuActions): Menu {
   const isMac = process.platform === 'darwin'
   const isDev = !app.isPackaged
 
@@ -29,7 +34,11 @@ export function buildAppMenu(): Menu {
 
   template.push({
     label: 'File',
-    submenu: [isMac ? { role: 'close' } : { role: 'quit' }]
+    submenu: [
+      { label: 'New (clear)', accelerator: 'CmdOrCtrl+Shift+N', click: onNewClear },
+      { type: 'separator' },
+      isMac ? { role: 'close' } : { role: 'quit' }
+    ]
   })
 
   // Deliberately minimal: no Undo/Redo/Cut/Select All (confusing for terminals).

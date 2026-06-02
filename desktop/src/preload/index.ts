@@ -52,6 +52,7 @@ const api: DeckApi = {
   setSessionColor: (id: string, color: string) =>
     ipcRenderer.invoke('sessions:set-color', id, color),
   restartSession: (id: string) => ipcRenderer.invoke('sessions:restart', id),
+  newClear: () => ipcRenderer.invoke('app:new-clear'),
 
   ptyInput: (id: string, data: string) => ipcRenderer.send('pty:input', id, data),
   ptyResize: (id: string, cols: number, rows: number) =>
@@ -79,7 +80,8 @@ const api: DeckApi = {
     subscribe('sessions:changed', cb),
   onSessionThinking: (cb: (e: SessionThinkingEvent) => void) =>
     subscribe('session:thinking', cb),
-  onConfigChanged: (cb: (config: AppConfig) => void) => subscribe('config:changed', cb)
+  onConfigChanged: (cb: (config: AppConfig) => void) => subscribe('config:changed', cb),
+  onMenuNewClear: (cb: () => void) => subscribe('menu:new-clear', () => cb())
 }
 
 contextBridge.exposeInMainWorld('api', api)

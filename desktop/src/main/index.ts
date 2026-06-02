@@ -110,7 +110,10 @@ function createWindow(): void {
 app.whenReady().then(() => {
   nativeTheme.themeSource = config.theme
   // Tailored menu (drops the confusing default Edit roles); no auto-open DevTools.
-  Menu.setApplicationMenu(buildAppMenu())
+  // "New (clear)" routes through the renderer so it can confirm before clearing.
+  Menu.setApplicationMenu(
+    buildAppMenu({ onNewClear: () => mainWindow?.webContents.send('menu:new-clear') })
+  )
   registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
   service.start()
   // Attach an auto-save workspace capturing whatever the service just restored.

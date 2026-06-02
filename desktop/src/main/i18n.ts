@@ -51,6 +51,10 @@ export const EN_DEFAULTS: Record<string, string> = {
   'confirm.closeTitle': 'Close session?',
   'confirm.closeMessage':
     'Close "{name}"? Its terminal stops; the underlying Claude session can still be resumed later from history.',
+  'confirm.newClearTitle': 'Close all sessions?',
+  'confirm.newClearMessage':
+    'Close all peer terminals and return to an empty window? They are auto-saved and can be reopened later from Workspaces.',
+  'confirm.newClearConfirm': 'Close all',
   'confirm.deleteWorkspaceTitle': 'Delete workspace?',
   'confirm.deleteWorkspaceMessage':
     'Delete "{name}"? This removes the saved layout only; Claude session history is untouched.',

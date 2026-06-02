@@ -45,6 +45,12 @@ export function registerIpc({
     service.setColor(id, color)
   )
   ipcMain.handle('sessions:restart', (_e, id: string) => service.restart(id))
+  // "New (clear)": save+detach the current workspace (while sessions still
+  // exist) THEN close all sessions, returning the window to the empty state.
+  ipcMain.handle('app:new-clear', () => {
+    workspaces.startNew()
+    service.closeAll()
+  })
 
   // ----- pty io (fire-and-forget) -----
   ipcMain.on('pty:input', (_e, id: string, data: string) => service.write(id, data))

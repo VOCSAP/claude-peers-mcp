@@ -15,6 +15,8 @@ interface DeckState {
   maximizedId: string | null
   settingsOpen: boolean
   workspacesOpen: boolean
+  /** "New (clear)" confirm dialog visibility (triggered by the File menu). */
+  confirmNewClearOpen: boolean
   workspaces: WorkspaceSummary[]
   /** Live sidebar width (px); seeded from config, persisted on drag end. */
   sidebarWidth: number
@@ -24,8 +26,10 @@ interface DeckState {
   setMaximized(id: string | null): void
   openSettings(open: boolean): void
   openWorkspaces(open: boolean): void
+  openNewClearConfirm(open: boolean): void
   setSidebarWidth(px: number): void
 
+  newClear(): Promise<void>
   createSession(input: CreateSessionInput): Promise<void>
   removeSession(id: string): Promise<void>
   renameSession(id: string, name: string): Promise<void>
@@ -47,6 +51,7 @@ export const useDeck = create<DeckState>((set, get) => ({
   maximizedId: null,
   settingsOpen: false,
   workspacesOpen: false,
+  confirmNewClearOpen: false,
   workspaces: [],
   sidebarWidth: 260,
 
@@ -67,13 +72,16 @@ export const useDeck = create<DeckState>((set, get) => ({
     })
 
     window.api.onSessionsChanged((next) => {
-      const { selectedId } = get()
+      const { selectedId, maximizedId } = get()
       const stillExists = next.some((s) => s.id === selectedId)
+      const maxStillExists = next.some((s) => s.id === maximizedId)
       set({
         sessions: next,
-        selectedId: stillExists ? selectedId : (next[0]?.id ?? null)
+        selectedId: stillExists ? selectedId : (next[0]?.id ?? null),
+        maximizedId: maxStillExists ? maximizedId : null
       })
     })
+    window.api.onMenuNewClear(() => set({ confirmNewClearOpen: true }))
     window.api.onConfigChanged((next) => {
       const prevLocale = get().config?.locale
       set({ config: next })
@@ -91,7 +99,14 @@ export const useDeck = create<DeckState>((set, get) => ({
     set({ workspacesOpen: open })
     if (open) void get().refreshWorkspaces()
   },
+  openNewClearConfirm: (open) => set({ confirmNewClearOpen: open }),
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),
+
+  async newClear() {
+    await window.api.newClear()
+    // sessions empty out via onSessionsChanged; close the confirm.
+    set({ confirmNewClearOpen: false })
+  },
 
   async createSession(input) {
     const created = await window.api.createSession(input)

@@ -141,6 +141,8 @@ export interface DeckApi {
   renameSession(id: string, name: string): Promise<void>
   setSessionColor(id: string, color: string): Promise<void>
   restartSession(id: string): Promise<SessionRuntime>
+  /** "New (clear)": close all sessions and return the window to the empty state. */
+  newClear(): Promise<void>
 
   // pty io
   ptyInput(id: string, data: string): void
@@ -172,4 +174,6 @@ export interface DeckApi {
   onSessionsChanged(cb: (sessions: SessionRuntime[]) => void): () => void
   onSessionThinking(cb: (e: SessionThinkingEvent) => void): () => void
   onConfigChanged(cb: (config: AppConfig) => void): () => void
+  /** Fired when the File > New (clear) menu item is chosen (renderer confirms). */
+  onMenuNewClear(cb: () => void): () => void
 }

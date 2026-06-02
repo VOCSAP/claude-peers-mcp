@@ -45,12 +45,12 @@ empty with an on-demand "Restore previous session" button + a Workspaces dialog.
 **Why deferred:** The on-demand affordance covers the need without reworking the
 startup sequence. Revisit if a modal picker is preferred.
 
-### D5. Native menubar File menu + "New (clear)" deferred  `WATCHING`
+### D5. Workspace actions not in the native File menu  `WATCHING`
 **What:** Workspace actions (Save / Save As / Restore / Delete) live in the
-`WorkspacesDialog`, not a native File menu. There is no "New (clear)" action
-(close all + fresh scope) yet.
-**Why deferred:** Avoided extra IPC + menu wiring; the dialog covers the core
-flows. "New (clear)" needs a graceful-close-all + scope-reset path.
+`WorkspacesDialog`, not a native File menu. (The "New (clear)" action is now
+implemented in the File menu -- see Resolved.)
+**Why deferred:** The dialog covers these flows; mirroring them in a native
+menu is low value. Revisit if menu-driven workspace management is wanted.
 
 ### D7. Cross-host workspace lock is best-effort  `WATCHING`
 **What:** Same-host lock liveness uses `process.kill(pid,0)` (reliable).
@@ -78,6 +78,18 @@ resumable content) but means no background re-capture after the window.
 ---
 
 ## Resolved
+
+### D5 (part). "New (clear)" action  `RESOLVED`
+**Was:** No way to close all sessions and return to the empty add-peers state.
+**Resolution:** A `File > New (clear)` menu item (CmdOrCtrl+Shift+N) sends
+`menu:new-clear` to the renderer, which confirms then invokes `app:new-clear`.
+Main runs `WorkspaceService.startNew()` (final auto-save + lock release + detach,
+so the prior workspace stays restorable) then `SessionService.closeAll()` (kills
+all PTYs, clears the set, broadcasts empty -- the auto-save guard ignores the
+empty list so nothing is clobbered). The window keeps its launch group (no
+silent scope change). New `confirm.newClear*` i18n keys (en/fr). The remaining
+D5 bit (workspace actions in a native File menu) stays `WATCHING`. Spec
+`spec_2416bad2`.
 
 ### D12. Palette editor in Settings  `RESOLVED`
 **Was:** Session colours came from a hardcoded rotating palette with no way to

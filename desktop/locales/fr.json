@@ -33,6 +33,9 @@
   "confirm.deleteMessage": "Retirer « {name} » ? Son terminal est fermé ; la session Claude sous-jacente reste reprenable plus tard depuis l'historique.",
   "confirm.closeTitle": "Fermer la session ?",
   "confirm.closeMessage": "Fermer « {name} » ? Son terminal s'arrête ; la session Claude sous-jacente reste reprenable plus tard depuis l'historique.",
+  "confirm.newClearTitle": "Fermer toutes les sessions ?",
+  "confirm.newClearMessage": "Fermer tous les terminaux peers et revenir à une fenêtre vide ? Ils sont sauvegardés automatiquement et peuvent être rouverts plus tard depuis les espaces.",
+  "confirm.newClearConfirm": "Tout fermer",
   "confirm.deleteWorkspaceTitle": "Supprimer l'espace ?",
   "confirm.deleteWorkspaceMessage": "Supprimer « {name} » ? Cela retire uniquement la disposition enregistrée ; l'historique des sessions Claude reste intact.",
 

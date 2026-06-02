@@ -182,6 +182,19 @@ export class WorkspaceService {
     deleteWorkspace(this.deps.projectDir, id)
   }
 
+  /**
+   * "New (clear)": detach from the current workspace so the next created session
+   * mints a fresh one. Captures a final auto-save (while sessions still exist --
+   * call this BEFORE SessionService.closeAll) and releases the lock; the prior
+   * workspace is kept restorable, not deleted.
+   */
+  startNew(): void {
+    if (!this.currentId) return
+    this.saveAuto()
+    releaseLock(this.deps.projectDir, this.currentId)
+    this.currentId = null
+  }
+
   /** All workspaces for this project, with lock + current flags, newest first. */
   listForCwd(): WorkspaceSummary[] {
     const now = Date.now()

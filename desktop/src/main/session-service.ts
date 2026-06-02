@@ -152,6 +152,26 @@ export class SessionService extends EventEmitter {
     this.broadcast()
   }
 
+  /**
+   * Close every session (graceful PTY kill) and clear the set -- the "New
+   * (clear)" action. No-op when already empty. Broadcasts an empty list; the
+   * caller is expected to have detached/saved the current workspace first
+   * (WorkspaceService.startNew), and the index.ts auto-save guard ignores the
+   * empty broadcast so the prior workspace stays restorable.
+   */
+  closeAll(): void {
+    if (this.defs.length === 0) return
+    for (const d of this.defs) {
+      if (d.sessionId) this.registry.release(d.sessionId)
+    }
+    this.pty.killAll()
+    this.thinkingDetector.stop()
+    this.defs = []
+    this.runtime.clear()
+    this.persist()
+    this.broadcast()
+  }
+
   /** Snapshot the current persisted session defs (for a workspace save). */
   captureSessions(): SessionDef[] {
     return this.defs.map((d) => ({ ...d }))
