@@ -1,5 +1,8 @@
 appId: com.vocsap.claude-peers-deck
 productName: Claude Peers Deck
+# Space-free binary name (convenient on PATH); productName stays the display
+# name (window title, Start-menu shortcut, installer filename).
+executableName: claude-peers-desk
 directories:
   output: dist
   buildResources: build
