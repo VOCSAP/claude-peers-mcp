@@ -58,6 +58,10 @@ You can also run it straight from the repo without linking:
 cd desktop && npm run dev        # dev mode (renderer HMR)
 ```
 
+> The above (`npm link` / `npm run dev`) is the **development** launcher. For a
+> standalone build to share or install, see [Package installers](#package-installers)
+> and [Running a packaged build](#running-a-packaged-build).
+
 ---
 
 ## Using the app
@@ -231,6 +235,62 @@ npm run package:mac      # dmg
 npm run package:linux    # AppImage
 ```
 
+On Windows the build emits, in `dist/`, both `Claude Peers Deck Setup <v>.exe`
+(NSIS installer) and `Claude Peers Deck-<v>-win.zip` (portable). The binary is
+named **`claude-peers-desk.exe`** (no spaces, via `executableName`) while the
+display name stays "Claude Peers Deck".
+
+> First Windows build only: electron-builder extracts `winCodeSign` (which holds
+> macOS symlinks). If it fails with `Sub items Errors: 2`, enable **Windows
+> Developer Mode** (free, Settings > Privacy & Security > For developers) or run
+> `npm run package:win` from an **elevated** PowerShell, then retry. The build
+> is **unsigned**, so SmartScreen shows "unknown publisher" on first run.
+
+## Running a packaged build
+
+An Electron app exe is **not standalone**: keep the whole folder (the
+`.exe` plus `icudtl.dat`, the `.dll`s, `resources/`, `locales/`). Install with
+the NSIS installer, or unzip the portable build and run the app **from inside
+its folder**. Do not move the `.exe` out on its own.
+
+**Launch it detached.** Running the GUI exe directly attached to a console
+(typing it in PowerShell) can fail with `Invalid file descriptor to ICU data
+received` and open no window. Launch it detached instead:
+
+```powershell
+Start-Process claude-peers-desk     # or just double-click the exe
+```
+
+**A `claude-peers-desk` command, scoped to the current directory.** Copy
+[`bin/claude-peers-desk.cmd.example`](bin/claude-peers-desk.cmd.example) to a
+folder on your PATH (e.g. `%USERPROFILE%\.cargo\bin\claude-peers-desk.cmd`), set
+`APP_DIR` inside it to the folder containing `claude-peers-desk.exe`, and use:
+
+```bat
+claude-peers-desk            :: ephemeral group, sessions scoped to the cwd
+claude-peers-desk my-team    :: custom (shared) group; the arg is the secret
+```
+
+The wrapper uses `start` (detached, no ICU error) and forwards the current
+directory (`CLAUDE_PEERS_DESK_PROJECT_DIR`) and optional scope. Put the wrapper
+`.cmd` on PATH rather than the exe's folder, so the command goes through it.
+
+**Runtime requirement.** The build bundles the app, node-pty and the locales,
+but **not Claude Code**. Each machine needs the `claude` CLI and the launch
+command (`claudepeers` by default, editable in Settings > Launch command);
+otherwise terminals open but the command fails.
+
+## Releases (CI)
+
+`.github/workflows/desktop-release.yml` builds win/mac/linux and attaches the
+installers + portable zips to a GitHub Release when a `desktop-v*` tag is
+pushed (the branch must already be pushed):
+
+```bash
+git tag desktop-v0.1.0
+git push origin desktop-v0.1.0
+```
+
 `electron-builder.yml` ships two things outside the asar archive:
 
 - **`asarUnpack: node_modules/node-pty/**`** -- the native `.node` binary must
@@ -297,6 +357,9 @@ src/
     store.ts               zustand store
   shared/types.ts         types shared across processes
 locales/                  en.json, fr.json
+bin/
+  launch.js               dev CLI launcher (npm link) -> spawns electron
+  claude-peers-desk.cmd.example  wrapper template for a packaged build on PATH
 bin/launch.js             the `claude-peers-desk` launcher
 ```
 
