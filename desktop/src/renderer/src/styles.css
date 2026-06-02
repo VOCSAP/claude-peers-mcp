@@ -521,18 +521,20 @@ button {
   filter: brightness(1.08);
 }
 
-/* Secondary button: app-styled neutral action (mirrors non-primary modal buttons). */
-.secondary {
-  background: var(--bg-3);
-  color: var(--fg);
-  border: 1px solid var(--border);
+/* Restore-previous: an orange outline that stands out on the dark empty-state
+   card, filling on hover. Distinct from the primary "Add peer" action. */
+.restore-prev {
+  background: transparent;
+  color: #e08a3c;
+  border: 1px solid #e08a3c;
   border-radius: 6px;
   padding: 7px 12px;
   cursor: pointer;
 }
 
-.secondary:hover {
-  border-color: var(--accent);
+.restore-prev:hover {
+  background: #e08a3c;
+  color: #1e1e1e;
 }
 
 .icon-btn {
