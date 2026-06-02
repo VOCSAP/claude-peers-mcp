@@ -544,20 +544,28 @@ button {
   line-height: 1;
 }
 
-/* Bottom-of-window transient status message: green success background. */
+/* Bottom-of-window transient status message. */
 .toast {
   position: fixed;
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
-  background: #2f7d4f;
   color: #fff;
-  border: 1px solid #3a9560;
   border-radius: 6px;
   padding: 8px 14px;
   font-size: 13px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   z-index: 50;
+}
+/* Green success (save). */
+.toast-success {
+  background: #2f7d4f;
+  border: 1px solid #3a9560;
+}
+/* Amber info (e.g. workspace already open elsewhere). */
+.toast-info {
+  background: #9a6700;
+  border: 1px solid #b9770e;
 }
 
 .icon-btn {

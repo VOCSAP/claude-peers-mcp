@@ -161,7 +161,7 @@ export interface DeckApi {
   // workspaces (persistence / restore)
   listWorkspaces(): Promise<WorkspaceSummary[]>
   saveWorkspace(name?: string): Promise<WorkspaceSummary>
-  restoreWorkspace(id: string): Promise<void>
+  restoreWorkspace(id: string): Promise<boolean>
   deleteWorkspace(id: string): Promise<void>
   currentWorkspace(): Promise<string | null>
 

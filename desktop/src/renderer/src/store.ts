@@ -25,6 +25,8 @@ interface DeckState {
   restoreLossId: string | null
   /** Transient toast message (an i18n key), or null. */
   toast: string | null
+  /** Toast colour variant. */
+  toastVariant: 'success' | 'info'
   /** Name of the current workspace, shown in the window title. */
   currentWorkspaceName: string | null
   workspaces: WorkspaceSummary[]
@@ -40,7 +42,7 @@ interface DeckState {
   openSaveAs(open: boolean): void
   setSidebarWidth(px: number): void
 
-  showToast(key: string): void
+  showToast(key: string, variant?: 'success' | 'info'): void
   saveCurrent(): Promise<void>
   saveAs(name: string): Promise<void>
   requestRestore(id: string): void
@@ -76,6 +78,7 @@ export const useDeck = create<DeckState>((set, get) => ({
   saveAsOpen: false,
   restoreLossId: null,
   toast: null,
+  toastVariant: 'success',
   currentWorkspaceName: null,
   workspaces: [],
   sidebarWidth: 260,
@@ -137,8 +140,8 @@ export const useDeck = create<DeckState>((set, get) => ({
   openSaveAs: (open) => set({ saveAsOpen: open }),
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),
 
-  showToast: (key) => {
-    set({ toast: key })
+  showToast: (key, variant = 'success') => {
+    set({ toast: key, toastVariant: variant })
     const token = ++toastToken
     setTimeout(() => {
       if (toastToken === token) set({ toast: null })
@@ -223,11 +226,16 @@ export const useDeck = create<DeckState>((set, get) => ({
   },
 
   async restoreWorkspace(id) {
-    await window.api.restoreWorkspace(id)
+    const ok = await window.api.restoreWorkspace(id)
     // Sessions refresh via onSessionsChanged (restoreFrom broadcasts 'changed').
     await get().refreshWorkspaces()
-    // Close the selection window once a workspace has been loaded.
-    set({ workspacesOpen: false })
+    if (ok) {
+      // Close the selection window once a workspace has been loaded.
+      set({ workspacesOpen: false })
+    } else {
+      // Already owned by another live window (or gone) -> inform, don't restore.
+      get().showToast('toast.alreadyOpen', 'info')
+    }
   },
 
   async removeWorkspace(id) {

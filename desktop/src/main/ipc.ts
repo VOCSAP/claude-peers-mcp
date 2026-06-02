@@ -80,9 +80,12 @@ export function registerIpc({
     name && name.trim() ? workspaces.saveNamed(name) : workspaces.saveAuto()
   )
   ipcMain.handle('workspace:restore', (_e, id: string) => {
-    workspaces.restore(id)
-    const current = workspaces.listForCwd().find((w) => w.current) ?? null
-    getWindow()?.webContents.send('workspace:current', current)
+    const ok = workspaces.restore(id)
+    if (ok) {
+      const current = workspaces.listForCwd().find((w) => w.current) ?? null
+      getWindow()?.webContents.send('workspace:current', current)
+    }
+    return ok
   })
   ipcMain.handle('workspace:delete', (_e, id: string) => workspaces.deleteWs(id))
   ipcMain.handle('workspace:current', () => workspaces.currentWorkspaceId)

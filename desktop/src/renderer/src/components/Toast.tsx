@@ -5,9 +5,10 @@ import { useT } from '../i18n'
 export function Toast(): React.JSX.Element | null {
   const t = useT()
   const toast = useDeck((s) => s.toast)
+  const variant = useDeck((s) => s.toastVariant)
   if (!toast) return null
   return (
-    <div className="toast" role="status">
+    <div className={`toast toast-${variant}`} role="status">
       {t(toast)}
     </div>
   )

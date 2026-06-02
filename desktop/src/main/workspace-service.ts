@@ -178,10 +178,14 @@ export class WorkspaceService {
     return this.persist(trimmed || undefined, true)
   }
 
-  /** Restore a workspace: adopt its scope, swap the session set, set the layout. */
-  restore(id: string): void {
+  /**
+   * Restore a workspace: adopt its scope, swap the session set, set the layout.
+   * Returns false (no-op) when the workspace is missing or already owned by
+   * another live instance; true after a successful restore.
+   */
+  restore(id: string): boolean {
     const ws = loadWorkspace(this.deps.projectDir, id)
-    if (!ws) return
+    if (!ws) return false
     // Refuse to restore a workspace another live instance already owns -- two
     // windows must not drive the same Claude sessions (the UI also disables it).
     const lock = readLock(this.deps.projectDir, id)
@@ -189,13 +193,14 @@ export class WorkspaceService {
       lock &&
       isLockLive(lock, { host: this.host, now: Date.now(), isPidAlive: pidAlive, staleMs: LOCK_STALE_MS })
     ) {
-      return
+      return false
     }
     this.deps.adoptScope({ groupId: ws.groupId, scopeKind: ws.scopeKind })
     this.deps.setConfig(fromDisplayMode(ws.displayMode))
     this.deps.service.restoreFrom(fromWorkspaceSessions(ws.sessions))
     this.own(id) // hand the lock from the old workspace to this one + heartbeat
     this.saveAuto()
+    return true
   }
 
   deleteWs(id: string): void {

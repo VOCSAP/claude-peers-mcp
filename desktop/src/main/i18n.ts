@@ -76,6 +76,7 @@ export const EN_DEFAULTS: Record<string, string> = {
   'saveas.title': 'Save workspace as',
   'saveas.duplicate': 'A workspace with this name already exists',
   'toast.workspaceSaved': 'Workspace saved',
+  'toast.alreadyOpen': 'Session already open',
 
   'tile.expiredTitle': 'Session expired',
   'tile.expiredBody': 'Its transcript is gone. Start a new session with the same setup.',
