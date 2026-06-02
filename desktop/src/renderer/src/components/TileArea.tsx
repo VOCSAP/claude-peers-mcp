@@ -40,7 +40,7 @@ export function TileArea(): React.JSX.Element {
               {t('area.addTerminal')}
             </button>
             {previous && (
-              <button onClick={() => void restoreWorkspace(previous.id)}>
+              <button className="secondary" onClick={() => void restoreWorkspace(previous.id)}>
                 {t('area.restorePrevious')}
               </button>
             )}

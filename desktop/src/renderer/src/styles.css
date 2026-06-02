@@ -521,6 +521,20 @@ button {
   filter: brightness(1.08);
 }
 
+/* Secondary button: app-styled neutral action (mirrors non-primary modal buttons). */
+.secondary {
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.secondary:hover {
+  border-color: var(--accent);
+}
+
 .icon-btn {
   background: var(--bg-3);
   color: var(--fg);
