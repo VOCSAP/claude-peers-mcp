@@ -41,6 +41,9 @@ jobs:
       # ...) import under bun with node builtins only -- no node-pty / electron,
       # no install needed.
       - name: Bun tests (desktop pure modules)
+        # bash so the glob expands on every runner (pwsh, the Windows default,
+        # does not, and bun would treat the literal pattern as a no-match filter).
+        shell: bash
         run: bun test tests/desktop-*.test.ts
 
       - name: Install desktop deps
