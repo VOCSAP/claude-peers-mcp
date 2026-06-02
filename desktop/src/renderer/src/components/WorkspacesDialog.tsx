@@ -53,7 +53,7 @@ export function WorkspacesDialog(): React.JSX.Element {
               </div>
               <button
                 className="ws-btn primary"
-                disabled={ws.current}
+                disabled={ws.current || ws.locked}
                 onClick={() => requestRestore(ws.id)}
               >
                 {t('workspaces.restore')}
@@ -61,7 +61,7 @@ export function WorkspacesDialog(): React.JSX.Element {
               {!loadOnly && (
                 <button
                   className="ws-btn ws-btn-danger"
-                  disabled={ws.current}
+                  disabled={ws.current || ws.locked}
                   onClick={() => setDeleting(ws)}
                 >
                   {t('workspaces.delete')}

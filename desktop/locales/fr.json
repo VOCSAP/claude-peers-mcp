@@ -53,6 +53,7 @@
   "workspaces.pinned": "épinglé",
   "workspaces.sessions": "{n} sessions",
   "saveas.title": "Enregistrer l'espace sous",
+  "saveas.duplicate": "Un espace porte déjà ce nom",
   "toast.workspaceSaved": "Espace enregistré",
 
   "tile.expiredTitle": "Session expirée",

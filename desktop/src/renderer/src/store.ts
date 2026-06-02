@@ -108,7 +108,11 @@ export const useDeck = create<DeckState>((set, get) => ({
     })
     window.api.onMenuNewClear(() => set({ confirmNewClearOpen: true }))
     window.api.onMenuSave(() => void get().saveCurrent())
-    window.api.onMenuSaveAs(() => set({ saveAsOpen: true }))
+    window.api.onMenuSaveAs(() => {
+      set({ saveAsOpen: true })
+      // Refresh so the dialog's duplicate-name check sees the current list.
+      void get().refreshWorkspaces()
+    })
     window.api.onMenuRestore(() => get().openWorkspaces(true))
     window.api.onMenuListWorkspaces(() => get().openWorkspaces(true))
     window.api.onWorkspaceCurrent((ws) => set({ currentWorkspaceName: ws?.name ?? null }))
@@ -149,7 +153,13 @@ export const useDeck = create<DeckState>((set, get) => ({
   async saveAs(name) {
     const n = name.trim()
     if (!n) return
-    await get().saveWorkspace(n)
+    try {
+      await get().saveWorkspace(n)
+    } catch {
+      // Main rejected (e.g. duplicate name) -> keep the dialog open, no toast.
+      // The dialog already prevents duplicates; this is a safety net.
+      return
+    }
     set({ saveAsOpen: false })
     get().showToast('toast.workspaceSaved')
   },

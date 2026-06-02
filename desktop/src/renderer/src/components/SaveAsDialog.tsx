@@ -7,10 +7,16 @@ export function SaveAsDialog(): React.JSX.Element {
   const t = useT()
   const saveAs = useDeck((s) => s.saveAs)
   const openSaveAs = useDeck((s) => s.openSaveAs)
+  const workspaces = useDeck((s) => s.workspaces)
   const [name, setName] = useState('')
 
+  // Names are unique per cwd: block a name already used by an existing workspace.
+  const norm = name.trim().toLowerCase()
+  const duplicate = norm.length > 0 && workspaces.some((w) => w.name.trim().toLowerCase() === norm)
+  const canSave = name.trim().length > 0 && !duplicate
+
   const commit = (): void => {
-    if (name.trim()) void saveAs(name)
+    if (canSave) void saveAs(name)
   }
 
   return (
@@ -28,10 +34,11 @@ export function SaveAsDialog(): React.JSX.Element {
               if (e.key === 'Escape') openSaveAs(false)
             }}
           />
+          {duplicate && <small className="field-error">{t('saveas.duplicate')}</small>}
         </label>
         <div className="modal-actions">
           <button onClick={() => openSaveAs(false)}>{t('common.cancel')}</button>
-          <button className="primary" onClick={commit} disabled={!name.trim()}>
+          <button className="primary" onClick={commit} disabled={!canSave}>
             {t('common.save')}
           </button>
         </div>

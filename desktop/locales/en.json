@@ -53,6 +53,7 @@
   "workspaces.pinned": "pinned",
   "workspaces.sessions": "{n} sessions",
   "saveas.title": "Save workspace as",
+  "saveas.duplicate": "A workspace with this name already exists",
   "toast.workspaceSaved": "Workspace saved",
 
   "tile.expiredTitle": "Session expired",

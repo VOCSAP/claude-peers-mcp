@@ -161,15 +161,36 @@ export class WorkspaceService {
     return this.persist(undefined, false)
   }
 
-  /** Persist under a user-chosen name and pin it (explicit Save As). */
+  /**
+   * Persist under a user-chosen name and pin it (explicit Save As). Names are
+   * unique per cwd: a name already used by ANOTHER workspace is rejected so the
+   * list stays unambiguous.
+   */
   saveNamed(name: string): WorkspaceSummary {
-    return this.persist(name.trim() || undefined, true)
+    const trimmed = name.trim()
+    if (trimmed) {
+      const norm = trimmed.toLowerCase()
+      const clash = listWorkspaces(this.deps.projectDir).some(
+        (w) => w.id !== this.currentId && w.name.trim().toLowerCase() === norm
+      )
+      if (clash) throw new Error('duplicate-workspace-name')
+    }
+    return this.persist(trimmed || undefined, true)
   }
 
   /** Restore a workspace: adopt its scope, swap the session set, set the layout. */
   restore(id: string): void {
     const ws = loadWorkspace(this.deps.projectDir, id)
     if (!ws) return
+    // Refuse to restore a workspace another live instance already owns -- two
+    // windows must not drive the same Claude sessions (the UI also disables it).
+    const lock = readLock(this.deps.projectDir, id)
+    if (
+      lock &&
+      isLockLive(lock, { host: this.host, now: Date.now(), isPidAlive: pidAlive, staleMs: LOCK_STALE_MS })
+    ) {
+      return
+    }
     this.deps.adoptScope({ groupId: ws.groupId, scopeKind: ws.scopeKind })
     this.deps.setConfig(fromDisplayMode(ws.displayMode))
     this.deps.service.restoreFrom(fromWorkspaceSessions(ws.sessions))

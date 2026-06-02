@@ -652,6 +652,14 @@ button {
   height: 16px;
 }
 
+/* Inline validation error under a field input. */
+.field-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 /* Help text under a checkbox row (the help cannot sit inside the inline label). */
 .field-check-help {
   display: block;
