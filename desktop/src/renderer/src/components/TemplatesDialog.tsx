@@ -59,12 +59,18 @@ export function TemplatesDialog(): React.JSX.Element {
                   <button
                     className="template-del"
                     title={t('template.delete')}
+                    aria-label={t('template.delete')}
                     onClick={(e) => {
                       e.stopPropagation()
                       setDeleting(tpl)
                     }}
                   >
-                    ✕
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                      <path
+                        fill="currentColor"
+                        d="M9 3v1H4v2h16V4h-5V3H9zM6 8l1 12h10l1-12H6zm3 2h2v8H9v-8zm4 0h2v8h-2v-8z"
+                      />
+                    </svg>
                   </button>
                 )}
               </li>
