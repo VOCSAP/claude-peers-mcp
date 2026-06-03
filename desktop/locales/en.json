@@ -150,11 +150,15 @@
   "template.empty": "No templates yet. Create one from File > Export template.",
   "template.use": "Use template",
   "template.apply": "Apply template",
+  "template.delete": "Delete template",
   "template.sessions": "{n} sessions",
   "template.source.global": "global",
   "template.source.local": "local",
   "toast.templateExported": "Template exported",
   "toast.templateApplied": "Template applied",
+  "toast.templateDeleted": "Template deleted",
   "confirm.applyTemplateTitle": "Replace current sessions?",
-  "confirm.applyTemplateMessage": "Applying this template closes the current sessions and opens the template instead. The current sessions are auto-saved and can be reopened later from Workspaces."
+  "confirm.applyTemplateMessage": "Applying this template closes the current sessions and opens the template instead. The current sessions are auto-saved and can be reopened later from Workspaces.",
+  "confirm.deleteTemplateTitle": "Delete template?",
+  "confirm.deleteTemplateMessage": "Delete \"{name}\"? This removes the saved template file; running sessions are untouched."
 }

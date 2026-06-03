@@ -62,7 +62,9 @@ export function buildAppMenu({
       { label: 'Restore…', click: onRestore },
       { label: 'List workspaces', click: onListWorkspaces },
       { type: 'separator' },
-      { label: 'Export template…', click: onExportTemplate },
+      // Disabled until the Deck has at least one peer to export (toggled live
+      // from index.ts on the session list changing).
+      { id: 'export-template', label: 'Export template…', enabled: false, click: onExportTemplate },
       { label: 'Import template…', click: onImportTemplate },
       { type: 'separator' },
       isMac ? { role: 'close' } : { role: 'quit' }

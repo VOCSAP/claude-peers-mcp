@@ -25,6 +25,7 @@ export function TileArea(): React.JSX.Element {
   const maximizedId = useDeck((s) => s.maximizedId)
   const createSession = useDeck((s) => s.createSession)
   const workspaces = useDeck((s) => s.workspaces)
+  const templates = useDeck((s) => s.templates)
   const restoreWorkspace = useDeck((s) => s.restoreWorkspace)
   const openWorkspaces = useDeck((s) => s.openWorkspaces)
   const openTemplates = useDeck((s) => s.openTemplates)
@@ -46,16 +47,23 @@ export function TileArea(): React.JSX.Element {
                 {t('area.restorePrevious')}
               </button>
             )}
-            <button
-              className="restore-prev empty-open-ws"
-              title={t('area.openWorkspacesTitle')}
-              onClick={() => openWorkspaces(true, { loadOnly: true })}
-            >
-              ▸
-            </button>
-            <button className="use-template-btn" onClick={() => openTemplates(true)}>
-              {t('area.useTemplate')}
-            </button>
+            {/* The open-workspaces arrow only makes sense when a workspace exists
+                to restore -- aligned with the Restore-previous button above. */}
+            {previous && (
+              <button
+                className="restore-prev empty-open-ws"
+                title={t('area.openWorkspacesTitle')}
+                onClick={() => openWorkspaces(true, { loadOnly: true })}
+              >
+                ▸
+              </button>
+            )}
+            {/* Use-template only when at least one template exists. */}
+            {templates.length > 0 && (
+              <button className="use-template-btn" onClick={() => openTemplates(true)}>
+                {t('area.useTemplate')}
+              </button>
+            )}
           </div>
         </div>
       </main>

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { TemplateSummary } from '@shared/types'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -13,10 +14,13 @@ export function TemplatesDialog(): React.JSX.Element {
   const t = useT()
   const templates = useDeck((s) => s.templates)
   const sessions = useDeck((s) => s.sessions)
+  const manage = useDeck((s) => s.templatesManage)
   const applyTemplate = useDeck((s) => s.applyTemplate)
+  const removeTemplate = useDeck((s) => s.removeTemplate)
   const openTemplates = useDeck((s) => s.openTemplates)
   const [selected, setSelected] = useState<string | null>(null)
   const [confirmReplace, setConfirmReplace] = useState(false)
+  const [deleting, setDeleting] = useState<TemplateSummary | null>(null)
 
   const use = (): void => {
     if (selected) void applyTemplate(selected, 'append')
@@ -49,6 +53,20 @@ export function TemplatesDialog(): React.JSX.Element {
                   {t(`template.source.${tpl.source}`)}
                 </span>
                 <span className="template-count">{t('template.sessions', { n: tpl.sessionCount })}</span>
+                {/* Delete only in manage mode (File > Import template), never from
+                    the home "Use template" path. */}
+                {manage && (
+                  <button
+                    className="template-del"
+                    title={t('template.delete')}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setDeleting(tpl)
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -81,6 +99,21 @@ export function TemplatesDialog(): React.JSX.Element {
           onConfirm={() => {
             setConfirmReplace(false)
             void applyTemplate(selected, 'replace')
+          }}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDialog
+          title={t('confirm.deleteTemplateTitle')}
+          message={t('confirm.deleteTemplateMessage', { name: deleting.name })}
+          confirmLabel={t('common.delete')}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => {
+            const path = deleting.path
+            setDeleting(null)
+            if (selected === path) setSelected(null)
+            void removeTemplate(path)
           }}
         />
       )}

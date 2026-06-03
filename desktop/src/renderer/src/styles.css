@@ -868,6 +868,26 @@ small.field-error {
   font-size: 12px;
 }
 
+/* Per-row delete (manage mode only): a compact red action at the row's end. */
+.template-del {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.template-del:hover {
+  filter: brightness(1.08);
+}
+
 /* Three colour-coded actions: Use (blue), Apply (orange), Cancel (red). */
 .modal-actions.template-actions button.btn-use {
   background: #4f86ff;

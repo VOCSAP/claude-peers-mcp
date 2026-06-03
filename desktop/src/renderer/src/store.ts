@@ -24,6 +24,8 @@ interface DeckState {
   saveAsOpen: boolean
   /** Template picker (import) visibility. */
   templatesOpen: boolean
+  /** Picker opened in manage mode (File > Import template): shows per-row Delete. */
+  templatesManage: boolean
   /** Export-template dialog (name + local checkbox) visibility. */
   exportTemplateOpen: boolean
   /** Discovered templates (global + local), refreshed when the picker opens. */
@@ -47,11 +49,12 @@ interface DeckState {
   openWorkspaces(open: boolean, opts?: { loadOnly?: boolean }): void
   openNewClearConfirm(open: boolean): void
   openSaveAs(open: boolean): void
-  openTemplates(open: boolean): void
+  openTemplates(open: boolean, opts?: { manage?: boolean }): void
   openExportTemplate(open: boolean): void
   refreshTemplates(): Promise<void>
   exportTemplate(name: string, local: boolean): Promise<void>
   applyTemplate(path: string, mode: 'append' | 'replace'): Promise<void>
+  removeTemplate(path: string): Promise<void>
   setSidebarWidth(px: number): void
 
   showToast(key: string, variant?: 'success' | 'info'): void
@@ -92,6 +95,7 @@ export const useDeck = create<DeckState>((set, get) => ({
   confirmNewClearOpen: false,
   saveAsOpen: false,
   templatesOpen: false,
+  templatesManage: false,
   exportTemplateOpen: false,
   templates: [],
   restoreLossId: null,
@@ -102,17 +106,19 @@ export const useDeck = create<DeckState>((set, get) => ({
   sidebarWidth: 260,
 
   async init() {
-    const [sessions, config, i18n, workspaces] = await Promise.all([
+    const [sessions, config, i18n, workspaces, templates] = await Promise.all([
       window.api.listSessions(),
       window.api.getConfig(),
       window.api.getI18n(),
-      window.api.listWorkspaces()
+      window.api.listWorkspaces(),
+      window.api.listTemplates()
     ])
     set({
       sessions,
       config,
       dict: i18n.dict,
       workspaces,
+      templates,
       sidebarWidth: config.sidebarWidth,
       selectedId: get().selectedId ?? sessions[0]?.id ?? null
     })
@@ -137,7 +143,7 @@ export const useDeck = create<DeckState>((set, get) => ({
     window.api.onMenuRestore(() => get().openWorkspaces(true))
     window.api.onMenuListWorkspaces(() => get().openWorkspaces(true))
     window.api.onMenuExportTemplate(() => get().openExportTemplate(true))
-    window.api.onMenuImportTemplate(() => get().openTemplates(true))
+    window.api.onMenuImportTemplate(() => get().openTemplates(true, { manage: true }))
     window.api.onWorkspaceCurrent((ws) => set({ currentWorkspaceName: ws?.name ?? null }))
     window.api.onConfigChanged((next) => {
       const prevLocale = get().config?.locale
@@ -158,8 +164,8 @@ export const useDeck = create<DeckState>((set, get) => ({
   },
   openNewClearConfirm: (open) => set({ confirmNewClearOpen: open }),
   openSaveAs: (open) => set({ saveAsOpen: open }),
-  openTemplates: (open) => {
-    set({ templatesOpen: open })
+  openTemplates: (open, opts) => {
+    set({ templatesOpen: open, templatesManage: open ? !!opts?.manage : false })
     if (open) void get().refreshTemplates()
   },
   openExportTemplate: (open) => set({ exportTemplateOpen: open }),
@@ -180,6 +186,13 @@ export const useDeck = create<DeckState>((set, get) => ({
     set({ templatesOpen: false })
     // Sessions refresh via onSessionsChanged (create/closeAll broadcast).
     get().showToast('toast.templateApplied')
+  },
+
+  async removeTemplate(path) {
+    const ok = await window.api.deleteTemplate(path)
+    // Keep the picker open; just refresh the list so the row disappears.
+    await get().refreshTemplates()
+    if (ok) get().showToast('toast.templateDeleted')
   },
 
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),

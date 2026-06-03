@@ -221,6 +221,8 @@ export interface DeckApi {
   exportTemplate(name: string, local: boolean): Promise<string | null>
   /** Instantiate a template by path: 'append' adds to current sessions, 'replace' clears first. Returns count. */
   applyTemplate(path: string, mode: 'append' | 'replace'): Promise<number>
+  /** Delete a template file by path. Returns true if a file was removed. */
+  deleteTemplate(path: string): Promise<boolean>
 
   // events (return an unsubscribe fn)
   onPtyData(cb: (e: PtyDataEvent) => void): () => void

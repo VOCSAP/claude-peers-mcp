@@ -84,6 +84,7 @@ const api: DeckApi = {
     ipcRenderer.invoke('template:export', name, local),
   applyTemplate: (path: string, mode: 'append' | 'replace') =>
     ipcRenderer.invoke('template:apply', path, mode),
+  deleteTemplate: (path: string) => ipcRenderer.invoke('template:delete', path),
 
   onPtyData: (cb: (e: PtyDataEvent) => void) => onPtyDataMux(cb),
   onPtyExit: (cb: (e: PtyExitEvent) => void) => onPtyExitMux(cb),

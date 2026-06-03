@@ -121,6 +121,15 @@ const workspaces = new WorkspaceService({
   adoptScope
 })
 
+// Grey out File > Export template... when there is nothing to export. Kept in
+// sync with the live session list (separate from the auto-save handler below,
+// which early-returns on the empty list -- exactly when we must DISABLE).
+const syncExportTemplateEnabled = (): void => {
+  const item = Menu.getApplicationMenu()?.getMenuItemById('export-template')
+  if (item) item.enabled = service.list().length > 0
+}
+service.on('changed', syncExportTemplateEnabled)
+
 // Continuously auto-save the live workspace (debounced) as sessions change, but
 // only once there ARE sessions -- launching empty must not mint/clobber a
 // workspace (the previous run stays restorable until the user acts).
@@ -192,6 +201,9 @@ app.whenReady().then(() => {
       onImportTemplate: () => toRenderer('menu:import-template')
     })
   )
+  // Reflect the initial session count on the Export-template menu item (the app
+  // starts empty, so it begins disabled).
+  syncExportTemplateEnabled()
   registerIpc({
     service,
     workspaces,

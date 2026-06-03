@@ -150,11 +150,15 @@
   "template.empty": "Aucun template. Créez-en un via Fichier > Export template.",
   "template.use": "Utiliser template",
   "template.apply": "Appliquer template",
+  "template.delete": "Supprimer template",
   "template.sessions": "{n} sessions",
   "template.source.global": "global",
   "template.source.local": "local",
   "toast.templateExported": "Template exporté",
   "toast.templateApplied": "Template appliqué",
+  "toast.templateDeleted": "Template supprimé",
   "confirm.applyTemplateTitle": "Remplacer les sessions courantes ?",
-  "confirm.applyTemplateMessage": "Appliquer ce template ferme les sessions courantes et ouvre le template à la place. Les sessions courantes sont auto-sauvegardées et réouvrables plus tard depuis les espaces."
+  "confirm.applyTemplateMessage": "Appliquer ce template ferme les sessions courantes et ouvre le template à la place. Les sessions courantes sont auto-sauvegardées et réouvrables plus tard depuis les espaces.",
+  "confirm.deleteTemplateTitle": "Supprimer le template ?",
+  "confirm.deleteTemplateMessage": "Supprimer « {name} » ? Cela retire le fichier template enregistré ; les sessions en cours ne sont pas touchées."
 }

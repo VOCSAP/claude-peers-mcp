@@ -7,8 +7,8 @@
 // it stays unit-testable under bun, like launch-config.ts. The pure validation /
 // shaping lives in ../shared/template.ts.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { globalConfigDir } from './launch-config'
 import { parseTemplate, type SessionTemplate } from '../shared/template'
 
@@ -83,4 +83,30 @@ export function writeTemplate(dir: string, name: string, tpl: SessionTemplate): 
   const file = join(dir, `${safeBase(name)}.json`)
   writeFileSync(file, JSON.stringify(tpl, null, 2), 'utf-8')
   return file
+}
+
+/**
+ * Delete a template .json file. Guarded: the path must be a `.json` that lives
+ * directly in the global or project-local templates dir (defends against an
+ * arbitrary path being passed through the IPC). Returns true if a file was
+ * removed.
+ */
+export function deleteTemplate(
+  path: string,
+  projectDir: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  try {
+    if (!path.toLowerCase().endsWith('.json')) return false
+    const allowedDirs = [
+      resolve(globalTemplatesDir(env)),
+      resolve(localTemplatesDir(projectDir))
+    ]
+    if (!allowedDirs.includes(resolve(dirname(path)))) return false
+    if (!existsSync(path)) return false
+    rmSync(path, { force: true })
+    return true
+  } catch {
+    return false
+  }
 }

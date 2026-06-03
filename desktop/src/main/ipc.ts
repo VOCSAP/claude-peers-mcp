@@ -9,6 +9,7 @@ import {
   listTemplates,
   readTemplate,
   writeTemplate,
+  deleteTemplate,
   globalTemplatesDir,
   localTemplatesDir
 } from './template-store'
@@ -119,6 +120,9 @@ export function registerIpc({
     const dir = local ? localTemplatesDir(getConfig().projectDir) : globalTemplatesDir()
     return writeTemplate(dir, name || tpl.name || 'template', tpl)
   })
+  ipcMain.handle('template:delete', (_e, path: string) =>
+    deleteTemplate(path, getConfig().projectDir)
+  )
   ipcMain.handle('template:apply', (_e, path: string, mode: 'append' | 'replace') => {
     const tpl = readTemplate(path)
     if (!tpl) return 0

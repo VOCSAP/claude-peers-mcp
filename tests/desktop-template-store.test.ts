@@ -10,6 +10,7 @@ import {
   listTemplates,
   writeTemplate,
   readTemplate,
+  deleteTemplate,
 } from "../desktop/src/main/template-store.ts";
 import { toTemplate, TEMPLATE_TYPE } from "../desktop/src/shared/template.ts";
 
@@ -67,4 +68,41 @@ test("listTemplates reports global + local with source and session count, skippi
 
 test("listTemplates returns [] when the dirs do not exist", () => {
   expect(listTemplates(tmp(), env(tmp()))).toEqual([]);
+});
+
+test("deleteTemplate removes a global template and it leaves the list", () => {
+  const g = tmp();
+  const proj = tmp();
+  const path = writeTemplate(globalTemplatesDir(env(g)), "gone", toTemplate([{ name: "x" }], "Gone"));
+  expect(listTemplates(proj, env(g))).toHaveLength(1);
+  expect(deleteTemplate(path, proj, env(g))).toBe(true);
+  expect(listTemplates(proj, env(g))).toHaveLength(0);
+});
+
+test("deleteTemplate removes a project-local template", () => {
+  const g = tmp();
+  const proj = tmp();
+  const path = writeTemplate(localTemplatesDir(proj), "local-gone", toTemplate([{ name: "y" }], "Local"));
+  expect(deleteTemplate(path, proj, env(g))).toBe(true);
+  expect(listTemplates(proj, env(g))).toHaveLength(0);
+});
+
+test("deleteTemplate refuses a path outside the template dirs (guard)", () => {
+  const g = tmp();
+  const proj = tmp();
+  // A .json sitting in an arbitrary dir must not be deletable through this API.
+  const stray = join(tmp(), "secret.json");
+  writeFileSync(stray, "{}", "utf-8");
+  expect(deleteTemplate(stray, proj, env(g))).toBe(false);
+});
+
+test("deleteTemplate refuses a non-.json path and a missing file", () => {
+  const g = tmp();
+  const proj = tmp();
+  const dir = globalTemplatesDir(env(g));
+  mkdirSync(dir, { recursive: true });
+  const notJson = join(dir, "note.txt");
+  writeFileSync(notJson, "x", "utf-8");
+  expect(deleteTemplate(notJson, proj, env(g))).toBe(false);
+  expect(deleteTemplate(join(dir, "absent.json"), proj, env(g))).toBe(false);
 });
