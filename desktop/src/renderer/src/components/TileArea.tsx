@@ -27,6 +27,7 @@ export function TileArea(): React.JSX.Element {
   const workspaces = useDeck((s) => s.workspaces)
   const restoreWorkspace = useDeck((s) => s.restoreWorkspace)
   const openWorkspaces = useDeck((s) => s.openWorkspaces)
+  const openTemplates = useDeck((s) => s.openTemplates)
   const carouselRef = useRef<HTMLDivElement>(null)
 
   if (sessions.length === 0) {
@@ -51,6 +52,9 @@ export function TileArea(): React.JSX.Element {
               onClick={() => openWorkspaces(true, { loadOnly: true })}
             >
               ▸
+            </button>
+            <button className="use-template-btn" onClick={() => openTemplates(true)}>
+              {t('area.useTemplate')}
             </button>
           </div>
         </div>

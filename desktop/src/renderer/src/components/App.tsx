@@ -9,6 +9,8 @@ import { WorkspacesDialog } from './WorkspacesDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Toast } from './Toast'
 import { SaveAsDialog } from './SaveAsDialog'
+import { TemplatesDialog } from './TemplatesDialog'
+import { ExportTemplateDialog } from './ExportTemplateDialog'
 
 export function App(): React.JSX.Element {
   const t = useT()
@@ -20,6 +22,8 @@ export function App(): React.JSX.Element {
   const openNewClearConfirm = useDeck((s) => s.openNewClearConfirm)
   const newClear = useDeck((s) => s.newClear)
   const saveAsOpen = useDeck((s) => s.saveAsOpen)
+  const templatesOpen = useDeck((s) => s.templatesOpen)
+  const exportTemplateOpen = useDeck((s) => s.exportTemplateOpen)
   const restoreLossId = useDeck((s) => s.restoreLossId)
   const confirmRestore = useDeck((s) => s.confirmRestore)
   const cancelRestore = useDeck((s) => s.cancelRestore)
@@ -73,6 +77,8 @@ export function App(): React.JSX.Element {
       {settingsOpen && <SettingsDialog />}
       {workspacesOpen && <WorkspacesDialog />}
       {saveAsOpen && <SaveAsDialog />}
+      {templatesOpen && <TemplatesDialog />}
+      {exportTemplateOpen && <ExportTemplateDialog />}
       {confirmNewClearOpen && (
         <ConfirmDialog
           title={t('confirm.newClearTitle')}

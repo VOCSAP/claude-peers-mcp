@@ -3,6 +3,7 @@ import type {
   AppConfig,
   CreateSessionInput,
   SessionRuntime,
+  TemplateSummary,
   WorkspaceSummary
 } from '@shared/types'
 
@@ -21,6 +22,12 @@ interface DeckState {
   confirmNewClearOpen: boolean
   /** Save As prompt window visibility. */
   saveAsOpen: boolean
+  /** Template picker (import) visibility. */
+  templatesOpen: boolean
+  /** Export-template dialog (name + local checkbox) visibility. */
+  exportTemplateOpen: boolean
+  /** Discovered templates (global + local), refreshed when the picker opens. */
+  templates: TemplateSummary[]
   /** Workspace id pending a restore confirm (loss warning), or null. */
   restoreLossId: string | null
   /** Transient toast message (an i18n key), or null. */
@@ -40,6 +47,11 @@ interface DeckState {
   openWorkspaces(open: boolean, opts?: { loadOnly?: boolean }): void
   openNewClearConfirm(open: boolean): void
   openSaveAs(open: boolean): void
+  openTemplates(open: boolean): void
+  openExportTemplate(open: boolean): void
+  refreshTemplates(): Promise<void>
+  exportTemplate(name: string, local: boolean): Promise<void>
+  applyTemplate(path: string, mode: 'append' | 'replace'): Promise<void>
   setSidebarWidth(px: number): void
 
   showToast(key: string, variant?: 'success' | 'info'): void
@@ -54,6 +66,7 @@ interface DeckState {
   renameSession(id: string, name: string): Promise<void>
   setColor(id: string, color: string): Promise<void>
   restartSession(id: string): Promise<void>
+  reorderSessions(ids: string[]): Promise<void>
   updateConfig(patch: Partial<AppConfig>): Promise<void>
 
   refreshWorkspaces(): Promise<void>
@@ -76,6 +89,9 @@ export const useDeck = create<DeckState>((set, get) => ({
   workspacesLoadOnly: false,
   confirmNewClearOpen: false,
   saveAsOpen: false,
+  templatesOpen: false,
+  exportTemplateOpen: false,
+  templates: [],
   restoreLossId: null,
   toast: null,
   toastVariant: 'success',
@@ -118,6 +134,8 @@ export const useDeck = create<DeckState>((set, get) => ({
     })
     window.api.onMenuRestore(() => get().openWorkspaces(true))
     window.api.onMenuListWorkspaces(() => get().openWorkspaces(true))
+    window.api.onMenuExportTemplate(() => get().openExportTemplate(true))
+    window.api.onMenuImportTemplate(() => get().openTemplates(true))
     window.api.onWorkspaceCurrent((ws) => set({ currentWorkspaceName: ws?.name ?? null }))
     window.api.onConfigChanged((next) => {
       const prevLocale = get().config?.locale
@@ -138,6 +156,30 @@ export const useDeck = create<DeckState>((set, get) => ({
   },
   openNewClearConfirm: (open) => set({ confirmNewClearOpen: open }),
   openSaveAs: (open) => set({ saveAsOpen: open }),
+  openTemplates: (open) => {
+    set({ templatesOpen: open })
+    if (open) void get().refreshTemplates()
+  },
+  openExportTemplate: (open) => set({ exportTemplateOpen: open }),
+
+  async refreshTemplates() {
+    const templates = await window.api.listTemplates()
+    set({ templates })
+  },
+
+  async exportTemplate(name, local) {
+    const path = await window.api.exportTemplate(name, local)
+    set({ exportTemplateOpen: false })
+    if (path) get().showToast('toast.templateExported')
+  },
+
+  async applyTemplate(path, mode) {
+    await window.api.applyTemplate(path, mode)
+    set({ templatesOpen: false })
+    // Sessions refresh via onSessionsChanged (create/closeAll broadcast).
+    get().showToast('toast.templateApplied')
+  },
+
   setSidebarWidth: (px) => set({ sidebarWidth: Math.min(520, Math.max(180, Math.round(px))) }),
 
   showToast: (key, variant = 'success') => {
@@ -208,6 +250,11 @@ export const useDeck = create<DeckState>((set, get) => ({
 
   async restartSession(id) {
     await window.api.restartSession(id)
+  },
+
+  async reorderSessions(ids) {
+    await window.api.reorderSessions(ids)
+    // The new order arrives via onSessionsChanged (reorder broadcasts 'changed').
   },
 
   async updateConfig(patch) {

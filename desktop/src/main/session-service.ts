@@ -16,6 +16,7 @@ import { ThinkingDetector, type ThinkingEvent } from './thinking'
 import { OpenIdRegistry } from './open-id-registry'
 import { listTranscriptIds, pickDiscoveredId, transcriptExists } from './session-transcript'
 import { DEFAULT_PALETTE, paletteColor } from '@shared/palette'
+import { reconcileOrder } from '@shared/reorder'
 
 interface RuntimeState {
   status: SessionStatus
@@ -117,15 +118,27 @@ export class SessionService extends EventEmitter {
 
   create(input: CreateSessionInput): SessionRuntime {
     const cfg = this.getConfig()
+    const agent = input.agent?.trim() || ''
+    const model = input.model?.trim() || ''
+    // Fold the structured agent/model choices into the persisted args so a fresh
+    // restart re-applies them; --effort is kept separate (re-passed on resume).
+    const args = [
+      agent ? `--agent ${agent}` : '',
+      model ? `--model ${model}` : '',
+      input.args?.trim() || ''
+    ]
+      .filter(Boolean)
+      .join(' ')
     const def: SessionDef = {
       id: randomUUID(),
-      name: input.name?.trim() || this.defaultName(),
+      name: input.name?.trim() || this.defaultName(agent),
       cwd: input.cwd?.trim() || cfg.projectDir,
       // Empty => the resolved launchCommand; a non-empty value overrides it.
       command: input.command?.trim() || '',
-      args: input.args?.trim() || '',
+      args,
       sessionId: '',
-      color: input.color?.trim() || paletteColor(this.getConfig().palette ?? DEFAULT_PALETTE, this.defs.length),
+      color: input.color?.trim() || paletteColor(cfg.palette ?? DEFAULT_PALETTE, this.defs.length),
+      effort: input.effort?.trim() || '',
       createdAt: Date.now()
     }
     this.defs.push(def)
@@ -227,6 +240,18 @@ export class SessionService extends EventEmitter {
   }
 
   /**
+   * Reorder the session list to match `orderedIds` (drag-and-drop). The new order
+   * drives both the sidebar and the tile grid (they map the same list) and is
+   * persisted, so it survives restart/restore. Unknown ids are dropped and any
+   * live def missing from the list is kept at the end (stale-renderer safety).
+   */
+  reorder(orderedIds: string[]): void {
+    this.defs = reconcileOrder(this.defs, orderedIds)
+    this.persist()
+    this.broadcast()
+  }
+
+  /**
    * Restart a session. A normal session fork-resumes its last id; an EXPIRED one
    * (no transcript) starts fresh with the stored args (the "start new" action of
    * the expired overlay) by clearing its dead id first.
@@ -321,6 +346,7 @@ export class SessionService extends EventEmitter {
         baseCommand: base,
         sessionId: def.sessionId,
         prevSessionId: prev,
+        effort: def.effort,
         mode: 'resume'
       })
     } else {
@@ -330,6 +356,7 @@ export class SessionService extends EventEmitter {
         baseCommand: base,
         sessionId: def.sessionId,
         args: def.args,
+        effort: def.effort,
         mode: 'fresh'
       })
     }
@@ -381,9 +408,25 @@ export class SessionService extends EventEmitter {
     if (changed) this.broadcast()
   }
 
-  private defaultName(): string {
-    const n = this.defs.length + 1
-    return `peer ${n}`
+  /**
+   * Default tile name. With an agent it reads as the agent name ("developer"),
+   * otherwise "peer". Collisions take the smallest free numeric suffix among the
+   * current sessions ("developer", then "developer 2", "developer 3"...).
+   */
+  private defaultName(agent?: string): string {
+    const base = agent && agent.trim() ? agent.trim() : 'peer'
+    const taken = new Set(this.defs.map((d) => d.name))
+    if (!taken.has(base)) return base
+    for (let n = 2; n < 1000; n++) {
+      const candidate = `${base} ${n}`
+      if (!taken.has(candidate)) return candidate
+    }
+    return `${base} ${Date.now()}`
+  }
+
+  /** Colour the next auto-assigned session would get (create-menu preview). */
+  peekNextColor(): string {
+    return paletteColor(this.getConfig().palette ?? DEFAULT_PALETTE, this.defs.length)
   }
 
   private persist(): void {

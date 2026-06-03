@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AppConfig, DisplayMode, LaunchPreset } from '@shared/types'
+import type { AppConfig, DisplayMode, LaunchPreset, ModelOption } from '@shared/types'
 import { DEFAULT_PALETTE } from '@shared/palette'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
@@ -21,11 +21,14 @@ export function SettingsDialog(): React.JSX.Element {
   // launchCommand lives in the (global) launch config, not AppConfig.
   const [launchCommand, setLaunchCommand] = useState('')
   const [presets, setPresets] = useState<LaunchPreset[]>([])
+  // Carried through unchanged on save so the model list survives a Settings save.
+  const [models, setModels] = useState<ModelOption[]>([])
 
   useEffect(() => {
     void window.api.getLaunchConfig().then((c) => {
       setLaunchCommand(c.launchCommand)
       setPresets(c.presets)
+      setModels(c.models)
     })
   }, [])
 
@@ -39,7 +42,7 @@ export function SettingsDialog(): React.JSX.Element {
 
   const save = async (): Promise<void> => {
     await updateConfig(form)
-    await window.api.saveLaunchConfig({ launchCommand: launchCommand.trim(), presets })
+    await window.api.saveLaunchConfig({ launchCommand: launchCommand.trim(), presets, models })
     openSettings(false)
   }
 

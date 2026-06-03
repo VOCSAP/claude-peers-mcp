@@ -53,6 +53,8 @@ const api: DeckApi = {
   setSessionColor: (id: string, color: string) =>
     ipcRenderer.invoke('sessions:set-color', id, color),
   restartSession: (id: string) => ipcRenderer.invoke('sessions:restart', id),
+  peekNextColor: () => ipcRenderer.invoke('sessions:peek-next-color'),
+  reorderSessions: (ids: string[]) => ipcRenderer.invoke('sessions:reorder', ids),
   newClear: () => ipcRenderer.invoke('app:new-clear'),
 
   ptyInput: (id: string, data: string) => ipcRenderer.send('pty:input', id, data),
@@ -75,6 +77,12 @@ const api: DeckApi = {
   getLaunchConfig: () => ipcRenderer.invoke('launch:get'),
   saveLaunchConfig: (cfg: LaunchConfig) => ipcRenderer.invoke('launch:set-global', cfg),
 
+  listTemplates: () => ipcRenderer.invoke('template:list'),
+  exportTemplate: (name: string, local: boolean) =>
+    ipcRenderer.invoke('template:export', name, local),
+  applyTemplate: (path: string, mode: 'append' | 'replace') =>
+    ipcRenderer.invoke('template:apply', path, mode),
+
   onPtyData: (cb: (e: PtyDataEvent) => void) => onPtyDataMux(cb),
   onPtyExit: (cb: (e: PtyExitEvent) => void) => onPtyExitMux(cb),
   onSessionsChanged: (cb: (sessions: SessionRuntime[]) => void) =>
@@ -87,6 +95,8 @@ const api: DeckApi = {
   onMenuSaveAs: (cb: () => void) => subscribe('menu:save-as', () => cb()),
   onMenuRestore: (cb: () => void) => subscribe('menu:restore', () => cb()),
   onMenuListWorkspaces: (cb: () => void) => subscribe('menu:list', () => cb()),
+  onMenuExportTemplate: (cb: () => void) => subscribe('menu:export-template', () => cb()),
+  onMenuImportTemplate: (cb: () => void) => subscribe('menu:import-template', () => cb()),
   onWorkspaceCurrent: (cb: (ws: WorkspaceSummary | null) => void) =>
     subscribe('workspace:current', cb)
 }

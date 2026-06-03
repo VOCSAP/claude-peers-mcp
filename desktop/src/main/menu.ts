@@ -17,6 +17,10 @@ export interface AppMenuActions {
   onRestore: () => void
   /** Open the workspaces list. */
   onListWorkspaces: () => void
+  /** Export the current sessions as a portable team template. */
+  onExportTemplate: () => void
+  /** Open the template picker to instantiate a saved team. */
+  onImportTemplate: () => void
 }
 
 export function buildAppMenu({
@@ -24,7 +28,9 @@ export function buildAppMenu({
   onSave,
   onSaveAs,
   onRestore,
-  onListWorkspaces
+  onListWorkspaces,
+  onExportTemplate,
+  onImportTemplate
 }: AppMenuActions): Menu {
   const isMac = process.platform === 'darwin'
   const isDev = !app.isPackaged
@@ -55,6 +61,9 @@ export function buildAppMenu({
       { label: 'Save as…', accelerator: 'CmdOrCtrl+Shift+S', click: onSaveAs },
       { label: 'Restore…', click: onRestore },
       { label: 'List workspaces', click: onListWorkspaces },
+      { type: 'separator' },
+      { label: 'Export template…', click: onExportTemplate },
+      { label: 'Import template…', click: onImportTemplate },
       { type: 'separator' },
       isMac ? { role: 'close' } : { role: 'quit' }
     ]

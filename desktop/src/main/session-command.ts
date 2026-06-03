@@ -18,7 +18,19 @@ export interface SessionCommandInput {
   prevSessionId?: string
   /** Extra launch args appended on a fresh launch only (e.g. "--agent foo"). */
   args?: string
+  /**
+   * Reasoning effort level for `--effort`. Re-passed on BOTH fresh and resume
+   * (unlike --agent/--model, --effort is not auto-restored by --fork-session).
+   * Empty/undefined => omit the flag entirely (Claude's default effort).
+   */
+  effort?: string
   mode: SpawnMode
+}
+
+/** ` --effort <e>` when an effort level is set, otherwise empty. */
+function effortFlag(effort?: string): string {
+  const e = effort?.trim()
+  return e ? ` --effort ${e}` : ''
 }
 
 export function buildSessionCommandLine(input: SessionCommandInput): string {
@@ -26,11 +38,13 @@ export function buildSessionCommandLine(input: SessionCommandInput): string {
 
   if (input.mode === 'resume' && input.prevSessionId) {
     // No args / --agent / --model: Claude auto-restores them on --fork-session.
-    return `${base} --resume ${input.prevSessionId} --fork-session --session-id ${input.sessionId}`
+    // --effort is the exception (not auto-restored) so it is re-passed here.
+    return `${base} --resume ${input.prevSessionId} --fork-session --session-id ${input.sessionId}${effortFlag(input.effort)}`
   }
 
   let line = `${base} --session-id ${input.sessionId}`
   const extra = input.args?.trim()
   if (extra) line += ` ${extra}`
+  line += effortFlag(input.effort)
   return line
 }

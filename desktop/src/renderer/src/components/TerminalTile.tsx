@@ -15,6 +15,25 @@ const THEMES: Record<'dark' | 'light', ITheme> = {
 const FONT_STACK =
   'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace'
 
+/** Copy the current selection to the clipboard and clear it. No-op if empty. */
+function copySelection(term: Terminal): boolean {
+  const sel = term.getSelection()
+  if (!sel) return false
+  void navigator.clipboard.writeText(sel)
+  term.clearSelection()
+  return true
+}
+
+/** Paste clipboard text through xterm (bracketed-paste aware -> onData -> PTY). */
+async function pasteFromClipboard(term: Terminal): Promise<void> {
+  try {
+    const text = await navigator.clipboard.readText()
+    if (text) term.paste(text)
+  } catch {
+    /* clipboard read denied / unavailable */
+  }
+}
+
 export function TerminalTile({
   session,
   hidden
@@ -67,6 +86,30 @@ export function TerminalTile({
     if (hostRef.current) term.open(hostRef.current)
     termRef.current = term
     fitRef.current = fit
+
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true
+
+      // Ctrl/Shift+Enter inserts a newline in Claude's prompt instead of
+      // submitting. ESC+CR is the exact sequence Claude Code's /terminal-setup
+      // binds Shift+Enter to (verified in the claude binary). Plain Enter still
+      // submits (falls through to xterm's default \r).
+      if (e.key === 'Enter' && (e.ctrlKey || e.shiftKey) && !e.altKey && !e.metaKey) {
+        window.api.ptyInput(id, '\x1b\r')
+        return false
+      }
+
+      // Ctrl+C copies when text is selected (then clears it); with no selection
+      // it falls through so the PTY still receives the interrupt. Paste is left
+      // to xterm's native paste handler -- intercepting it here would fire on top
+      // of the native textarea paste event and paste twice.
+      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'c') {
+        if (copySelection(term)) return false
+        return !e.shiftKey // plain Ctrl+C interrupts; Ctrl+Shift+C is swallowed
+      }
+
+      return true
+    })
 
     const onInput = term.onData((d) => window.api.ptyInput(id, d))
     const offData = window.api.onPtyData((e) => {
@@ -191,7 +234,17 @@ export function TerminalTile({
           ✕
         </button>
       </div>
-      <div className="tile-body" ref={hostRef} />
+      <div
+        className="tile-body"
+        ref={hostRef}
+        onContextMenu={(e) => {
+          // Right-click: copy the selection if any, otherwise paste.
+          e.preventDefault()
+          const term = termRef.current
+          if (!term) return
+          if (!copySelection(term)) void pasteFromClipboard(term)
+        }}
+      />
       {session.expired && (
         <div className="tile-expired">
           <div className="tile-expired-card">

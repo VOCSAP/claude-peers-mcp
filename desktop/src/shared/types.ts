@@ -19,6 +19,13 @@ export interface SessionDef {
   sessionId: string
   /** Display colour (hex) framing the tile + sidebar swatch. Auto-assigned, overridable. */
   color: string
+  /**
+   * Reasoning effort level (`--effort`), e.g. 'low' | 'medium' | 'high' |
+   * 'xhigh' | 'max'. Empty/undefined => not specified (Claude's default). Stored
+   * here (not folded into `args`) so it can be re-passed on every fork-resume,
+   * since --effort is not auto-restored the way --agent/--model are.
+   */
+  effort?: string
   createdAt: number
 }
 
@@ -51,6 +58,14 @@ export interface WorkspaceSummary {
   locked: boolean
   /** True if this is the workspace the running app currently owns. */
   current: boolean
+}
+
+/** A discovered team template (global or project-local). `path` is its id. */
+export interface TemplateSummary {
+  path: string
+  name: string
+  source: 'global' | 'local'
+  sessionCount: number
 }
 
 export interface AppConfig {
@@ -101,9 +116,19 @@ export interface LaunchPreset {
   prompt?: string
 }
 
+/** One selectable Anthropic model for the create dropdown. `id` feeds `--model`. */
+export interface ModelOption {
+  /** Value passed to `--model` (alias like 'opus' or a full model id). */
+  id: string
+  /** Human label shown in the dropdown. */
+  label: string
+}
+
 export interface LaunchConfig {
   launchCommand: string
   presets: LaunchPreset[]
+  /** Selectable models for the create dropdown (local config + built-in default). */
+  models: ModelOption[]
 }
 
 export interface CreateSessionInput {
@@ -111,7 +136,13 @@ export interface CreateSessionInput {
   cwd?: string
   /** Base command override; empty => the resolved launchCommand. */
   command?: string
-  /** Extra launch args (e.g. "--agent reviewer"). */
+  /** Chosen subagent (becomes `--agent <name>` and seeds the default name). */
+  agent?: string
+  /** Chosen model (becomes `--model <id>`). */
+  model?: string
+  /** Reasoning effort (`--effort <level>`); empty => unspecified. */
+  effort?: string
+  /** Extra free-form launch args appended verbatim. */
   args?: string
   /** Optional explicit colour (hex); falls back to the rotating palette. */
   color?: string
@@ -143,6 +174,10 @@ export interface DeckApi {
   renameSession(id: string, name: string): Promise<void>
   setSessionColor(id: string, color: string): Promise<void>
   restartSession(id: string): Promise<SessionRuntime>
+  /** The colour the next auto-assigned session would receive (create preview). */
+  peekNextColor(): Promise<string>
+  /** Reorder the session list (sidebar drag-and-drop); drives sidebar + tiles. */
+  reorderSessions(ids: string[]): Promise<void>
   /** "New (clear)": close all sessions and return the window to the empty state. */
   newClear(): Promise<void>
 
@@ -170,6 +205,13 @@ export interface DeckApi {
   getLaunchConfig(): Promise<LaunchConfig>
   saveLaunchConfig(cfg: LaunchConfig): Promise<void>
 
+  // templates (portable team recipes)
+  listTemplates(): Promise<TemplateSummary[]>
+  /** Export the current sessions as a template; `local` => project dir, else global. Returns the written path. */
+  exportTemplate(name: string, local: boolean): Promise<string | null>
+  /** Instantiate a template by path: 'append' adds to current sessions, 'replace' clears first. Returns count. */
+  applyTemplate(path: string, mode: 'append' | 'replace'): Promise<number>
+
   // events (return an unsubscribe fn)
   onPtyData(cb: (e: PtyDataEvent) => void): () => void
   onPtyExit(cb: (e: PtyExitEvent) => void): () => void
@@ -183,6 +225,8 @@ export interface DeckApi {
   onMenuSaveAs(cb: () => void): () => void
   onMenuRestore(cb: () => void): () => void
   onMenuListWorkspaces(cb: () => void): () => void
+  onMenuExportTemplate(cb: () => void): () => void
+  onMenuImportTemplate(cb: () => void): () => void
   /** Current workspace summary (or null after New clear) for the window title. */
   onWorkspaceCurrent(cb: (ws: WorkspaceSummary | null) => void): () => void
 }

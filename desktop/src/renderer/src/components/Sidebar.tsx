@@ -1,11 +1,22 @@
 import { useState } from 'react'
 import type { SessionRuntime } from '@shared/types'
+import { moveBeside } from '@shared/reorder'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CreateMenu } from './CreateMenu'
 
-function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element {
+/** Drag-and-drop wiring passed from the Sidebar down to each row. */
+interface RowDnd {
+  dragId: string | null
+  overId: string | null
+  onDragStart: (id: string) => void
+  onDragEnter: (id: string) => void
+  onDrop: (e: React.DragEvent, id: string) => void
+  onDragEnd: () => void
+}
+
+function SessionRow({ session, dnd }: { session: SessionRuntime; dnd: RowDnd }): React.JSX.Element {
   const t = useT()
   const selectedId = useDeck((s) => s.selectedId)
   const maximizedId = useDeck((s) => s.maximizedId)
@@ -25,9 +36,29 @@ function SessionRow({ session }: { session: SessionRuntime }): React.JSX.Element
     else setDraft(session.name)
   }
 
+  const className = [
+    'row',
+    selectedId === session.id ? 'row-selected' : '',
+    dnd.dragId === session.id ? 'row-dragging' : '',
+    dnd.overId === session.id && dnd.dragId !== session.id ? 'row-drag-over' : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   return (
     <li
-      className={`row ${selectedId === session.id ? 'row-selected' : ''}`}
+      className={className}
+      // Draggable to reorder; disabled while renaming so the text input keeps
+      // its normal selection/caret behaviour.
+      draggable={!editing}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move'
+        dnd.onDragStart(session.id)
+      }}
+      onDragEnter={() => dnd.onDragEnter(session.id)}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => dnd.onDrop(e, session.id)}
+      onDragEnd={dnd.onDragEnd}
       onClick={() => setSelected(session.id)}
       onDoubleClick={(e) => {
         // Mirror the tile head: double-click toggles maximize. Ignore
@@ -131,11 +162,39 @@ export function Sidebar(): React.JSX.Element {
   const sessions = useDeck((s) => s.sessions)
   const config = useDeck((s) => s.config!)
   const createSession = useDeck((s) => s.createSession)
+  const reorderSessions = useDeck((s) => s.reorderSessions)
   const openSettings = useDeck((s) => s.openSettings)
   const openWorkspaces = useDeck((s) => s.openWorkspaces)
   const setSidebarWidth = useDeck((s) => s.setSidebarWidth)
   const updateConfig = useDeck((s) => s.updateConfig)
   const [createOpen, setCreateOpen] = useState(false)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
+
+  const dnd: RowDnd = {
+    dragId,
+    overId,
+    onDragStart: (id) => setDragId(id),
+    onDragEnter: (id) => setOverId(id),
+    onDragEnd: () => {
+      setDragId(null)
+      setOverId(null)
+    },
+    onDrop: (e, targetId) => {
+      e.preventDefault()
+      const sourceId = dragId
+      setDragId(null)
+      setOverId(null)
+      if (!sourceId) return
+      // Drop in the lower half of the target row -> insert after it (lets a row
+      // be dragged to the very bottom).
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+      const after = e.clientY > rect.top + rect.height / 2
+      const ids = sessions.map((s) => s.id)
+      const next = moveBeside(ids, sourceId, targetId, after)
+      if (next.some((id, i) => id !== ids[i])) void reorderSessions(next)
+    }
+  }
 
   // Drag the right edge to resize; persist the final width on mouse-up.
   const startResize = (e: React.MouseEvent): void => {
@@ -186,7 +245,7 @@ export function Sidebar(): React.JSX.Element {
 
       <ul className="rows">
         {sessions.map((s) => (
-          <SessionRow key={s.id} session={s} />
+          <SessionRow key={s.id} session={s} dnd={dnd} />
         ))}
         {sessions.length === 0 && <li className="rows-empty">{t('sidebar.noSessions')}</li>}
       </ul>

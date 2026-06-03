@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   resolveLaunchConfig,
   DEFAULT_LAUNCH_COMMAND,
+  DEFAULT_MODELS,
   localConfigPath
 } from "../desktop/src/main/launch-config.ts";
 import { buildSessionCommandLine } from "../desktop/src/main/session-command.ts";
@@ -81,6 +82,23 @@ test("malformed JSON is ignored (falls back to default)", () => {
   expect(resolveLaunchConfig(proj, emptyGlobalEnv()).launchCommand).toBe(DEFAULT_LAUNCH_COMMAND);
 });
 
+test("models default to DEFAULT_MODELS, a local non-empty list overrides", () => {
+  const proj = tmpProject();
+  // No file -> built-in default model list.
+  expect(resolveLaunchConfig(proj, emptyGlobalEnv()).models).toEqual(DEFAULT_MODELS);
+  // A local list (with one malformed entry) overrides, keeping only valid models.
+  writeLocalConfig(proj, {
+    models: [{ id: "opus-x", label: "Opus X" }, { label: "no id" }, { id: "", label: "blank" }]
+  });
+  expect(resolveLaunchConfig(proj, emptyGlobalEnv()).models).toEqual([{ id: "opus-x", label: "Opus X" }]);
+});
+
+test("an empty local models list falls back to the default (not blank)", () => {
+  const proj = tmpProject();
+  writeLocalConfig(proj, { models: [] });
+  expect(resolveLaunchConfig(proj, emptyGlobalEnv()).models).toEqual(DEFAULT_MODELS);
+});
+
 test("invalid presets are filtered out", () => {
   const proj = tmpProject();
   writeLocalConfig(proj, {
@@ -123,6 +141,41 @@ test("resume forks prev into new id and never re-passes args/agent/model", () =>
 test("resume without a prevSessionId degrades to a fresh launch", () => {
   const line = buildSessionCommandLine({ baseCommand: "claude run", sessionId: "id-1", mode: "resume" });
   expect(line).toBe("claude run --session-id id-1");
+});
+
+test("fresh launch appends --effort last when an effort level is set", () => {
+  const line = buildSessionCommandLine({
+    baseCommand: "claude run",
+    sessionId: "id-1",
+    args: "--agent reviewer",
+    effort: "high",
+    mode: "fresh"
+  });
+  expect(line).toBe("claude run --session-id id-1 --agent reviewer --effort high");
+});
+
+test("resume re-passes --effort (not auto-restored) after the fork", () => {
+  const line = buildSessionCommandLine({
+    baseCommand: "claude run",
+    sessionId: "id-new",
+    prevSessionId: "id-old",
+    effort: "xhigh",
+    mode: "resume"
+  });
+  expect(line).toBe("claude run --resume id-old --fork-session --session-id id-new --effort xhigh");
+});
+
+test("an empty/whitespace effort never emits the flag (Auto position)", () => {
+  const fresh = buildSessionCommandLine({ baseCommand: "claude run", sessionId: "id-1", effort: "  ", mode: "fresh" });
+  expect(fresh).toBe("claude run --session-id id-1");
+  const resume = buildSessionCommandLine({
+    baseCommand: "claude run",
+    sessionId: "id-new",
+    prevSessionId: "id-old",
+    effort: "",
+    mode: "resume"
+  });
+  expect(resume).toBe("claude run --resume id-old --fork-session --session-id id-new");
 });
 
 // ----- shell-command -----

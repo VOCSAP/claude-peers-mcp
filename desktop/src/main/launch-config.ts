@@ -14,6 +14,24 @@ import { dirname, join } from 'node:path'
 export const DEFAULT_LAUNCH_COMMAND =
   'claude --dangerously-load-development-channels server:claude-peers'
 
+/**
+ * Built-in model choices (stable Claude Code aliases) used when no local config
+ * supplies its own `models` list. Edit the local/global config.json `models`
+ * array to track new model ids without rebuilding the app.
+ */
+export const DEFAULT_MODELS: ModelOption[] = [
+  { id: 'opus', label: 'Opus' },
+  { id: 'sonnet', label: 'Sonnet' },
+  { id: 'haiku', label: 'Haiku' }
+]
+
+export interface ModelOption {
+  /** Value passed to `--model` (alias like 'opus' or a full model id). */
+  id: string
+  /** Human label shown in the dropdown. */
+  label: string
+}
+
 export interface LaunchPreset {
   label: string
   /** Extra args appended after --session-id on a fresh launch. */
@@ -25,9 +43,11 @@ export interface LaunchPreset {
 export interface LaunchConfig {
   launchCommand: string
   presets: LaunchPreset[]
+  /** Selectable models for the create dropdown. Defaults to DEFAULT_MODELS. */
+  models: ModelOption[]
 }
 
-function globalConfigDir(env: NodeJS.ProcessEnv): string {
+export function globalConfigDir(env: NodeJS.ProcessEnv): string {
   if (platform() === 'win32') {
     return join(env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'claude-peers-desk')
   }
@@ -51,6 +71,16 @@ function isPreset(p: unknown): p is LaunchPreset {
   )
 }
 
+function isModel(m: unknown): m is ModelOption {
+  return (
+    !!m &&
+    typeof m === 'object' &&
+    typeof (m as ModelOption).id === 'string' &&
+    typeof (m as ModelOption).label === 'string' &&
+    !!(m as ModelOption).id.trim()
+  )
+}
+
 /** Read + validate one config file. Missing or malformed => null (treated as absent). */
 function readConfigFile(file: string): Partial<LaunchConfig> | null {
   try {
@@ -64,6 +94,9 @@ function readConfigFile(file: string): Partial<LaunchConfig> | null {
     if (Array.isArray(raw.presets)) {
       out.presets = raw.presets.filter(isPreset)
     }
+    if (Array.isArray(raw.models)) {
+      out.models = raw.models.filter(isModel)
+    }
     return out
   } catch {
     return null
@@ -74,12 +107,18 @@ export function resolveLaunchConfig(
   projectDir: string,
   env: NodeJS.ProcessEnv = process.env
 ): LaunchConfig {
-  const merged: LaunchConfig = { launchCommand: DEFAULT_LAUNCH_COMMAND, presets: [] }
+  const merged: LaunchConfig = {
+    launchCommand: DEFAULT_LAUNCH_COMMAND,
+    presets: [],
+    models: DEFAULT_MODELS
+  }
   // global first, then local (local wins).
   for (const src of [readConfigFile(globalConfigPath(env)), readConfigFile(localConfigPath(projectDir))]) {
     if (!src) continue
     if (src.launchCommand) merged.launchCommand = src.launchCommand
     if (src.presets) merged.presets = src.presets
+    // Only override the default model list when the file supplies a non-empty one.
+    if (src.models && src.models.length > 0) merged.models = src.models
   }
   return merged
 }
@@ -89,7 +128,11 @@ export function createLocalConfig(projectDir: string): string {
   const file = localConfigPath(projectDir)
   if (existsSync(file)) return file
   mkdirSync(dirname(file), { recursive: true })
-  const template: LaunchConfig = { launchCommand: DEFAULT_LAUNCH_COMMAND, presets: [] }
+  const template: LaunchConfig = {
+    launchCommand: DEFAULT_LAUNCH_COMMAND,
+    presets: [],
+    models: DEFAULT_MODELS
+  }
   writeFileSync(file, JSON.stringify(template, null, 2), 'utf-8')
   return file
 }

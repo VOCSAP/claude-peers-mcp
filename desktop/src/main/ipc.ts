@@ -5,6 +5,14 @@ import type { SessionService } from './session-service'
 import type { WorkspaceService } from './workspace-service'
 import { listAgents } from './agents'
 import { resolveLaunchConfig, saveGlobalConfig } from './launch-config'
+import {
+  listTemplates,
+  readTemplate,
+  writeTemplate,
+  globalTemplatesDir,
+  localTemplatesDir
+} from './template-store'
+import { toTemplate, templateToInputs } from '@shared/template'
 import { loadDict, resolveLocale } from './i18n'
 
 /**
@@ -45,6 +53,8 @@ export function registerIpc({
     service.setColor(id, color)
   )
   ipcMain.handle('sessions:restart', (_e, id: string) => service.restart(id))
+  ipcMain.handle('sessions:peek-next-color', () => service.peekNextColor())
+  ipcMain.handle('sessions:reorder', (_e, ids: string[]) => service.reorder(ids ?? []))
   // "New (clear)": save+detach the current workspace (while sessions still
   // exist) THEN close all sessions, returning the window to the empty state.
   ipcMain.handle('app:new-clear', () => {
@@ -94,6 +104,30 @@ export function registerIpc({
   ipcMain.handle('agents:list', () => listAgents(getConfig().projectDir))
   ipcMain.handle('launch:get', () => resolveLaunchConfig(getConfig().projectDir))
   ipcMain.handle('launch:set-global', (_e, cfg: LaunchConfig) => saveGlobalConfig(cfg))
+
+  // ----- templates (portable team recipes) -----
+  ipcMain.handle('template:list', () => listTemplates(getConfig().projectDir))
+  ipcMain.handle('template:export', (_e, name: string, local: boolean) => {
+    // captureSessions() carries cwd; toTemplate strips it (and id/sessionId).
+    const tpl = toTemplate(service.captureSessions(), name)
+    const dir = local ? localTemplatesDir(getConfig().projectDir) : globalTemplatesDir()
+    return writeTemplate(dir, name || tpl.name || 'template', tpl)
+  })
+  ipcMain.handle('template:apply', (_e, path: string, mode: 'append' | 'replace') => {
+    const tpl = readTemplate(path)
+    if (!tpl) return 0
+    const inputs = templateToInputs(tpl)
+    if (mode === 'replace') {
+      // Detach + auto-save the current workspace, then clear (mirrors New clear).
+      workspaces.startNew()
+      service.closeAll()
+      getWindow()?.webContents.send('workspace:current', null)
+    }
+    // Each peer spawns in this window's current project dir + group (no cwd in
+    // the template); order is preserved by creation order.
+    for (const input of inputs) service.create(input)
+    return inputs.length
+  })
 
   // ----- forward service events to the renderer -----
   const send = (channel: string, payload: unknown): void => {

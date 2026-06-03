@@ -161,7 +161,9 @@ app.whenReady().then(() => {
       onSave: () => toRenderer('menu:save'),
       onSaveAs: () => toRenderer('menu:save-as'),
       onRestore: () => toRenderer('menu:restore'),
-      onListWorkspaces: () => toRenderer('menu:list')
+      onListWorkspaces: () => toRenderer('menu:list'),
+      onExportTemplate: () => toRenderer('menu:export-template'),
+      onImportTemplate: () => toRenderer('menu:import-template')
     })
   )
   registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
