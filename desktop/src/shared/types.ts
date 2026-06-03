@@ -146,6 +146,12 @@ export interface CreateSessionInput {
   args?: string
   /** Optional explicit colour (hex); falls back to the rotating palette. */
   color?: string
+  /**
+   * Operator-authored join-announce note (advanced create), broadcast to the
+   * group once this session's peer_id resolves. Empty/undefined => the default
+   * agent/model/effort summary is composed instead.
+   */
+  announce?: string
 }
 
 // ----- IPC channel payloads -----
@@ -204,6 +210,10 @@ export interface DeckApi {
   listAgents(): Promise<string[]>
   getLaunchConfig(): Promise<LaunchConfig>
   saveLaunchConfig(cfg: LaunchConfig): Promise<void>
+
+  // announce (outbound megaphone): broadcast a free-text operator message to all
+  // peers in the active group. Returns the number of peers it reached.
+  announce(text: string): Promise<number>
 
   // templates (portable team recipes)
   listTemplates(): Promise<TemplateSummary[]>

@@ -58,6 +58,18 @@ test("set_id rejects malformed names", async () => {
   expect(r.status).toBe(400);
 });
 
+test("set_id rejects the reserved deck/system names -> 400", async () => {
+  const a = await register("hsid6", "/sid6");
+  for (const reserved of ["deck", "system"]) {
+    const r = await post<{ error: string }>(`${broker.url}/set-id`, {
+      instance_token: a.body.instance_token,
+      new_peer_id: reserved,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("reserved");
+  }
+});
+
 test("messages survive a set_id rename (routing keyed by instance_token)", async () => {
   const a = await register("hsid5a", "/sid5a");
   const b = await register("hsid5b", "/sid5b");

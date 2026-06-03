@@ -17,6 +17,7 @@ import { OpenIdRegistry } from './open-id-registry'
 import { listTranscriptIds, pickDiscoveredId, transcriptExists } from './session-transcript'
 import { DEFAULT_PALETTE, paletteColor } from '@shared/palette'
 import { reconcileOrder } from '@shared/reorder'
+import type { JoinAnnounceIntent } from '@shared/announce'
 
 interface RuntimeState {
   status: SessionStatus
@@ -25,6 +26,13 @@ interface RuntimeState {
   thinking: boolean
   /** Restore-time: persisted id had no transcript, so it was not resumed. */
   expired: boolean
+  /**
+   * One-shot join-announce intent for a FRESH session. Set on create(), null on
+   * restore (a resumed peer was already announced). Consumed (cleared) the first
+   * time the peer_id resolves, when `peer-resolved` is emitted for the Deck to
+   * broadcast. null => no announce.
+   */
+  announce: JoinAnnounceIntent | null
 }
 
 const PEER_POLL_MS = 4000
@@ -147,7 +155,16 @@ export class SessionService extends EventEmitter {
       exitCode: null,
       peerId: null,
       thinking: false,
-      expired: false
+      expired: false,
+      // Fresh session -> announce its arrival once the peer_id resolves. The
+      // advanced menu may supply a custom note; otherwise the agent/model/effort
+      // default is composed downstream.
+      announce: {
+        custom: input.announce?.trim() || null,
+        agent,
+        model,
+        effort: def.effort ?? ''
+      }
     })
     this.spawnSession(def, 'fresh')
     this.broadcast()
@@ -214,7 +231,10 @@ export class SessionService extends EventEmitter {
         exitCode: null,
         peerId: null,
         thinking: false,
-        expired: false
+        expired: false,
+        // Restored peers were already announced on their original join -> no
+        // re-announce on restore.
+        announce: null
       })
     }
     this.persist()
@@ -401,6 +421,13 @@ export class SessionService extends EventEmitter {
       if (!r) continue
       const next = this.pty.isAlive(def.id) ? resolvePeerId(def.cwd, def.sessionId) : null
       if (next !== r.peerId) {
+        // First resolution of a fresh session -> emit a one-shot join announce
+        // for the Deck to broadcast, then consume the intent so it never repeats
+        // (a later set_id rename must not re-announce).
+        if (next && r.peerId === null && r.announce) {
+          this.emit('peer-resolved', { peerId: next, intent: r.announce })
+          r.announce = null
+        }
         r.peerId = next
         changed = true
       }

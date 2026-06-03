@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.4 -- 2026-06-03
+
+### Added
+- **Deck outbound announcements (`POST /announce`).** The desktop Deck can now
+  broadcast one-way, fire-and-forget system messages to every active peer in a
+  group: an automatic join announcement (with the newcomer's `peer_id` and its
+  agent/model/effort) when a session's peer_id resolves, and free-text operator
+  messages from a sidebar message bar (Send button). Both go through a single
+  `/announce` endpoint.
+- **Reserved system sender.** Announcements are stored from a non-routable
+  sentinel (`from_token = '__deck__'`, `from_peer_id = 'deck'`), backed by one
+  permanently-dormant reserved peer row so the `messages.from_token` FK resolves.
+  The reserved row never appears in `list_peers`/`group-stats` and is exempt from
+  the dormant TTL purge.
+- **No-reply guarantee.** `server.ts` renders any `from_peer_id == 'deck'` message
+  with an English "informational only -- do not reply" framing (WS push, fallback
+  poll and `check_messages`), neutralising the channel's default reply nudge.
+  Replies are also impossible: `send_message` toward `deck` finds no active
+  target. `set_id` refuses the reserved names `deck` / `system`.
+
 ## v0.3.2.1 -- 2026-05-16
 
 ### Fixed

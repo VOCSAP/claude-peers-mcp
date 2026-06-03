@@ -14,6 +14,8 @@ import {
 } from './scope-secrets'
 import { resolveLaunchConfig } from './launch-config'
 import { WorkspaceService } from './workspace-service'
+import { resolveBrokerEndpoint, sendAnnounce } from './broker-client'
+import { composeJoinAnnounce, type JoinAnnounceIntent } from '@shared/announce'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -64,6 +66,30 @@ const setConfig = (patch: Partial<AppConfig>): AppConfig => {
 }
 
 const service = new SessionService(getConfig, () => activeScopeEnv.env, launchConfig.launchCommand)
+
+// Outbound megaphone: broadcast a system message to every active peer in this
+// window's forced group via the broker /announce endpoint. Best-effort -- an
+// announce must never crash the main process. Returns the peers it reached.
+const broadcastAnnounce = async (text: string, excludePeerId?: string): Promise<number> => {
+  if (!text.trim()) return 0
+  try {
+    const { sent } = await sendAnnounce(
+      { groupId: activeScope.groupId, secret: activeScope.secret, text, excludePeerId },
+      { endpoint: resolveBrokerEndpoint() }
+    )
+    return sent
+  } catch (e) {
+    console.error('[claude-peers-desk] announce failed:', e)
+    return 0
+  }
+}
+
+// Auto join announce: when a fresh session's peer_id first resolves, tell the
+// other peers a newcomer joined (excluding the joiner itself). Fire-and-forget,
+// never on the spawn critical path.
+service.on('peer-resolved', ({ peerId, intent }: { peerId: string; intent: JoinAnnounceIntent }) => {
+  void broadcastAnnounce(composeJoinAnnounce(peerId, intent), peerId)
+})
 
 /**
  * Adopt a restored workspace's scope. No-op once a session is running (the scope
@@ -166,7 +192,14 @@ app.whenReady().then(() => {
       onImportTemplate: () => toRenderer('menu:import-template')
     })
   )
-  registerIpc({ service, workspaces, getConfig, setConfig, getWindow: () => mainWindow })
+  registerIpc({
+    service,
+    workspaces,
+    getConfig,
+    setConfig,
+    getWindow: () => mainWindow,
+    announce: (text: string) => broadcastAnnounce(text)
+  })
   service.start()
   // Attach an auto-save workspace capturing whatever the service just restored.
   workspaces.start()

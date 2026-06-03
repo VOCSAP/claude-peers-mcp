@@ -100,6 +100,12 @@
   "modebar.countOne": "{n} session",
   "modebar.countOther": "{n} sessions",
 
+  "message.placeholder": "Message à tous les pairs du groupe…",
+  "message.send": "Envoyer",
+  "message.sendTitle": "Diffuser à tous les pairs (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)",
+  "toast.announceSent": "Message envoyé au groupe",
+  "toast.announceNoPeers": "Aucun pair pour recevoir le message",
+
   "create.title": "Nouvelle session pair",
   "create.agent": "Agent",
   "create.agentDefault": "défaut (aucun)",
@@ -112,6 +118,9 @@
   "create.effortSmarter": "Plus fin",
   "create.extraArgs": "Arguments de lancement",
   "create.extraArgsPlaceholder": "ex. --add-dir ..",
+  "create.announce": "Annonce d'arrivée",
+  "create.announcePlaceholder": "agent : …, modèle : …, effort : …",
+  "create.announceHelp": "Diffusée aux pairs du groupe dès que cette session rejoint, avec son peer_id. Modifiable librement.",
   "create.presets": "Préréglages",
   "create.customColour": "Couleur personnalisée",
   "create.colourTitle": "Cliquer pour choisir une couleur",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers broker daemon (v0.3.3)
+ * claude-peers broker daemon (v0.3.4)
  *
  * Singleton HTTP server on 127.0.0.1:<port> backed by SQLite.
  * Tracks registered Claude Code peers, isolates them by group, persists session
@@ -30,10 +30,17 @@ import type {
   SetIdRequest,
   SetIdResponse,
   GroupStatsResponse,
+  AnnounceRequest,
+  AnnounceResponse,
   Peer,
   Message,
   GroupId,
   InstanceToken,
+} from "./shared/types.ts";
+import {
+  DECK_INSTANCE_TOKEN,
+  DECK_PEER_ID,
+  RESERVED_PEER_IDS,
 } from "./shared/types.ts";
 
 const config = await loadConfig();
@@ -160,6 +167,18 @@ db.run(`
   )
 `);
 
+// Reserved system sender for Deck announcements (v0.3.4). messages.from_token has
+// a NOT NULL FK to peers(instance_token), so /announce needs a real row to point
+// at. This row stays 'dormant' forever: it never appears in list_peers/group-stats
+// (both filter status='active') and is never a valid send_message target, so peers
+// cannot reply to the Deck. cleanStalePeers excludes it from the dormant TTL purge.
+db.run(
+  `INSERT OR IGNORE INTO peers
+     (instance_token, peer_id, group_id, pid, cwd, summary, registered_at, last_seen, host, client_pid, status)
+   VALUES (?, ?, 'default', 0, '', '', datetime('now'), datetime('now'), '', 0, 'dormant')`,
+  [DECK_INSTANCE_TOKEN, DECK_PEER_ID]
+);
+
 db.run(`CREATE INDEX IF NOT EXISTS idx_messages_pending ON messages(to_token, delivered)`);
 
 db.run(`
@@ -233,12 +252,15 @@ function cleanStalePeers(): void {
     }
   }
 
-  // Phase 2: purge dormants au-dela du TTL.
+  // Phase 2: purge dormants au-dela du TTL. The reserved Deck sender row is
+  // exempt -- it is permanently dormant and must outlive the TTL so /announce's
+  // from_token FK always resolves.
   const cutoff = `-${DORMANT_TTL_HOURS} hours`;
   const expired = db.query(
     `SELECT instance_token FROM peers
-     WHERE status = 'dormant' AND last_seen < datetime('now', ?)`
-  ).all(cutoff) as { instance_token: string }[];
+     WHERE status = 'dormant' AND last_seen < datetime('now', ?)
+       AND instance_token <> ?`
+  ).all(cutoff, DECK_INSTANCE_TOKEN) as { instance_token: string }[];
   for (const { instance_token } of expired) {
     // Must clear BOTH FK directions before deleting the peer row:
     // messages.from_token and messages.to_token both reference peers(instance_token).
@@ -549,6 +571,11 @@ function handleSetId(body: SetIdRequest): SetIdResponse | { error: string; statu
       status: 400,
     };
   }
+  // Reserved names are owned by the Deck system sender; refuse them so the
+  // 'deck' sentinel stays unambiguous across every group.
+  if (RESERVED_PEER_IDS.includes(body.new_peer_id)) {
+    return { error: `peer_id '${body.new_peer_id}' is reserved`, status: 400 };
+  }
   const me = db.query(
     "SELECT peer_id, group_id FROM peers WHERE instance_token = ?"
   ).get(body.instance_token) as { peer_id: string; group_id: string } | null;
@@ -696,6 +723,74 @@ function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
   }
 
   return { ok: true };
+}
+
+// Fire-and-forget WS push for a Deck announcement. Mirrors handleSendMessage's
+// push but with the reserved 'deck' sender; never marks delivered.
+function pushDeckMessage(
+  token: InstanceToken,
+  messageId: number,
+  text: string,
+  sentAt: string
+): void {
+  const ws = wsPool.get(token);
+  if (!ws || ws.readyState !== 1) return;
+  try {
+    ws.send(
+      JSON.stringify({
+        type: "message",
+        id: messageId,
+        from_peer_id: DECK_PEER_ID,
+        from_summary: "",
+        from_host: "",
+        from_cwd: "",
+        text,
+        sent_at: sentAt,
+      })
+    );
+  } catch {
+    // ws.send can throw on a half-closed socket; the polling fallback ships it.
+  }
+}
+
+// POST /announce: the Deck broadcasts an outbound, fire-and-forget system message
+// to every ACTIVE peer in a group, from the reserved non-routable 'deck' sender.
+// Peers can never reply (the sender is dormant). An optional exclude_peer_id keeps
+// a just-joined peer from receiving its own join announcement.
+function handleAnnounce(body: AnnounceRequest): AnnounceResponse | { error: string; status: number } {
+  const groupId = body.group_id;
+  const text = typeof body.text === "string" ? body.text : "";
+  if (!text.trim()) return { sent: 0 };
+
+  // Group auth: a non-default group that already exists must present the right
+  // secret. A group no peer has registered yet has no members -> sent:0 below.
+  if (groupId !== "default") {
+    const existing = db.query(
+      "SELECT secret_hash FROM groups WHERE group_id = ?"
+    ).get(groupId) as { secret_hash: string | null } | null;
+    if (existing && existing.secret_hash !== (body.group_secret_hash ?? null)) {
+      return { error: "group_secret_hash mismatch (TOFU rejected)", status: 401 };
+    }
+  }
+
+  const exclude = body.exclude_peer_id ?? null;
+  const targets = db.query(
+    `SELECT instance_token FROM peers
+     WHERE group_id = ? AND status = 'active'
+       AND instance_token <> ?
+       AND (? IS NULL OR peer_id <> ?)`
+  ).all(groupId, DECK_INSTANCE_TOKEN, exclude, exclude) as { instance_token: InstanceToken }[];
+
+  const sentAt = new Date().toISOString();
+  let sent = 0;
+  for (const target of targets) {
+    const result = insertMessage.run(DECK_INSTANCE_TOKEN, target.instance_token, groupId, text, sentAt);
+    const messageId = Number(result.lastInsertRowid);
+    sent += 1;
+    updateLastActivity.run(sentAt, target.instance_token);
+    pushDeckMessage(target.instance_token, messageId, text, sentAt);
+  }
+  return { sent };
 }
 
 function flushPendingForToken(token: InstanceToken): void {
@@ -885,6 +980,13 @@ const server = Bun.serve<WsData>({
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":
           return Response.json(handleSendMessage(body as SendMessageRequest));
+        case "/announce": {
+          const result = handleAnnounce(body as AnnounceRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
         case "/poll-messages":
           return Response.json(handlePollMessages(body as PollMessagesRequest));
         case "/peek-messages":
@@ -902,7 +1004,7 @@ const server = Bun.serve<WsData>({
 });
 
 console.error(
-  `[claude-peers broker v0.3.3] listening on ${BIND_HOST}:${PORT} ` +
+  `[claude-peers broker v0.3.4] listening on ${BIND_HOST}:${PORT} ` +
   `(db: ${DB_PATH}, dormant_ttl=${DORMANT_TTL_HOURS}h, msg_ttl=${MESSAGE_TTL_DAYS}d, ` +
   `flush_cap=${FLUSH_MAX_COUNT}/${FLUSH_MAX_AGE_HOURS}h, purge_interval=${PURGE_INTERVAL_SEC}s, ` +
   `activity_timeout=${ACTIVITY_TIMEOUT_MS / 1000}s, ws_idle=${WS_IDLE_TIMEOUT_SEC}s, ` +

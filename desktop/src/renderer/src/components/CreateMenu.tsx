@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { LaunchPreset, ModelOption } from '@shared/types'
+import { defaultAnnounceDraft } from '@shared/announce'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
 
@@ -27,6 +28,10 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
   const [color, setColor] = useState('#4f86ff')
   const [customColor, setCustomColor] = useState(false)
   const [folder, setFolder] = useState<string | null>(null)
+  // Join-announce note, pre-filled with the agent/model/effort summary. It tracks
+  // those choices until the operator edits it (then it stays as authored).
+  const [announce, setAnnounce] = useState('')
+  const [announceTouched, setAnnounceTouched] = useState(false)
 
   useEffect(() => {
     void window.api.listAgents().then(setAgents)
@@ -46,6 +51,13 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  // Keep the announce draft synced to the agent/model/effort choices until the
+  // operator edits it (then it stays as authored).
+  useEffect(() => {
+    if (announceTouched) return
+    setAnnounce(defaultAnnounceDraft({ agent, model, effort: EFFORT_LEVELS[effortIdx] ?? '' }))
+  }, [agent, model, effortIdx, announceTouched])
 
   const applyPreset = (p: LaunchPreset): void => {
     setExtraArgs((prev) => [prev.trim(), p.args.trim()].filter(Boolean).join(' '))
@@ -71,7 +83,8 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
       cwd: folder ?? undefined,
       // Only force a colour when the user explicitly picked one; otherwise the
       // main process assigns the next palette colour at spawn time.
-      color: customColor ? color : undefined
+      color: customColor ? color : undefined,
+      announce: announce.trim() || undefined
     })
     onClose()
   }
@@ -165,6 +178,21 @@ export function CreateMenu({ onClose }: { onClose: () => void }): React.JSX.Elem
             placeholder={t('create.extraArgsPlaceholder')}
             onChange={(e) => setExtraArgs(e.target.value)}
           />
+        </label>
+
+        <label className="field">
+          <span>{t('create.announce')}</span>
+          <textarea
+            className="announce-input"
+            rows={2}
+            value={announce}
+            placeholder={t('create.announcePlaceholder')}
+            onChange={(e) => {
+              setAnnounce(e.target.value)
+              setAnnounceTouched(true)
+            }}
+          />
+          <small>{t('create.announceHelp')}</small>
         </label>
 
         <details className="advanced">

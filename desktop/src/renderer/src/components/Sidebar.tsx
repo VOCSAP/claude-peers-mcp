@@ -5,6 +5,7 @@ import { useDeck } from '../store'
 import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
 import { CreateMenu } from './CreateMenu'
+import { MessageBar } from './MessageBar'
 
 /** Drag-and-drop wiring passed from the Sidebar down to each row. */
 interface RowDnd {
@@ -249,6 +250,8 @@ export function Sidebar(): React.JSX.Element {
         ))}
         {sessions.length === 0 && <li className="rows-empty">{t('sidebar.noSessions')}</li>}
       </ul>
+
+      <MessageBar />
 
       <footer className="sidebar-foot" title={config.projectDir}>
         <span className="foot-label">{t('sidebar.project')}</span>

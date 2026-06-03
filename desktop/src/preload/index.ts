@@ -77,6 +77,8 @@ const api: DeckApi = {
   getLaunchConfig: () => ipcRenderer.invoke('launch:get'),
   saveLaunchConfig: (cfg: LaunchConfig) => ipcRenderer.invoke('launch:set-global', cfg),
 
+  announce: (text: string) => ipcRenderer.invoke('announce:send', text),
+
   listTemplates: () => ipcRenderer.invoke('template:list'),
   exportTemplate: (name: string, local: boolean) =>
     ipcRenderer.invoke('template:export', name, local),

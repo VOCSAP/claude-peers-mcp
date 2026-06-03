@@ -68,6 +68,8 @@ interface DeckState {
   restartSession(id: string): Promise<void>
   reorderSessions(ids: string[]): Promise<void>
   updateConfig(patch: Partial<AppConfig>): Promise<void>
+  /** Broadcast a free-text operator message to all peers in the active group. */
+  broadcastAnnounce(text: string): Promise<void>
 
   refreshWorkspaces(): Promise<void>
   saveWorkspace(name?: string): Promise<void>
@@ -260,6 +262,13 @@ export const useDeck = create<DeckState>((set, get) => ({
   async updateConfig(patch) {
     const config = await window.api.setConfig(patch)
     set({ config })
+  },
+
+  async broadcastAnnounce(text) {
+    const body = text.trim()
+    if (!body) return
+    const sent = await window.api.announce(body)
+    get().showToast(sent > 0 ? 'toast.announceSent' : 'toast.announceNoPeers', sent > 0 ? 'success' : 'info')
   },
 
   async refreshWorkspaces() {

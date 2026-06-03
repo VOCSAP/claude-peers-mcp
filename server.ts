@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * claude-peers MCP server (v0.3.1)
+ * claude-peers MCP server (v0.3.4)
  *
  * Runs locally alongside Claude Code. Always uses local context detection --
  * SSH mode is removed in v0.3.1.
@@ -48,8 +48,27 @@ import {
   computeGroupSecretHash,
 } from "./shared/config.ts";
 import { writePeerIdCache } from "./shared/peer-cache.ts";
+import { DECK_PEER_ID, DECK_INSTANCE_TOKEN } from "./shared/types.ts";
 
 const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
+
+// --- Deck announcements (v0.3.4) ---
+// Messages whose sender is the reserved 'deck' sentinel are one-way operator
+// broadcasts. They must NOT trigger the default channel behaviour ("RESPOND
+// IMMEDIATELY / reply with send_message"). Since that instruction is global (not
+// per-message), the no-reply guarantee is carried inside the rendered content,
+// and reinforced by the sender being non-routable (send_message to 'deck' fails).
+// English wording for maximum model compatibility.
+const DECK_NO_REPLY_NOTE =
+  '\n\n[claude-peers] Informational only -- do NOT reply and do not call send_message toward "deck". Take it into account in your work if relevant.';
+
+function isDeckSender(idOrToken: string): boolean {
+  return idOrToken === DECK_PEER_ID || idOrToken === DECK_INSTANCE_TOKEN;
+}
+
+function renderDeckAnnouncement(text: string): string {
+  return `[Deck announcement -- operator broadcast]\n${text}${DECK_NO_REPLY_NOTE}`;
+}
 
 // --- Configuration ---
 
@@ -248,13 +267,14 @@ function connectWs() {
         text: string;
         sent_at: string;
       };
+      const fromDeck = isDeckSender(f.from_peer_id);
       try {
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: f.text,
+            content: fromDeck ? renderDeckAnnouncement(f.text) : f.text,
             meta: {
-              from_peer_id: f.from_peer_id,
+              from_peer_id: fromDeck ? DECK_PEER_ID : f.from_peer_id,
               from_summary: f.from_summary,
               from_cwd: f.from_cwd,
               from_host: f.from_host,
@@ -263,7 +283,7 @@ function connectWs() {
           },
         });
         notifiedMessageIds.add(f.id);
-        log(`Pushed message from ${f.from_peer_id}: ${f.text.slice(0, 80)}`);
+        log(`Pushed message from ${fromDeck ? DECK_PEER_ID : f.from_peer_id}: ${f.text.slice(0, 80)}`);
       } catch (e) {
         log(`Notification dispatch failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -310,14 +330,15 @@ async function pollFallback() {
       tokenToPeer = new Map(peers.map((p) => [p.instance_token, p]));
     } catch { /* non-fatal */ }
     for (const msg of fresh) {
+      const fromDeck = isDeckSender(msg.from_token);
       const peer = tokenToPeer.get(msg.from_token);
       try {
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
-            content: msg.text,
+            content: fromDeck ? renderDeckAnnouncement(msg.text) : msg.text,
             meta: {
-              from_peer_id: peer?.peer_id ?? msg.from_token,
+              from_peer_id: fromDeck ? DECK_PEER_ID : (peer?.peer_id ?? msg.from_token),
               from_summary: peer?.summary ?? "",
               from_cwd: peer?.cwd ?? "",
               from_host: peer?.host ?? "",
@@ -334,7 +355,7 @@ async function pollFallback() {
 // --- MCP server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.3.1" },
+  { name: "claude-peers", version: "0.3.4" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -635,6 +656,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         });
         const tokenToId = new Map(peers.map((p) => [p.instance_token, p.peer_id]));
         const lines = result.messages.map((m) => {
+          if (isDeckSender(m.from_token)) {
+            return `From ${DECK_PEER_ID} (${m.sent_at}):\n${renderDeckAnnouncement(m.text)}`;
+          }
           const peerId = tokenToId.get(m.from_token) ?? "<dormant peer>";
           return `From ${peerId} (${m.sent_at}):\n${m.text}`;
         });

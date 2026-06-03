@@ -139,6 +139,30 @@ export interface PollMessagesResponse {
   messages: Message[];
 }
 
+// --- Deck system sender (v0.3.4) ---
+// The desktop Deck broadcasts outbound, fire-and-forget announcements via
+// POST /announce. They are stored with a reserved, non-routable sender so peers
+// can never reply to the Deck (send_message to 'deck' fails: the reserved row is
+// dormant, and active-target resolution misses it). The sentinel from_peer_id is
+// also the server-side suppression key that renders these as "do not reply".
+
+export const DECK_INSTANCE_TOKEN: InstanceToken = "__deck__";
+export const DECK_PEER_ID: PeerId = "deck";
+/** Reserved display ids set_id must refuse, to keep the sentinel unambiguous. */
+export const RESERVED_PEER_IDS: readonly PeerId[] = ["deck", "system"];
+
+export interface AnnounceRequest {
+  group_id: GroupId;
+  group_secret_hash: string | null;
+  text: string;
+  /** Optional peer_id to exclude from the broadcast (e.g. the just-joined peer). */
+  exclude_peer_id?: PeerId | null;
+}
+
+export interface AnnounceResponse {
+  sent: number;
+}
+
 // --- Broker API: groups and identity introspection ---
 
 export interface GroupStatsRow {

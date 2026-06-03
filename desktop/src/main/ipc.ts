@@ -35,6 +35,8 @@ interface IpcDeps {
   getConfig: () => AppConfig
   setConfig: (patch: Partial<AppConfig>) => AppConfig
   getWindow: () => BrowserWindow | null
+  /** Broadcast a free-text operator message to the active group; returns peer count. */
+  announce: (text: string) => Promise<number>
 }
 
 export function registerIpc({
@@ -42,7 +44,8 @@ export function registerIpc({
   workspaces,
   getConfig,
   setConfig,
-  getWindow
+  getWindow,
+  announce
 }: IpcDeps): void {
   // ----- sessions -----
   ipcMain.handle('sessions:list', () => service.list())
@@ -99,6 +102,9 @@ export function registerIpc({
   })
   ipcMain.handle('workspace:delete', (_e, id: string) => workspaces.deleteWs(id))
   ipcMain.handle('workspace:current', () => workspaces.currentWorkspaceId)
+
+  // ----- announce (outbound megaphone) -----
+  ipcMain.handle('announce:send', (_e, text: string) => announce(text ?? ''))
 
   // ----- create-menu data -----
   ipcMain.handle('agents:list', () => listAgents(getConfig().projectDir))

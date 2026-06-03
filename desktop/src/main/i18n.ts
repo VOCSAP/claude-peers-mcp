@@ -124,6 +124,12 @@ export const EN_DEFAULTS: Record<string, string> = {
   'modebar.countOne': '{n} session',
   'modebar.countOther': '{n} sessions',
 
+  'message.placeholder': 'Message all peers in the group…',
+  'message.send': 'Send',
+  'message.sendTitle': 'Broadcast to all peers (Enter to send, Shift+Enter for a newline)',
+  'toast.announceSent': 'Message sent to the group',
+  'toast.announceNoPeers': 'No peers to receive the message',
+
   'create.title': 'New peer session',
   'create.agent': 'Agent',
   'create.agentDefault': 'default (none)',
@@ -136,6 +142,10 @@ export const EN_DEFAULTS: Record<string, string> = {
   'create.effortSmarter': 'Smarter',
   'create.extraArgs': 'Extra launch args',
   'create.extraArgsPlaceholder': 'e.g. --add-dir ..',
+  'create.announce': 'Join announcement',
+  'create.announcePlaceholder': 'agent: …, model: …, effort: …',
+  'create.announceHelp':
+    "Broadcast to the group's peers once this session joins, with its peer_id. Edit freely.",
   'create.presets': 'Presets',
   'create.customColour': 'Custom colour',
   'create.colourTitle': 'Click to choose a custom colour',

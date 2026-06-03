@@ -301,6 +301,54 @@ body {
   color: var(--danger);
 }
 
+/* Outbound megaphone: broadcast box + send button above the footer. */
+.message-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.message-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  resize: none;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.message-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.send-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.send-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .sidebar-foot {
   display: flex;
   flex-direction: column;
@@ -640,6 +688,7 @@ button {
 .field input[type='text'],
 .field input:not([type]),
 .field input[type='number'],
+.field textarea,
 .field select {
   font: inherit;
   background: var(--bg);
@@ -647,6 +696,11 @@ button {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
+}
+
+.field textarea.announce-input {
+  resize: vertical;
+  min-height: 38px;
 }
 
 .field-row {

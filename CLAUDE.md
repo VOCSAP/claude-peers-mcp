@@ -4,9 +4,9 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
-# claude-peers (v0.3.3)
+# claude-peers (v0.3.4)
 
-Peer discovery and messaging MCP channel for Claude Code instances. v0.3 introduces group isolation (TOFU), resumable identity, WebSocket push, and a dual `instance_token` / `peer_id` model. v0.3.1 adds server-side auto-disconnect (SIGTERM/stdin EOF + broker sweeps). v0.3.2 restores the status-line `peer_id` cache that v0.3 lost when the SSH `client.ts` was removed, and drops the SessionEnd bash hook. v0.3.3 hardens delivery against the "backlog avalanche on reconnect" pattern observed in production: three cumulative mechanics (heuristic ack on `send_message`, capped WS flush, TTL purge of stale undelivered messages) eliminate the symptom where a peer reopening on a known cwd received the entire historical backlog at once.
+Peer discovery and messaging MCP channel for Claude Code instances. v0.3 introduces group isolation (TOFU), resumable identity, WebSocket push, and a dual `instance_token` / `peer_id` model. v0.3.1 adds server-side auto-disconnect (SIGTERM/stdin EOF + broker sweeps). v0.3.2 restores the status-line `peer_id` cache that v0.3 lost when the SSH `client.ts` was removed, and drops the SessionEnd bash hook. v0.3.3 hardens delivery against the "backlog avalanche on reconnect" pattern observed in production: three cumulative mechanics (heuristic ack on `send_message`, capped WS flush, TTL purge of stale undelivered messages) eliminate the symptom where a peer reopening on a known cwd received the entire historical backlog at once. v0.3.4 adds Deck-driven outbound announcements: a new broker `POST /announce` broadcasts one-way, no-reply system messages to a group from a reserved non-routable `deck` sender (auto join announcement when a session's peer_id resolves + free-text operator broadcasts from the Deck sidebar); `server.ts` renders `from_peer_id == 'deck'` messages as "informational only, do not reply", and `set_id` refuses the reserved names `deck`/`system`.
 
 ## Architecture
 
@@ -23,7 +23,9 @@ Two entrypoints. Two deployment modes (local-only / HTTP).
 - `broker.ts` -- singleton HTTP + WebSocket daemon on `<BIND_HOST>:<port>` + SQLite.
   v0.3.2 endpoints: `/register`, `/heartbeat`, `/set-summary`, `/disconnect`,
   `/unregister`, `/set-id`, `/list-peers`, `/send-message`, `/poll-messages`,
-  `/peek-messages`, `/group-stats`, plus the `/ws` upgrade. Two cleanup timers:
+  `/peek-messages`, `/group-stats`, plus the `/ws` upgrade. v0.3.4 adds `/announce`
+  (Deck outbound broadcast to a group from the reserved `deck` sender; see
+  "Deck announcements" below). Two cleanup timers:
   `cleanStalePeers` (every `CLAUDE_PEERS_CLEAN_INTERVAL_SEC` = 30s default:
   same-host PID-dead -> dormant via `process.kill(pid, 0)`, dormant past 24h ->
   DELETE cascade; cross-host peers where `peer.host != hostname()` are skipped in
@@ -52,6 +54,15 @@ Three cumulative mechanics in `broker.ts` to eliminate the "backlog avalanche on
 - **C. TTL purge** (`purgeOldMessages`): a sweep at boot and every `CLAUDE_PEERS_PURGE_INTERVAL_SEC=3600` deletes `delivered=0` rows older than `CLAUDE_PEERS_MESSAGE_TTL_DAYS=7`. `delivered=1` is never purged. Manual trigger: `GET /admin/purge-messages` (returns `{ purged, cutoff_days }`).
 
 The fire-and-forget contract from v0.3 stays intact: WS push never marks `delivered=1`. Only `check_messages` and mechanic A do, plus the TTL purge removes orphaned old undelivered rows. All four new ENV vars (`CLAUDE_PEERS_FLUSH_MAX_COUNT`, `CLAUDE_PEERS_FLUSH_MAX_AGE_HOURS`, `CLAUDE_PEERS_MESSAGE_TTL_DAYS`, `CLAUDE_PEERS_PURGE_INTERVAL_SEC`) are documented in `README.md`.
+
+## Deck announcements (v0.3.4)
+
+The desktop Deck is a one-way (outbound-only) broker participant: it broadcasts but never reads inbound peer traffic. Two triggers share one transport.
+
+- **Broker `POST /announce`** (`handleAnnounce`): body `{ group_id, group_secret_hash, text, exclude_peer_id? }`. TOFU-validates an existing non-default group's secret (401 on mismatch), then inserts one `delivered=0` message per active peer in the group from the reserved sender, WS-pushing each connected target (fire-and-forget, never marks delivered). Returns `{ sent: N }`. `exclude_peer_id` skips a peer (used so a just-joined peer does not receive its own join announcement). Empty group -> `{ sent: 0 }`.
+- **Reserved `deck` sender**: `DECK_INSTANCE_TOKEN='__deck__'` / `DECK_PEER_ID='deck'` (in `shared/types.ts`). `messages.from_token` has a NOT NULL FK to `peers`, so a permanently-`dormant` reserved peer row is seeded at boot to satisfy it. The row never surfaces in `list_peers`/`group-stats` (both filter `status='active'`) and is exempt from the dormant TTL purge in `cleanStalePeers`. `set_id` rejects the reserved names `deck`/`system` (`RESERVED_PEER_IDS`).
+- **No-reply rendering** (`server.ts`, `isDeckSender`/`renderDeckAnnouncement`): any received message whose sender is the `deck` sentinel is rendered with an English "informational only -- do not reply, do not send_message toward 'deck'" framing in all three receive paths (WS push, fallback poll, `check_messages`), suppressing the channel's default reply nudge. Replies are also structurally impossible (the sentinel has no active target).
+- **Desktop wiring**: `desktop/src/main/broker-client.ts` resolves the broker endpoint from the claude-peers config (Node fs, since `shared/config.ts` uses `Bun.file`) and POSTs `/announce`; `desktop/src/shared/announce.ts` composes the join text (`composeJoinAnnounce`, `defaultAnnounceDraft`). `SessionService` emits `peer-resolved` once on a fresh session's first peer_id resolution (never on restore); `index.ts` broadcasts the join announce (excluding the joiner). The sidebar `MessageBar` + IPC `announce:send` handle free-text operator broadcasts to the active window's group. Per-peer targeting (checkboxes) is deferred.
 
 ## Identity model (v0.3)
 
