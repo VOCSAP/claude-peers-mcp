@@ -46,6 +46,43 @@ export function sanitizeSessionId(sessionId: string | undefined | null): string 
 }
 
 /**
+ * Filename of the Deck back-channel file for a per-tile token. The Deck injects
+ * a unique CLAUDE_PEERS_DESK_SESSION token per terminal tile; server.ts writes
+ * the REAL minted CLAUDE_CODE_SESSION_ID here at /register so the Deck can map a
+ * tile to its exact session id deterministically (no transcript-diff guessing).
+ * Lives in the same ~/.claude/peers dir as the peer-id cache.
+ */
+export function deskSessionFileName(token: string): string {
+  return `desk-session-${sanitizeSessionId(token)}.txt`;
+}
+
+/**
+ * Deck back-channel writer. No-op unless BOTH CLAUDE_PEERS_DESK_SESSION (the
+ * per-tile token set by the Deck) and CLAUDE_CODE_SESSION_ID (the real minted id,
+ * set by Claude Code >= 2.x) are present. When both are set, writes the real id
+ * to $HOME/.claude/peers/desk-session-<token>.txt, overwritten on every
+ * /register so a resume captures the fresh (post-fork) minted id. Best-effort:
+ * failures are silent so it never breaks the /register flow. Independent of the
+ * status-line cache opt-in -- the token's presence is the gate, so non-Deck CLI
+ * usage (token unset) writes nothing.
+ */
+export async function writeDeskSessionId(
+  home: string = homedir(),
+  env: Record<string, string | undefined> = process.env,
+): Promise<void> {
+  const token = sanitizeSessionId(env.CLAUDE_PEERS_DESK_SESSION);
+  const sessionId = (env.CLAUDE_CODE_SESSION_ID ?? "").trim();
+  if (!token || !sessionId) return;
+  try {
+    const cacheDir = join(home, ".claude", "peers");
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, deskSessionFileName(token)), sessionId, "utf-8");
+  } catch {
+    // best-effort: the Deck falls back to transcript discovery if absent
+  }
+}
+
+/**
  * Write the current peer_id to the cache file consumed by status-line.sh,
  * when opt-in via CLAUDE_PEERS_STATUS_LINE_CACHE.
  *

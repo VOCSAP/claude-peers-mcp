@@ -5,8 +5,10 @@ import { join } from "node:path";
 
 import {
   computeCwdKey,
+  deskSessionFileName,
   isPeerIdCacheEnabled,
   sanitizeSessionId,
+  writeDeskSessionId,
   writePeerIdCache,
 } from "../shared/peer-cache";
 
@@ -143,6 +145,78 @@ describe("writePeerIdCache", () => {
     });
     const file = join(tmpHome, ".claude", "peers", "peer-id-_repo-abc____etc.txt");
     expect(await readFile(file, "utf-8")).toBe("peer-S");
+  });
+});
+
+describe("deskSessionFileName", () => {
+  test("formats desk-session-<sanitized-token>.txt", () => {
+    expect(deskSessionFileName("tile-123")).toBe("desk-session-tile-123.txt");
+    expect(deskSessionFileName("a/b c")).toBe("desk-session-a_b_c.txt");
+  });
+});
+
+describe("writeDeskSessionId", () => {
+  let tmpHome: string;
+
+  beforeEach(async () => {
+    tmpHome = await mkdtemp(join(tmpdir(), "cp-desk-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmpHome, { recursive: true, force: true });
+  });
+
+  const file = (home: string, token: string): string =>
+    join(home, ".claude", "peers", `desk-session-${token}.txt`);
+
+  test("writes the real session id to desk-session-<token>.txt when both env vars set", async () => {
+    await writeDeskSessionId(tmpHome, {
+      CLAUDE_PEERS_DESK_SESSION: "tile-A",
+      CLAUDE_CODE_SESSION_ID: "23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1",
+    });
+    expect(await readFile(file(tmpHome, "tile-A"), "utf-8")).toBe(
+      "23c2dc97-d254-4ec8-9cd9-8bc0b4ad3ba1",
+    );
+  });
+
+  test("is a no-op when the token (CLAUDE_PEERS_DESK_SESSION) is unset", async () => {
+    await writeDeskSessionId(tmpHome, { CLAUDE_CODE_SESSION_ID: "abc" });
+    await expect(stat(join(tmpHome, ".claude"))).rejects.toThrow();
+  });
+
+  test("is a no-op when CLAUDE_CODE_SESSION_ID is unset/empty (no garbage id)", async () => {
+    await writeDeskSessionId(tmpHome, { CLAUDE_PEERS_DESK_SESSION: "tile-A", CLAUDE_CODE_SESSION_ID: "" });
+    await expect(stat(join(tmpHome, ".claude"))).rejects.toThrow();
+  });
+
+  test("overwrites a stale id (resume captures the fresh minted id)", async () => {
+    await writeDeskSessionId(tmpHome, { CLAUDE_PEERS_DESK_SESSION: "t", CLAUDE_CODE_SESSION_ID: "old-id" });
+    await writeDeskSessionId(tmpHome, { CLAUDE_PEERS_DESK_SESSION: "t", CLAUDE_CODE_SESSION_ID: "new-id" });
+    expect(await readFile(file(tmpHome, "t"), "utf-8")).toBe("new-id");
+  });
+
+  test("sanitizes an unsafe token before using it as a filename", async () => {
+    await writeDeskSessionId(tmpHome, {
+      CLAUDE_PEERS_DESK_SESSION: "a/../b",
+      CLAUDE_CODE_SESSION_ID: "real",
+    });
+    expect(await readFile(file(tmpHome, "a____b"), "utf-8")).toBe("real");
+  });
+
+  test("two tiles in the same cwd keep distinct token files (D1 fix)", async () => {
+    await writeDeskSessionId(tmpHome, { CLAUDE_PEERS_DESK_SESSION: "tileA", CLAUDE_CODE_SESSION_ID: "id-A" });
+    await writeDeskSessionId(tmpHome, { CLAUDE_PEERS_DESK_SESSION: "tileB", CLAUDE_CODE_SESSION_ID: "id-B" });
+    expect(await readFile(file(tmpHome, "tileA"), "utf-8")).toBe("id-A");
+    expect(await readFile(file(tmpHome, "tileB"), "utf-8")).toBe("id-B");
+  });
+
+  test("silently swallows errors when home is unwritable", async () => {
+    await expect(
+      writeDeskSessionId("\0not-a-real-home", {
+        CLAUDE_PEERS_DESK_SESSION: "t",
+        CLAUDE_CODE_SESSION_ID: "id",
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 

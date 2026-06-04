@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type {
   AppConfig,
   CreateSessionInput,
@@ -15,6 +16,7 @@ import { buildSessionCommandLine, type SpawnMode } from './session-command'
 import { ThinkingDetector, type ThinkingEvent } from './thinking'
 import { OpenIdRegistry } from './open-id-registry'
 import { listTranscriptIds, pickDiscoveredId, transcriptExists } from './session-transcript'
+import { clearDeskSessionId, readDeskSessionId } from './desk-session'
 import { DEFAULT_PALETTE, paletteColor } from '@shared/palette'
 import { reconcileOrder } from '@shared/reorder'
 import type { JoinAnnounceIntent } from '@shared/announce'
@@ -333,24 +335,46 @@ export class SessionService extends EventEmitter {
    * then adopt it as def.sessionId so the next resume targets the right transcript.
    * Aborts if the PTY dies first or the deadline passes.
    */
+  /** ~/.claude/peers dir, derived from the injected home so tests can redirect it. */
+  private peersDir(): string {
+    return join(this.home, '.claude', 'peers')
+  }
+
   private async discoverRealId(def: SessionDef, before: Set<string>): Promise<void> {
     const placeholder = def.sessionId
     const deadline = Date.now() + DISCOVERY_DEADLINE_MS
     while (Date.now() < deadline) {
       await new Promise((res) => setTimeout(res, DISCOVERY_POLL_MS))
-      if (!this.pty.isAlive(def.id)) return // died before writing a transcript
+      if (!this.pty.isAlive(def.id)) return // died before writing anything
+
+      // Preferred: the deterministic back-channel file keyed by this tile's token
+      // (CLAUDE_PEERS_DESK_SESSION = def.id). server.ts writes the real minted id
+      // there at /register, so there is no same-cwd ambiguity (D1/D2/D10).
+      const back = readDeskSessionId(def.id, this.peersDir())
+      if (back && back !== def.sessionId) {
+        this.adoptRealId(def, placeholder, back)
+        return
+      }
+
+      // Fallback for an older core without the back-channel writer: pick the
+      // newest unclaimed transcript that appeared since spawn.
       const claimed = this.registry.snapshot()
       claimed.delete(placeholder) // our own placeholder must not block the match
       const realId = pickDiscoveredId(listTranscriptIds(this.home, def.cwd), before, claimed)
       if (realId && realId !== def.sessionId) {
-        this.registry.release(placeholder)
-        def.sessionId = realId
-        this.registry.add(realId)
-        this.persist()
-        this.broadcast()
+        this.adoptRealId(def, placeholder, realId)
         return
       }
     }
+  }
+
+  /** Swap a session's placeholder id for the discovered real one + persist/notify. */
+  private adoptRealId(def: SessionDef, placeholder: string, realId: string): void {
+    this.registry.release(placeholder)
+    def.sessionId = realId
+    this.registry.add(realId)
+    this.persist()
+    this.broadcast()
   }
 
   private startPty(def: SessionDef, mode: SpawnMode): void {
@@ -392,11 +416,15 @@ export class SessionService extends EventEmitter {
     }
     // sessionId may have just changed (fork-resume) -> persist before/after spawn.
     this.persist()
+    // Drop any stale back-channel file from a previous run so discovery cannot
+    // read an old id; the core rewrites it with the fresh minted id at register.
+    clearDeskSessionId(def.id, this.peersDir())
     this.pty.spawn(
       def.id,
       def.cwd,
       { command, shell: cfg.shell, interactive: cfg.interactiveShell },
-      this.getScopeEnv()
+      // Per-tile token: server.ts writes the real session id keyed by it (D1/D2/D10).
+      { ...this.getScopeEnv(), CLAUDE_PEERS_DESK_SESSION: def.id }
     )
   }
 

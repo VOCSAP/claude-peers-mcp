@@ -47,7 +47,7 @@ import {
   computeGroupId,
   computeGroupSecretHash,
 } from "./shared/config.ts";
-import { writePeerIdCache } from "./shared/peer-cache.ts";
+import { writePeerIdCache, writeDeskSessionId } from "./shared/peer-cache.ts";
 import { DECK_PEER_ID, DECK_INSTANCE_TOKEN } from "./shared/types.ts";
 
 const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
@@ -792,6 +792,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         myGroupId = newGroupId;
         myRegisteredAt = new Date().toISOString();
         await writePeerIdCache(myCwd, myPeerId);
+        await writeDeskSessionId();
         connectWs();
         return {
           content: [
@@ -909,6 +910,9 @@ async function main() {
   myPeerId = reg.peer_id;
   myRegisteredAt = new Date().toISOString();
   await writePeerIdCache(myCwd, myPeerId);
+  // Deck back-channel: hand the real minted session id to the per-tile token file
+  // so the Deck maps tile -> session id deterministically (no-op outside the Deck).
+  await writeDeskSessionId();
   log(`Registered as peer '${myPeerId}' (instance ${myInstanceToken.slice(0, 8)})`);
 
   // Background summary upgrade.
