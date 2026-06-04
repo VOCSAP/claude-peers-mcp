@@ -151,8 +151,8 @@ workspace's scope without relaunching.
   new transcript under `~/.claude/projects/<encoded-cwd>/`) and persists it, and
   on restore resumes only when a transcript exists (else starts fresh). Spawning
   is always **instant and parallel** -- discovery never blocks a terminal from
-  appearing. See [`docs/debt-deferred.md`](../docs/debt-deferred.md) (D1/D2) for
-  the deterministic refinement.
+  appearing. The deterministic refinement (D1/D2) is tracked in the
+  maintainers' local notes.
 
 ### Peer id display
 
@@ -367,7 +367,7 @@ bin/launch.js             the `claude-peers-desk` launcher
 
 ## Known limitations
 
-Tracked in [`docs/debt-deferred.md`](../docs/debt-deferred.md). The most
+Tracked in the maintainers' local notes. The most
 relevant for daily use: tile <-> conversation attribution can be permuted when
 many sessions in the **same folder** are restored at once (every conversation
 still comes back; only the tile label may map to a different one). A
