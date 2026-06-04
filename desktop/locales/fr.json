@@ -22,6 +22,7 @@
   "sidebar.sessionColour": "Couleur de la session",
   "sidebar.renameTitle": "Renommer",
   "sidebar.removeTitle": "Retirer",
+  "sidebar.copyPeerId": "Copier peer id",
 
   "status.running": "en cours",
   "status.starting": "démarrage",
@@ -56,6 +57,7 @@
   "saveas.duplicate": "Un espace porte déjà ce nom",
   "toast.workspaceSaved": "Espace enregistré",
   "toast.alreadyOpen": "Session déjà ouverte",
+  "toast.peerIdCopied": "peer id copié",
 
   "tile.expiredTitle": "Session expirée",
   "tile.expiredBody": "Son transcript a disparu. Démarre une nouvelle session avec la même configuration.",

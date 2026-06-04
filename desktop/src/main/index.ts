@@ -16,8 +16,17 @@ import { resolveLaunchConfig } from './launch-config'
 import { WorkspaceService } from './workspace-service'
 import { resolveBrokerEndpoint, sendAnnounce } from './broker-client'
 import { composeJoinAnnounce, type JoinAnnounceIntent } from '@shared/announce'
+import { APP_STATE_SUBDIR, runDataMigration } from './migrate-data-dir'
 
 let mainWindow: BrowserWindow | null = null
+
+// Harmonize the app-data folder on a single "claude-peers-desk" root (it was
+// historically split: Electron userData in "claude-peers-deck", launch config +
+// templates in "claude-peers-desk"). Must run before any getPath('userData') /
+// loadConfig() below. App state now lives under <userData>/config to avoid
+// colliding with the launch config.json at the root.
+app.setName('claude-peers-desk')
+runDataMigration({ userDataDir: app.getPath('userData') })
 
 // Resolve the launch context (invocation cwd + optional custom scope id) and
 // scope new sessions to that project dir. The override stays in-memory so the
@@ -40,7 +49,7 @@ const secretCipher: SecretCipher = {
   encrypt: (plain) => safeStorage.encryptString(plain),
   decrypt: (buf) => safeStorage.decryptString(buf)
 }
-const secretsDir = (): string => app.getPath('userData')
+const secretsDir = (): string => join(app.getPath('userData'), APP_STATE_SUBDIR)
 
 // If this window was launched with a custom scope, remember its secret (opt-out
 // via the rememberScopeSecrets setting). The plaintext never hits disk -- only

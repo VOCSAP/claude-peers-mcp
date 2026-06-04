@@ -1000,6 +1000,54 @@ code {
   margin: 0 0 14px;
 }
 
+/* Right-click menu (Sidebar session rows). Transparent full-screen backdrop
+   captures the outside click; the menu itself is anchored at the cursor. */
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+
+.context-menu {
+  position: fixed;
+  min-width: 160px;
+  max-width: calc(100vw - 16px);
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.context-menu-item:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+}
+
+.context-menu-item-danger:hover:not(:disabled) {
+  color: var(--danger);
+}
+
 .preset-row {
   display: flex;
   flex-wrap: wrap;

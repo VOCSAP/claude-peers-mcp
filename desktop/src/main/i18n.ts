@@ -38,6 +38,7 @@ export const EN_DEFAULTS: Record<string, string> = {
   'sidebar.sessionColour': 'Session colour',
   'sidebar.renameTitle': 'Rename',
   'sidebar.removeTitle': 'Remove',
+  'sidebar.copyPeerId': 'Copy peer id',
 
   'status.running': 'running',
   'status.starting': 'starting',
@@ -77,6 +78,7 @@ export const EN_DEFAULTS: Record<string, string> = {
   'saveas.duplicate': 'A workspace with this name already exists',
   'toast.workspaceSaved': 'Workspace saved',
   'toast.alreadyOpen': 'Session already open',
+  'toast.peerIdCopied': 'peer id copied',
 
   'tile.expiredTitle': 'Session expired',
   'tile.expiredBody': 'Its transcript is gone. Start a new session with the same setup.',

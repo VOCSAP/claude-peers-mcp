@@ -4,6 +4,7 @@ import { moveBeside } from '@shared/reorder'
 import { useDeck } from '../store'
 import { useT } from '../i18n'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ContextMenu } from './ContextMenu'
 import { CreateMenu } from './CreateMenu'
 import { MessageBar } from './MessageBar'
 
@@ -26,10 +27,19 @@ function SessionRow({ session, dnd }: { session: SessionRuntime; dnd: RowDnd }):
   const removeSession = useDeck((s) => s.removeSession)
   const renameSession = useDeck((s) => s.renameSession)
   const setColor = useDeck((s) => s.setColor)
+  const showToast = useDeck((s) => s.showToast)
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.name)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  // Right-click menu anchor (viewport coords), or null when closed.
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+
+  const copyPeerId = (): void => {
+    if (!session.peerId) return
+    void navigator.clipboard.writeText(session.peerId)
+    showToast('toast.peerIdCopied')
+  }
 
   const commit = (): void => {
     setEditing(false)
@@ -61,6 +71,11 @@ function SessionRow({ session, dnd }: { session: SessionRuntime; dnd: RowDnd }):
       onDrop={(e) => dnd.onDrop(e, session.id)}
       onDragEnd={dnd.onDragEnd}
       onClick={() => setSelected(session.id)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        setSelected(session.id)
+        setMenuPos({ x: e.clientX, y: e.clientY })
+      }}
       onDoubleClick={(e) => {
         // Mirror the tile head: double-click toggles maximize. Ignore
         // double-clicks that land on a button/input (they own their gesture).
@@ -154,6 +169,20 @@ function SessionRow({ session, dnd }: { session: SessionRuntime; dnd: RowDnd }):
           }}
         />
       )}
+      {menuPos && (
+        <ContextMenu
+          x={menuPos.x}
+          y={menuPos.y}
+          onClose={() => setMenuPos(null)}
+          items={[
+            {
+              label: t('sidebar.copyPeerId'),
+              onSelect: copyPeerId,
+              disabled: !session.peerId
+            }
+          ]}
+        />
+      )}
     </li>
   )
 }
@@ -166,6 +195,7 @@ export function Sidebar(): React.JSX.Element {
   const reorderSessions = useDeck((s) => s.reorderSessions)
   const openSettings = useDeck((s) => s.openSettings)
   const openWorkspaces = useDeck((s) => s.openWorkspaces)
+  const currentWorkspaceName = useDeck((s) => s.currentWorkspaceName)
   const setSidebarWidth = useDeck((s) => s.setSidebarWidth)
   const updateConfig = useDeck((s) => s.updateConfig)
   const [createOpen, setCreateOpen] = useState(false)
@@ -213,7 +243,11 @@ export function Sidebar(): React.JSX.Element {
   return (
     <aside className="sidebar">
       <header className="sidebar-head">
-        <span className="brand">{t('app.brand')}</span>
+        {/* Show the current workspace name next to the workspaces icon; fall
+            back to the app brand when no workspace is active. */}
+        <span className="brand" title={t('app.brand')}>
+          {currentWorkspaceName || t('app.brand')}
+        </span>
         <button
           className="icon-btn"
           title={t('sidebar.workspaces')}

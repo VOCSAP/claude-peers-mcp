@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AppConfig, SessionDef } from '@shared/types'
 import { DEFAULT_PALETTE } from '@shared/palette'
+import { APP_STATE_SUBDIR } from './migrate-data-dir'
 
 const DEFAULT_CONFIG: AppConfig = {
   projectDir: homedir(),
@@ -27,7 +28,10 @@ const DEFAULT_CONFIG: AppConfig = {
 }
 
 function dataDir(): string {
-  const dir = app.getPath('userData')
+  // App state lives under a `config/` subfolder of userData so it never
+  // collides with the launch `config.json` at the userData root (which is the
+  // same folder as the launch-config dir on Windows/Linux). See migrate-data-dir.
+  const dir = join(app.getPath('userData'), APP_STATE_SUBDIR)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   return dir
 }

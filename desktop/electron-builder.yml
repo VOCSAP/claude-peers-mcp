@@ -1,4 +1,4 @@
-appId: com.vocsap.claude-peers-deck
+appId: com.vocsap.claude-peers-desk
 productName: Claude Peers Deck
 # Space-free binary name (convenient on PATH); productName stays the display
 # name (window title, Start-menu shortcut, installer filename).
