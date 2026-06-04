@@ -52,3 +52,5 @@ docs/superpowers/
 *.memory.md
 .kleos-space
 .claude/settings.json
+AGENTS.md
+.codex/config.toml
