@@ -25,6 +25,11 @@ discovery.
   touches the repo or `ps` (a chmod-600 temp file by default).
 - **Save & restore workspaces.** Close the app and reopen it; restore the
   previous session set and each tile resumes its Claude conversation.
+- **Outbound megaphone.** The window can broadcast one-way, no-reply system
+  messages to its group: an automatic join announcement when a tile's `peer_id`
+  resolves, plus free-text operator broadcasts typed into the sidebar message
+  bar. Peers receive them framed as "informational only -- do not reply"; the
+  Deck never reads inbound peer traffic.
 - **English / French UI**, switchable live.
 
 ---
@@ -80,6 +85,10 @@ cd desktop && npm run dev        # dev mode (renderer HMR)
   live **`peer_id`** (or `Session <id>` until it resolves).
 - Per-row **maximize** and **remove** (with a confirm dialog). Drag the right
   edge to **resize** the sidebar.
+- **Message bar** (bottom) -- type a line and broadcast it as a one-way,
+  no-reply announcement to every peer in this window's group (the outbound
+  megaphone). Per-peer targeting is not wired yet; a broadcast reaches all
+  active peers.
 - Header buttons: **🗂 Workspaces** and **⚙ Settings**.
 
 ### Tile area (right)
@@ -145,14 +154,23 @@ workspace's scope without relaunching.
 
 - A new session launches with `--session-id <uuid>`; a restore forks the stored
   id (`--resume <id> --fork-session`).
-- **Caveat (important):** Claude Code mints its own session id when run
-  interactively with an MCP loaded, and writes its transcript only after real
-  activity. The app therefore **discovers the real id in the background** (newest
-  new transcript under `~/.claude/projects/<encoded-cwd>/`) and persists it, and
-  on restore resumes only when a transcript exists (else starts fresh). Spawning
-  is always **instant and parallel** -- discovery never blocks a terminal from
-  appearing. The deterministic refinement (D1/D2) is tracked in the
-  maintainers' local notes.
+- **How the real id is learned (deterministic back-channel).** Claude Code mints
+  its own session id when run interactively with an MCP loaded, so the launch
+  `--session-id` is not the id it ends up using. The Deck injects a unique
+  per-tile token (`CLAUDE_PEERS_DESK_SESSION`) into each PTY; the claude-peers
+  core `server.ts`, at `/register`, writes the **real** minted
+  `CLAUDE_CODE_SESSION_ID` to `~/.claude/peers/desk-session-<token>.txt`
+  (`shared/peer-cache.ts:writeDeskSessionId`). The Deck reads that file
+  (`src/main/desk-session.ts`) to map a tile to its exact id with **no
+  transcript-diff guessing** -- deterministic even when several tiles boot in the
+  same cwd at once. The token file is cleared before each (re)spawn so a stale id
+  is never picked up.
+- **Fallback:** against an older core that does not write the back-channel file,
+  the Deck still **discovers the id in the background** (newest new transcript
+  under `~/.claude/projects/<encoded-cwd>/`) and persists it; on restore it
+  resumes only when a transcript exists (else starts fresh). Spawning is always
+  **instant and parallel** -- neither the back-channel read nor transcript
+  discovery ever blocks a terminal from appearing.
 
 ### Peer id display
 
@@ -338,8 +356,11 @@ src/
     shell-command.ts      pure shell-invocation builder (login vs interactive)
     session-service.ts    session list, runtime state, spawn + background id discovery
     session-transcript.ts encode cwd -> projects dir, transcript existence + discovery
+    desk-session.ts       read/clear the deterministic per-tile session-id back-channel
     open-id-registry.ts   guard against resuming the same id twice
     peer-state.ts         resolve peer_id from the status-line cache
+    broker-client.ts      resolve broker endpoint + POST /announce (outbound megaphone)
+    migrate-data-dir.ts   harmonize the %APPDATA% deck/desk folders (app state under config/)
     workspace-store.ts    in-repo workspace JSON (save/list/load/delete)
     workspace-lock.ts     sidecar <id>.lock liveness (heartbeat / pid)
     workspace-session-map.ts  SessionDef <-> persisted WorkspaceSession
@@ -351,11 +372,12 @@ src/
     ipc.ts                IPC handlers + event forwarding
   preload/                contextBridge -> window.api (typed DeckApi)
   renderer/               React UI
-    components/            Sidebar, CreateMenu, TileArea, TerminalTile,
+    components/            Sidebar, CreateMenu, MessageBar, TileArea, TerminalTile,
                            DisplayModeBar, SettingsDialog, WorkspacesDialog, ...
     i18n.ts                renderer t() bound to the main-served dict
     store.ts               zustand store
   shared/types.ts         types shared across processes
+  shared/announce.ts      compose the join / operator announce text
 locales/                  en.json, fr.json
 bin/
   launch.js               dev CLI launcher (npm link) -> spawns electron
@@ -367,8 +389,10 @@ bin/launch.js             the `claude-peers-desk` launcher
 
 ## Known limitations
 
-Tracked in the maintainers' local notes. The most
-relevant for daily use: tile <-> conversation attribution can be permuted when
-many sessions in the **same folder** are restored at once (every conversation
-still comes back; only the tile label may map to a different one). A
-deterministic fix (a per-tile back-channel via `server.ts`) is planned.
+Tile <-> conversation attribution in the **same folder** is now handled by the
+deterministic per-tile back-channel (see [Sessions, ids and restore](#sessions-ids-and-restore)):
+each tile learns its exact session id from `server.ts`, so labels no longer get
+permuted when many sessions are restored at once. The transcript-diff path
+remains only as a fallback for an older core that does not write the back-channel
+file -- in that degraded case the historical caveat still applies (every
+conversation comes back, but a label may map to a different one).

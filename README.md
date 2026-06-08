@@ -379,7 +379,7 @@ Every setting can be provided via an environment variable or via a JSON settings
 | `CLAUDE_PEERS_BROKER_URL`            | `broker_url`           | (none)                               | server                | HTTP mode: direct broker URL (e.g. `http://my-server:7899`). Overrides loopback. |
 | `CLAUDE_PEERS_BROKER_TOKEN`          | `broker_token`         | (none)                               | broker + server       | Bearer token for broker auth. Broker requires it on all requests (except `/health`); server sends it on every call. |
 | `CLAUDE_PEERS_BIND_HOST`             | `bind_host`            | `127.0.0.1`                          | broker                | Broker bind address. Set `0.0.0.0` to accept external connections.     |
-| `CLAUDE_PEERS_STATUS_LINE_CACHE`     | (n/a)                  | (unset = off)                        | server                | Opt-in: when truthy (`1`, `true`, `yes`, `on`, case-insensitive), `server.ts` writes the active `peer_id` to `$HOME/.claude/peers/peer-id-<cwd_key>.txt` on every register so a status-line script can read it. Any other value (or unset) disables the write. See [Status-line integration](#status-line-integration). |
+| `CLAUDE_PEERS_STATUS_LINE_CACHE`     | (n/a)                  | (unset = off)                        | server                | Opt-in: when truthy (`1`, `true`, `yes`, `on`, case-insensitive), `server.ts` writes the active `peer_id` to `$HOME/.claude/peers/peer-id-<cwd_key>-<session_id>.txt` (per-session, from `CLAUDE_CODE_SESSION_ID`) on every register so a status-line script can read it; it falls back to the legacy `peer-id-<cwd_key>.txt` when the session id is unset. Any other value (or unset) disables the write. See [Status-line integration](#status-line-integration). |
 
 ### Example settings file (with groups)
 
@@ -453,24 +453,34 @@ export CLAUDE_PEERS_STATUS_LINE_CACHE=1
 When enabled, `server.ts` writes the active `peer_id` to:
 
 ```
-$HOME/.claude/peers/peer-id-<cwd_key>.txt
+$HOME/.claude/peers/peer-id-<cwd_key>-<session_id>.txt   # Claude Code >= 2.x (CLAUDE_CODE_SESSION_ID set)
+$HOME/.claude/peers/peer-id-<cwd_key>.txt                # legacy fallback (session id unset)
 ```
 
-on every successful `/register` (initial registration and group switches). `<cwd_key>` is computed from `cwd` by replacing every non-alphanumeric character (except `-`) with `_` and keeping the last 40 characters (the same rule a status-line script should use to look the file up).
+on every successful `/register` (initial registration and group switches). `<cwd_key>` is computed from `cwd` by replacing every non-alphanumeric character (except `-`) with `_` and keeping the last 40 characters. `<session_id>` is `CLAUDE_CODE_SESSION_ID` sanitized to `[A-Za-z0-9-]` (capped at 64 chars) -- this is what lets several sessions sharing the same cwd each keep their own `peer_id` file. When the session id is unset (older Claude Code, or exec outside a tool), the writer uses the legacy single-file layout.
 
-A reference status-line lookup, in POSIX bash, that matches this convention:
+A reference status-line lookup, in POSIX bash, that matches this convention -- it prefers the per-session file and falls back to the legacy one:
 
 ```bash
 get_peer_id() {
-    local sanitized cwd_key peer_id_file len offset
+    local sanitized cwd_key base session_file legacy_file len offset
     sanitized=$(printf '%s' "$CWD" | sed 's/[^a-zA-Z0-9-]/_/g')
     len=${#sanitized}
     # Explicit offset avoids the MSYS2 bash 5.2 quirk where ${str: -N}
     # returns empty when len(str) < N.
     offset=$(( len > 40 ? len - 40 : 0 ))
     cwd_key="${sanitized:$offset}"
-    peer_id_file="$HOME/.claude/peers/peer-id-${cwd_key}.txt"
-    [[ -f "$peer_id_file" ]] && cat "$peer_id_file" || echo ""
+    base="$HOME/.claude/peers/peer-id-${cwd_key}"
+    # Per-session file first (CLAUDE_CODE_SESSION_ID), then the legacy fallback.
+    session_file="${base}-${CLAUDE_CODE_SESSION_ID}.txt"
+    legacy_file="${base}.txt"
+    if [[ -n "$CLAUDE_CODE_SESSION_ID" && -f "$session_file" ]]; then
+        cat "$session_file"
+    elif [[ -f "$legacy_file" ]]; then
+        cat "$legacy_file"
+    else
+        echo ""
+    fi
 }
 ```
 
