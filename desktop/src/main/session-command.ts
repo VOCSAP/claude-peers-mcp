@@ -24,6 +24,13 @@ export interface SessionCommandInput {
    * Empty/undefined => omit the flag entirely (Claude's default effort).
    */
   effort?: string
+  /**
+   * Absolute path to the Deck's embedded plugin dir. When set, prepends
+   * `--plugin-dir "<dir>"` so the SessionStart back-channel hook loads for this
+   * session (keeps the per-tile session id current across /clear). Empty/
+   * undefined => omit the flag (no plugin). Passed on BOTH fresh and resume.
+   */
+  pluginDir?: string
   mode: SpawnMode
 }
 
@@ -33,16 +40,22 @@ function effortFlag(effort?: string): string {
   return e ? ` --effort ${e}` : ''
 }
 
+/** ` --plugin-dir "<dir>"` when a plugin dir is set, otherwise empty. */
+function pluginFlag(pluginDir?: string): string {
+  const d = pluginDir?.trim()
+  return d ? ` --plugin-dir "${d}"` : ''
+}
+
 export function buildSessionCommandLine(input: SessionCommandInput): string {
   const base = input.baseCommand.trim()
 
   if (input.mode === 'resume' && input.prevSessionId) {
     // No args / --agent / --model: Claude auto-restores them on --fork-session.
     // --effort is the exception (not auto-restored) so it is re-passed here.
-    return `${base} --resume ${input.prevSessionId} --fork-session --session-id ${input.sessionId}${effortFlag(input.effort)}`
+    return `${base}${pluginFlag(input.pluginDir)} --resume ${input.prevSessionId} --fork-session --session-id ${input.sessionId}${effortFlag(input.effort)}`
   }
 
-  let line = `${base} --session-id ${input.sessionId}`
+  let line = `${base}${pluginFlag(input.pluginDir)} --session-id ${input.sessionId}`
   const extra = input.args?.trim()
   if (extra) line += ` ${extra}`
   line += effortFlag(input.effort)

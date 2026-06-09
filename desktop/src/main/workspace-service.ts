@@ -263,6 +263,9 @@ export class WorkspaceService {
 
   private persist(name: string | undefined, pin: boolean): WorkspaceSummary {
     this.ensureCurrent()
+    // Adopt any post-discovery session-id rotation (e.g. a /clear) before
+    // snapshotting, so the saved workspace resumes the current transcript.
+    this.deps.service.refreshLiveSessionIds()
     const id = this.currentId as string
     const scope = this.deps.getScope()
     const existing = loadWorkspace(this.deps.projectDir, id)

@@ -1,0 +1,5 @@
+{
+  "name": "claude-peers-deck-backchannel",
+  "version": "0.1.0",
+  "description": "Keeps the Deck per-tile session-id back-channel in sync across in-process session-id rotations (notably /clear and compaction) that the claude-peers MCP cannot observe. Loaded by the Deck via --plugin-dir; the hook is a no-op outside a Deck tile (gated on CLAUDE_PEERS_DESK_SESSION)."
+}

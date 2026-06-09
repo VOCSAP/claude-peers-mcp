@@ -10,18 +10,19 @@
     "claude-peers-desk": "./bin/launch.js"
   },
   "scripts": {
-    "dev": "electron-vite dev",
+    "build:hook": "bun build hooks/desk-backchannel-hook.ts --target=node --outfile=deck-plugin/hooks/desk-backchannel-hook.mjs",
+    "dev": "npm run build:hook && electron-vite dev",
     "start": "electron-vite preview",
-    "build": "electron-vite build",
+    "build": "npm run build:hook && electron-vite build",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty || echo \"electron-rebuild skipped (run 'npm run rebuild' manually)\"",
-    "package": "electron-vite build && electron-builder",
-    "package:win": "electron-vite build && electron-builder --win",
-    "package:mac": "electron-vite build && electron-builder --mac",
-    "package:linux": "electron-vite build && electron-builder --linux"
+    "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {
     "node-pty": "1.1.0"

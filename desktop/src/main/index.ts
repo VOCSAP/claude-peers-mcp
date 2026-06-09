@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, Menu, nativeTheme, safeStorage, shell } from 'electron'
 import type { AppConfig } from '@shared/types'
@@ -74,7 +75,24 @@ const setConfig = (patch: Partial<AppConfig>): AppConfig => {
   return config
 }
 
-const service = new SessionService(getConfig, () => activeScopeEnv.env, launchConfig.launchCommand)
+// Embedded plugin shipping the SessionStart back-channel hook, loaded into every
+// Deck session via --plugin-dir so a /clear-minted session id is captured at save
+// (see desk-backchannel-hook + SessionService.refreshLiveSessionIds). Resolved
+// like ipc.ts locales: from process.resourcesPath when packaged, the app dir in
+// dev. Empty when the dir is missing (build skipped) so the spawn never breaks.
+const deckPluginDir = ((): string => {
+  const dir = app.isPackaged
+    ? join(process.resourcesPath, 'deck-plugin')
+    : join(app.getAppPath(), 'deck-plugin')
+  return existsSync(dir) ? dir : ''
+})()
+
+const service = new SessionService(
+  getConfig,
+  () => activeScopeEnv.env,
+  launchConfig.launchCommand,
+  deckPluginDir
+)
 
 // Outbound megaphone: broadcast a system message to every active peer in this
 // window's forced group via the broker /announce endpoint. Best-effort -- an

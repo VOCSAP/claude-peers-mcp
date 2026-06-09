@@ -18,6 +18,12 @@ asarUnpack:
 extraResources:
   - from: locales
     to: locales
+  # Embedded Claude Code plugin: the SessionStart back-channel hook, loaded into
+  # every Deck session via --plugin-dir (resolved from process.resourcesPath when
+  # packaged, see index.ts deckPluginDir). The hook bundle (.mjs) is produced by
+  # `npm run build:hook`, which runs before packaging via the build/package scripts.
+  - from: deck-plugin
+    to: deck-plugin
 win:
   # NSIS installer plus a portable .zip (run anywhere, no install).
   target:

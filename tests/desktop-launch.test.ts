@@ -178,6 +178,36 @@ test("an empty/whitespace effort never emits the flag (Auto position)", () => {
   expect(resume).toBe("claude run --resume id-old --fork-session --session-id id-new");
 });
 
+test("fresh launch inserts --plugin-dir right after the base command", () => {
+  const line = buildSessionCommandLine({
+    baseCommand: "claude run",
+    sessionId: "id-1",
+    args: "--agent reviewer",
+    pluginDir: "C:/res/deck-plugin",
+    effort: "high",
+    mode: "fresh"
+  });
+  expect(line).toBe('claude run --plugin-dir "C:/res/deck-plugin" --session-id id-1 --agent reviewer --effort high');
+});
+
+test("resume inserts --plugin-dir before --resume", () => {
+  const line = buildSessionCommandLine({
+    baseCommand: "claude run",
+    sessionId: "id-new",
+    prevSessionId: "id-old",
+    pluginDir: "/opt/deck-plugin",
+    mode: "resume"
+  });
+  expect(line).toBe('claude run --plugin-dir "/opt/deck-plugin" --resume id-old --fork-session --session-id id-new');
+});
+
+test("an empty/whitespace pluginDir never emits the flag", () => {
+  const fresh = buildSessionCommandLine({ baseCommand: "claude run", sessionId: "id-1", pluginDir: "  ", mode: "fresh" });
+  expect(fresh).toBe("claude run --session-id id-1");
+  const none = buildSessionCommandLine({ baseCommand: "claude run", sessionId: "id-1", mode: "fresh" });
+  expect(none).toBe("claude run --session-id id-1");
+});
+
 // ----- shell-command -----
 
 test("non-interactive unix uses a login shell, no -i, no marker", () => {

@@ -28,11 +28,12 @@ function freshProject(): string {
 }
 
 function makeService(projectDir: string): WorkspaceService {
-  // Minimal fakes: saveAuto only reaches service.captureSessions(), getConfig
-  // (display mode) and getScope (name/groupId/scopeName/scopeKind).
+  // Minimal fakes: saveAuto only reaches service.refreshLiveSessionIds() +
+  // captureSessions(), getConfig (display mode) and getScope
+  // (name/groupId/scopeName/scopeKind).
   const deps = {
     projectDir,
-    service: { captureSessions: () => [] },
+    service: { captureSessions: () => [], refreshLiveSessionIds: () => {} },
     getConfig: () => ({ displayMode: "2x2", gridCols: 2, gridRows: 2 }),
     setConfig: () => {},
     getScope: () => ({

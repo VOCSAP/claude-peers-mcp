@@ -67,6 +67,13 @@ export class SessionService extends EventEmitter {
     private getScopeEnv: () => Record<string, string> = () => ({}),
     /** Resolved base command (launch-config) used when a session has no override. */
     private launchCommand = '',
+    /**
+     * Absolute path to the Deck's embedded plugin dir, injected as `--plugin-dir`
+     * on every spawn so the SessionStart back-channel hook keeps each tile's
+     * session id current across /clear. Empty => no plugin flag (resolved by
+     * index.ts; only set when the dir exists).
+     */
+    private pluginDir = '',
     /** Home dir for transcript existence checks (injectable for tests). */
     private home: string = homedir()
   ) {
@@ -202,6 +209,29 @@ export class SessionService extends EventEmitter {
     this.runtime.clear()
     this.persist()
     this.broadcast()
+  }
+
+  /**
+   * Re-read each live tile's back-channel and adopt a changed REAL session id.
+   * The discovery track (discoverRealId) is a one-shot that closes after 30s, so
+   * an in-process rotation that happens later -- notably a `/clear`, which mints a
+   * fresh transcript without re-registering the MCP -- is invisible to it. The
+   * SessionStart hook keeps desk-session-<token>.txt current across those
+   * rotations; this picks the new id up at save time so the persisted (and thus
+   * restorable) id is the post-/clear one, not the stale pre-/clear id. Adopts
+   * only when the new id actually has a transcript (i.e. it is resumable).
+   *
+   * Called by WorkspaceService before captureSessions(); kept off the template
+   * path (ipc.ts) so capturing a template never mutates live session ids.
+   */
+  refreshLiveSessionIds(): void {
+    for (const def of this.defs) {
+      if (!this.pty.isAlive(def.id)) continue
+      const back = readDeskSessionId(def.id, this.peersDir())
+      if (back && back !== def.sessionId && transcriptExists(this.home, def.cwd, back)) {
+        this.adoptRealId(def, def.sessionId, back)
+      }
+    }
   }
 
   /** Snapshot the current persisted session defs (for a workspace save). */
@@ -391,6 +421,7 @@ export class SessionService extends EventEmitter {
         sessionId: def.sessionId,
         prevSessionId: prev,
         effort: def.effort,
+        pluginDir: this.pluginDir,
         mode: 'resume'
       })
     } else {
@@ -401,6 +432,7 @@ export class SessionService extends EventEmitter {
         sessionId: def.sessionId,
         args: def.args,
         effort: def.effort,
+        pluginDir: this.pluginDir,
         mode: 'fresh'
       })
     }

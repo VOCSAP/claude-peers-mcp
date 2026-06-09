@@ -57,6 +57,30 @@ export function deskSessionFileName(token: string): string {
 }
 
 /**
+ * Write the Deck back-channel file for an already-resolved (token, sessionId)
+ * pair. No-op when either is empty. Best-effort: failures are silent so callers
+ * never break their own flow. Shared by writeDeskSessionId (env-driven, from
+ * server.ts at /register) and the SessionStart hook (payload-driven, which also
+ * fires on /clear and compaction -- the rotations server.ts cannot observe).
+ */
+export async function writeDeskSessionFile(
+  token: string,
+  sessionId: string,
+  home: string = homedir(),
+): Promise<void> {
+  const safeToken = sanitizeSessionId(token);
+  const id = (sessionId ?? "").trim();
+  if (!safeToken || !id) return;
+  try {
+    const cacheDir = join(home, ".claude", "peers");
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, deskSessionFileName(safeToken)), id, "utf-8");
+  } catch {
+    // best-effort: the Deck falls back to transcript discovery if absent
+  }
+}
+
+/**
  * Deck back-channel writer. No-op unless BOTH CLAUDE_PEERS_DESK_SESSION (the
  * per-tile token set by the Deck) and CLAUDE_CODE_SESSION_ID (the real minted id,
  * set by Claude Code >= 2.x) are present. When both are set, writes the real id
@@ -65,21 +89,21 @@ export function deskSessionFileName(token: string): string {
  * failures are silent so it never breaks the /register flow. Independent of the
  * status-line cache opt-in -- the token's presence is the gate, so non-Deck CLI
  * usage (token unset) writes nothing.
+ *
+ * Note: this only fires at /register (server.ts boot + switch_group). It cannot
+ * observe an in-process session-id rotation such as /clear, because the env var
+ * CLAUDE_CODE_SESSION_ID is frozen for the process lifetime. The SessionStart
+ * hook (desktop/hooks/desk-backchannel-hook.ts) covers those rotations.
  */
 export async function writeDeskSessionId(
   home: string = homedir(),
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
-  const token = sanitizeSessionId(env.CLAUDE_PEERS_DESK_SESSION);
-  const sessionId = (env.CLAUDE_CODE_SESSION_ID ?? "").trim();
-  if (!token || !sessionId) return;
-  try {
-    const cacheDir = join(home, ".claude", "peers");
-    await mkdir(cacheDir, { recursive: true });
-    await writeFile(join(cacheDir, deskSessionFileName(token)), sessionId, "utf-8");
-  } catch {
-    // best-effort: the Deck falls back to transcript discovery if absent
-  }
+  await writeDeskSessionFile(
+    env.CLAUDE_PEERS_DESK_SESSION ?? "",
+    env.CLAUDE_CODE_SESSION_ID ?? "",
+    home,
+  );
 }
 
 /**
