@@ -24,7 +24,10 @@ discovery.
   window's sessions, not your other Claude instances. The group secret never
   touches the repo or `ps` (a chmod-600 temp file by default).
 - **Save & restore workspaces.** Close the app and reopen it; restore the
-  previous session set and each tile resumes its Claude conversation.
+  previous session set and each tile resumes its Claude conversation -- even
+  after an in-session `/clear`, since each tile's current session id is tracked
+  across rotations (via an embedded plugin hook), so restore never reopens a
+  stale pre-`/clear` state.
 - **Outbound megaphone.** The window can broadcast one-way, no-reply system
   messages to its group: an automatic join announcement when a tile's `peer_id`
   resolves, plus free-text operator broadcasts typed into the sidebar message
