@@ -120,11 +120,17 @@ hash -- **never the secret**). Stored in-repo at
   never used has nothing to resume and simply **starts fresh** -- you always get
   a working terminal, never a stuck "expired" tile.
 
-### Settings (⚙)
+### Settings (⚙ / Edit > Settings… / Ctrl+,)
 
-Project directory, launch command (global), shell override, interactive-shell
-toggle, default display mode, font size, theme (dark / light), **language**
-(Auto / English / Francais), and the restore-on-launch toggle.
+A full-window settings page, VS Code-style: a category tree on the left, the
+selected category's fields on the right. Opened from the sidebar gear, the
+**Edit > Settings…** menu item, or `Ctrl/Cmd+,`. Changes apply live (no Save
+button): discrete inputs on change, free-text inputs on blur.
+
+- **General** -- **language** (Auto + the languages present as `locales/*.json`,
+  labelled in their native name), re-open-on-launch, remember scope secrets.
+- **Appearance** -- theme (dark / light), font size, display mode, session colour palette.
+- **Terminal** -- project directory, launch command (global), shell override, interactive shell.
 
 ---
 
@@ -187,7 +193,9 @@ files to badge each tile with its live `peer_id`.
 UI text lives in external `locales/en.json` + `locales/fr.json` (committed,
 user-editable, with an embedded English fallback). The main process resolves the
 locale (config or OS) and serves the dictionary to the renderer; `t(key, params)`
-interpolates `{placeholder}` tokens. Changing the language re-renders live.
+interpolates `{placeholder}` tokens. Changing the language re-renders live. The
+Settings language picker is derived from the locale files actually present
+(`availableLocales`), each shown under its native name.
 
 ---
 

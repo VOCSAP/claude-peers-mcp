@@ -64,6 +64,9 @@
   "tile.startNew": "Démarrer une nouvelle",
 
   "settings.title": "Paramètres",
+  "settings.catGeneral": "Général",
+  "settings.catAppearance": "Apparence",
+  "settings.catTerminal": "Terminal",
   "settings.projectDir": "Dossier projet",
   "settings.projectDirHelp": "Dossier de travail par défaut des nouveaux terminaux pairs.",
   "settings.launchCommand": "Commande de lancement",

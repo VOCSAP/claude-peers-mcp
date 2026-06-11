@@ -99,10 +99,20 @@ export interface AppConfig {
   rememberScopeSecrets: boolean
 }
 
+/** A selectable language for the settings picker: stable code + native label. */
+export interface LocaleOption {
+  /** Locale tag ('en', 'fr', …). */
+  code: string
+  /** Native display name (endonym), e.g. 'English', 'Français'. */
+  label: string
+}
+
 /** Active locale + flattened translation dict, sent to the renderer. */
 export interface I18nPayload {
   locale: string
   dict: Record<string, string>
+  /** Languages offered in Settings, derived from the present locale files. */
+  available: LocaleOption[]
 }
 
 /**
@@ -230,6 +240,8 @@ export interface DeckApi {
   onSessionsChanged(cb: (sessions: SessionRuntime[]) => void): () => void
   onSessionThinking(cb: (e: SessionThinkingEvent) => void): () => void
   onConfigChanged(cb: (config: AppConfig) => void): () => void
+  /** Fired when the Edit > Settings… menu item (or Ctrl/Cmd+,) is chosen. */
+  onMenuSettings(cb: () => void): () => void
   /** Fired when the File > New (clear) menu item is chosen (renderer confirms). */
   onMenuNewClear(cb: () => void): () => void
   /** File menu workspace actions (renderer handles the UI/confirms). */

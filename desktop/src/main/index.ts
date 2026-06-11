@@ -219,6 +219,7 @@ app.whenReady().then(() => {
     mainWindow?.webContents.send(channel, payload)
   Menu.setApplicationMenu(
     buildAppMenu({
+      onOpenSettings: () => toRenderer('menu:settings'),
       onNewClear: () => toRenderer('menu:new-clear'),
       onSave: () => toRenderer('menu:save'),
       onSaveAs: () => toRenderer('menu:save-as'),

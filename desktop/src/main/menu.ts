@@ -7,6 +7,8 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron'
 
 export interface AppMenuActions {
+  /** Open the in-app Settings page (Edit > Settings… / Ctrl+,). */
+  onOpenSettings: () => void
   /** "New (clear)": close all sessions and return to the empty add-peers state. */
   onNewClear: () => void
   /** Save the current workspace (quick, keeps its name). */
@@ -24,6 +26,7 @@ export interface AppMenuActions {
 }
 
 export function buildAppMenu({
+  onOpenSettings,
   onNewClear,
   onSave,
   onSaveAs,
@@ -72,9 +75,13 @@ export function buildAppMenu({
   })
 
   // Deliberately minimal: no Undo/Redo/Cut/Select All (confusing for terminals).
+  // Settings lives here (Ctrl/Cmd+, is the standard accelerator) per the
+  // operator's request to group all configuration under Edit.
   template.push({
     label: 'Edit',
     submenu: [
+      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: onOpenSettings },
+      { type: 'separator' },
       { role: 'copy' },
       { role: 'paste' }
     ]

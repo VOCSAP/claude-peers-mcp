@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   AppConfig,
   CreateSessionInput,
+  LocaleOption,
   SessionRuntime,
   TemplateSummary,
   WorkspaceSummary
@@ -12,6 +13,8 @@ interface DeckState {
   config: AppConfig | null
   /** Active translation dict (flat key->template), fetched from main. */
   dict: Record<string, string>
+  /** Languages offered in Settings, derived from the present locale files. */
+  availableLocales: LocaleOption[]
   selectedId: string | null
   maximizedId: string | null
   settingsOpen: boolean
@@ -87,6 +90,7 @@ export const useDeck = create<DeckState>((set, get) => ({
   sessions: [],
   config: null,
   dict: {},
+  availableLocales: [],
   selectedId: null,
   maximizedId: null,
   settingsOpen: false,
@@ -117,6 +121,7 @@ export const useDeck = create<DeckState>((set, get) => ({
       sessions,
       config,
       dict: i18n.dict,
+      availableLocales: i18n.available,
       workspaces,
       templates,
       sidebarWidth: config.sidebarWidth,
@@ -133,6 +138,7 @@ export const useDeck = create<DeckState>((set, get) => ({
         maximizedId: maxStillExists ? maximizedId : null
       })
     })
+    window.api.onMenuSettings(() => get().openSettings(true))
     window.api.onMenuNewClear(() => set({ confirmNewClearOpen: true }))
     window.api.onMenuSave(() => void get().saveCurrent())
     window.api.onMenuSaveAs(() => {

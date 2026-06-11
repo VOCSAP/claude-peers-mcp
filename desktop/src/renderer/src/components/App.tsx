@@ -4,7 +4,7 @@ import { useT } from '../i18n'
 import { Sidebar } from './Sidebar'
 import { TileArea } from './TileArea'
 import { DisplayModeBar } from './DisplayModeBar'
-import { SettingsDialog } from './SettingsDialog'
+import { SettingsView } from './SettingsView'
 import { WorkspacesDialog } from './WorkspacesDialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Toast } from './Toast'
@@ -74,7 +74,7 @@ export function App(): React.JSX.Element {
         <DisplayModeBar />
         <TileArea />
       </div>
-      {settingsOpen && <SettingsDialog />}
+      {settingsOpen && <SettingsView />}
       {workspacesOpen && <WorkspacesDialog />}
       {saveAsOpen && <SaveAsDialog />}
       {templatesOpen && <TemplatesDialog />}

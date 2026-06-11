@@ -64,6 +64,9 @@
   "tile.startNew": "Start new",
 
   "settings.title": "Settings",
+  "settings.catGeneral": "General",
+  "settings.catAppearance": "Appearance",
+  "settings.catTerminal": "Terminal",
   "settings.projectDir": "Project directory",
   "settings.projectDirHelp": "Default working directory for new peer terminals.",
   "settings.launchCommand": "Launch command",

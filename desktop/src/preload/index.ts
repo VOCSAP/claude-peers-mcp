@@ -93,6 +93,7 @@ const api: DeckApi = {
   onSessionThinking: (cb: (e: SessionThinkingEvent) => void) =>
     subscribe('session:thinking', cb),
   onConfigChanged: (cb: (config: AppConfig) => void) => subscribe('config:changed', cb),
+  onMenuSettings: (cb: () => void) => subscribe('menu:settings', () => cb()),
   onMenuNewClear: (cb: () => void) => subscribe('menu:new-clear', () => cb()),
   onMenuSave: (cb: () => void) => subscribe('menu:save', () => cb()),
   onMenuSaveAs: (cb: () => void) => subscribe('menu:save-as', () => cb()),

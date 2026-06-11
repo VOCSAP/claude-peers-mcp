@@ -13,6 +13,35 @@ import { join } from 'node:path'
 export const SUPPORTED_LOCALES = ['en', 'fr'] as const
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number]
 
+/**
+ * Endonyms (native names) for each supported locale, shown verbatim in the
+ * language picker -- the modern convention is to label a language in its own
+ * tongue rather than translate it. English is the embedded base, so it is
+ * always offered even without a shipped en.json.
+ */
+export const LOCALE_NATIVE_NAMES: Record<SupportedLocale, string> = {
+  en: 'English',
+  fr: 'Français'
+}
+
+/** A selectable language: stable code + native display label. */
+export interface LocaleOption {
+  code: SupportedLocale
+  label: string
+}
+
+/**
+ * The languages offered in the settings picker, derived from the locale files
+ * actually present in `dirs` (shipped + user-override). English is always
+ * included (its dictionary is embedded as EN_DEFAULTS); any other supported
+ * locale appears only once a `<code>.json` exists.
+ */
+export function availableLocales(dirs: string[]): LocaleOption[] {
+  return SUPPORTED_LOCALES.filter(
+    (code) => code === 'en' || dirs.some((dir) => existsSync(join(dir, `${code}.json`)))
+  ).map((code) => ({ code, label: LOCALE_NATIVE_NAMES[code] }))
+}
+
 /** Embedded English base, mirror of locales/en.json (parity-tested). */
 export const EN_DEFAULTS: Record<string, string> = {
   'common.cancel': 'Cancel',
@@ -85,6 +114,9 @@ export const EN_DEFAULTS: Record<string, string> = {
   'tile.startNew': 'Start new',
 
   'settings.title': 'Settings',
+  'settings.catGeneral': 'General',
+  'settings.catAppearance': 'Appearance',
+  'settings.catTerminal': 'Terminal',
   'settings.projectDir': 'Project directory',
   'settings.projectDirHelp': 'Default working directory for new peer terminals.',
   'settings.launchCommand': 'Launch command',

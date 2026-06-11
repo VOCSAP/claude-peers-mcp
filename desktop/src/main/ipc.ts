@@ -14,7 +14,7 @@ import {
   localTemplatesDir
 } from './template-store'
 import { toTemplate, templateToInputs } from '@shared/template'
-import { loadDict, resolveLocale } from './i18n'
+import { availableLocales, loadDict, resolveLocale } from './i18n'
 
 /**
  * Build the renderer i18n payload from the current config. Reads shipped locale
@@ -27,7 +27,8 @@ function buildI18n(config: AppConfig): I18nPayload {
     ? join(process.resourcesPath, 'locales')
     : join(app.getAppPath(), 'locales')
   const userDir = join(app.getPath('userData'), 'locales')
-  return { locale, dict: loadDict(locale, [shippedDir, userDir]) }
+  const dirs = [shippedDir, userDir]
+  return { locale, dict: loadDict(locale, dirs), available: availableLocales(dirs) }
 }
 
 interface IpcDeps {
