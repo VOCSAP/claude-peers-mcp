@@ -88,17 +88,34 @@ export class SessionService extends EventEmitter {
       this.thinkingDetector.feed(e.id, e.data)
     })
     this.pty.on('exit', ({ id, exitCode }: { id: string; exitCode: number }) => {
+      // pty-manager only emits 'exit' for a spontaneous process exit (the user
+      // typed /exit, or claude crashed) -- never for a kill() / restart, which it
+      // filters out. So here we own the close decision.
+      // The id is no longer live -> free the double-resume guard (a later restart
+      // re-registers the fresh forked id).
+      const def = this.defs.find((d) => d.id === id)
+      if (def?.sessionId) this.registry.release(def.sessionId)
+      this.thinkingDetector.clear(id)
+
+      // A clean exit (/exit -> shell returns 0) auto-closes the tile, the way a
+      // terminal tab closes when its shell exits, so it never lingers as a dead,
+      // non-interactive zombie. A non-zero exit (crash) is kept on screen in the
+      // 'exited' state so the error stays visible and the tile can be restarted.
+      if (exitCode === 0) {
+        this.defs = this.defs.filter((d) => d.id !== id)
+        this.runtime.delete(id)
+        this.persist()
+        this.emit('exit', { id, exitCode })
+        this.broadcast()
+        return
+      }
+
       const r = this.runtime.get(id)
       if (r) {
         r.status = 'exited'
         r.exitCode = exitCode
         r.thinking = false
       }
-      // The id is no longer live -> free the double-resume guard (a later restart
-      // re-registers the fresh forked id).
-      const def = this.defs.find((d) => d.id === id)
-      if (def?.sessionId) this.registry.release(def.sessionId)
-      this.thinkingDetector.clear(id)
       this.emit('exit', { id, exitCode })
       this.broadcast()
     })

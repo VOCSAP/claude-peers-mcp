@@ -57,6 +57,14 @@ export class PtyManager extends EventEmitter {
 
     proc.onData((data) => this.handleData(id, data))
     proc.onExit(({ exitCode }) => {
+      // Only react if THIS proc is still the one registered for `id`. A kill()
+      // (remove/closeAll) deletes procs[id] before killing, and a spawn() during
+      // restart replaces procs[id] with a fresh state -- in both cases the dying
+      // proc's late, asynchronous onExit must NOT emit, otherwise it would tear
+      // down a tile that was intentionally closed or just respawned. Emitting
+      // here therefore means strictly "the process exited on its own" (the user
+      // typed /exit, or it crashed).
+      if (this.procs.get(id) !== state) return
       this.procs.delete(id)
       this.emit('exit', { id, exitCode } satisfies PtyExitPayload)
     })
