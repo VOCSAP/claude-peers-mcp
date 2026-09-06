@@ -64,7 +64,7 @@ import {
 import { appendInboxHistory, clearInboxHistory, deleteInboxHistoryEntries } from './inbox-store'
 import { spawn as spawnProcess } from 'node:child_process'
 import { deckBrokerMode } from './broker-client'
-import { ensureLoopbackBroker, locateBrokerScript, RespawnThrottle } from './broker-spawn'
+import { ensureLoopbackBroker, locateBrokerScript, RespawnThrottle, withPathEntry } from './broker-spawn'
 import { createInboxSessionTracker, purgeInboxSessionCore } from './inbox-session'
 import {
   computeDeckProjectKey,
@@ -1129,15 +1129,16 @@ async function startLoopbackBroker(reason: 'startup' | 'outage'): Promise<void> 
         homeDir: homedir(),
         warn: (m) => reportError('broker', m)
       }),
-    spawn: (command, script) => {
+    spawn: (command, script, entryEnv) => {
       // A GUI launch does not carry the login shell's PATH: bun's default
       // install dir is added so the plain `bun` of an MCP entry resolves.
       const bunDir = join(homedir(), '.bun', 'bin')
-      const child = spawnProcess(command, [script], {
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env, PATH: `${process.env.PATH ?? ''}${process.platform === 'win32' ? ';' : ':'}${bunDir}` }
-      })
+      const env = withPathEntry(
+        { ...process.env, ...entryEnv },
+        bunDir,
+        process.platform === 'win32' ? ';' : ':'
+      )
+      const child = spawnProcess(command, [script], { detached: true, stdio: 'ignore', env })
       child.on('error', (e) => reportError('broker', `loopback broker process failed to start (${command} ${script})`, e))
       child.unref()
     },

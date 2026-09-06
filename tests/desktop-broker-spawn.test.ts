@@ -8,6 +8,7 @@ import {
   ensureLoopbackBroker,
   locateBrokerScript,
   RespawnThrottle,
+  withPathEntry,
   type EnsureDeps,
 } from "../desktop/src/main/broker-spawn";
 
@@ -40,6 +41,7 @@ test("the script is the sibling of the server.ts named by the user-scope claude.
   expect(locateBrokerScript(CLAUDE_JSON, APP_ROOT, deps), "the global MCP entry decides the script and the executable").toEqual({
     script: "/home/op/koryphaios/broker.ts",
     command: "/usr/local/bin/bun",
+    env: {},
     source: "claude-json",
   });
   expect(reads, "only the user-scope claude.json is ever read, never a project .mcp.json").toEqual([CLAUDE_JSON]);
@@ -71,6 +73,7 @@ test("without a usable entry the repository the Deck lives in is tried, then not
   expect(locateBrokerScript(CLAUDE_JSON, APP_ROOT, noEntry.deps), "the Deck's own repository is the fallback").toEqual({
     script: sibling,
     command: "bun",
+    env: {},
     source: "app-root",
   });
   const nothing = locateDeps({}, []);
@@ -98,9 +101,9 @@ function ensureDeps(overrides: Partial<EnsureDeps> & { aliveAfterPolls?: number 
       polls += 1;
       return polls > aliveAfter;
     },
-    locate: () => ({ script: "/x/broker.ts", command: "bun", source: "claude-json" }),
-    spawn: (command, script) => {
-      spawned.push(`${command} ${script}`);
+    locate: () => ({ script: "/x/broker.ts", command: "bun", env: {}, source: "claude-json" }),
+    spawn: (command, script, env) => {
+      spawned.push(`${command} ${script}${Object.keys(env).length ? ` ${JSON.stringify(env)}` : ""}`);
     },
     sleep: async () => {},
     attempts: 3,
@@ -154,4 +157,52 @@ test("a respawn is allowed once per interval, never on every failing poll", () =
   expect(throttle.allow(), "half an interval later is too soon").toBe(false);
   clock = 60_000;
   expect(throttle.allow(), "a full interval later may respawn again").toBe(true);
+});
+
+test("the real Windows entry of an operator is recognised, and only its CLAUDE_PEERS_ variables travel", () => {
+  const { deps } = locateDeps(
+    {
+      [CLAUDE_JSON]: JSON.stringify({
+        mcpServers: {
+          "claude-peers": {
+            command: "bun",
+            args: ["C:\\Users\\Olivier\\workspace\\koryphaios-mcp\\server.ts"],
+            env: { CLAUDE_PEERS_GROUP: "ovr-all", PATH: "C:\\evil", HOME: "C:\\elsewhere" },
+            alwaysLoad: true,
+          },
+        },
+      }),
+    },
+    ["C:\\Users\\Olivier\\workspace\\koryphaios-mcp\\broker.ts"]
+  );
+  expect(locateBrokerScript(CLAUDE_JSON, APP_ROOT, deps), "the entry's own env reaches the broker, minus anything outside the CLAUDE_PEERS_ namespace").toEqual({
+    script: "C:\\Users\\Olivier\\workspace\\koryphaios-mcp\\broker.ts",
+    command: "bun",
+    env: { CLAUDE_PEERS_GROUP: "ovr-all" },
+    source: "claude-json",
+  });
+});
+
+test("the entry's variables are handed to the spawned broker", async () => {
+  const { deps, spawned } = ensureDeps({
+    aliveAfterPolls: 1,
+    locate: () => ({ script: "/x/broker.ts", command: "bun", env: { CLAUDE_PEERS_GROUP: "ovr-all" }, source: "claude-json" }),
+  });
+  await ensureLoopbackBroker("local", "http://127.0.0.1:7899", deps);
+  expect(spawned, "a Deck-spawned broker must see the same variables a session-spawned one inherits").toEqual([
+    'bun /x/broker.ts {"CLAUDE_PEERS_GROUP":"ovr-all"}',
+  ]);
+});
+
+test("the bun directory is appended to the PATH key that already exists, whatever its casing", () => {
+  const windows = withPathEntry({ Path: "C:\\Windows", OTHER: "x" }, "C:\\Users\\Olivier\\.bun\\bin", ";");
+  expect(Object.keys(windows).sort(), "a child must never receive both Path and PATH: which one wins is not ours to decide").toEqual([
+    "OTHER",
+    "Path",
+  ]);
+  expect(windows.Path, "the existing Windows value is kept and extended").toBe("C:\\Windows;C:\\Users\\Olivier\\.bun\\bin");
+  const posix = withPathEntry({ PATH: "/usr/bin" }, "/home/op/.bun/bin", ":");
+  expect(posix.PATH, "the posix key is extended the same way").toBe("/usr/bin:/home/op/.bun/bin");
+  const empty = withPathEntry({}, "/home/op/.bun/bin", ":");
+  expect(empty.PATH, "an environment with no PATH at all gets one, without a leading separator").toBe("/home/op/.bun/bin");
 });

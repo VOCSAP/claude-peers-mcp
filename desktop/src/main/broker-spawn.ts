@@ -17,6 +17,12 @@ export interface BrokerScriptLocation {
   script: string
   /** The executable the MCP entry names for server.ts, reused for broker.ts. */
   command: string
+  /**
+   * The CLAUDE_PEERS_* variables the MCP entry sets. A session-spawned broker
+   * inherits them through server.ts; without them the Deck would start a
+   * broker in a different mode than the one the sessions get.
+   */
+  env: Record<string, string>
   source: 'claude-json' | 'app-root'
 }
 
@@ -60,16 +66,21 @@ export function locateBrokerScript(
         // machine it names, in that platform's separator, which the posix
         // path module of a Linux CI run would not recognise.
         const script = expanded.slice(0, -'server.ts'.length) + 'broker.ts'
-        if (deps.exists(script)) return { script, command: entry.command, source: 'claude-json' }
+        if (deps.exists(script)) {
+          return { script, command: entry.command, env: entry.env, source: 'claude-json' }
+        }
       }
     }
   }
   const sibling = resolve(appRoot, '..', 'broker.ts')
-  if (deps.exists(sibling)) return { script: sibling, command: 'bun', source: 'app-root' }
+  if (deps.exists(sibling)) return { script: sibling, command: 'bun', env: {}, source: 'app-root' }
   return null
 }
 
-function mcpEntry(parsed: unknown, name: string): { command: string; args: string[] } | null {
+function mcpEntry(
+  parsed: unknown,
+  name: string
+): { command: string; args: string[]; env: Record<string, string> } | null {
   if (!parsed || typeof parsed !== 'object') return null
   const servers = (parsed as { mcpServers?: unknown }).mcpServers
   if (!servers || typeof servers !== 'object') return null
@@ -79,7 +90,31 @@ function mcpEntry(parsed: unknown, name: string): { command: string; args: strin
   const args = (entry as { args?: unknown }).args
   if (typeof command !== 'string' || !command) return null
   if (!Array.isArray(args)) return null
-  return { command, args: args.filter((a): a is string => typeof a === 'string') }
+  // Only the broker's own namespace travels: the entry may not redefine PATH,
+  // the home directory, or anything else this process runs on.
+  const env: Record<string, string> = {}
+  const declared = (entry as { env?: unknown }).env
+  if (declared && typeof declared === 'object') {
+    for (const [k, v] of Object.entries(declared as Record<string, unknown>)) {
+      if (k.startsWith('CLAUDE_PEERS_') && typeof v === 'string') env[k] = v
+    }
+  }
+  return { command, args: args.filter((a): a is string => typeof a === 'string'), env }
+}
+
+/**
+ * Add `dir` to a copy of `base`, writing to the PATH key ALREADY there --
+ * Windows names it `Path`, and handing a child both `Path` and `PATH` leaves
+ * which one wins to the process launcher.
+ */
+export function withPathEntry(
+  base: Record<string, string | undefined>,
+  dir: string,
+  separator: string
+): Record<string, string | undefined> {
+  const key = Object.keys(base).find((k) => k.toLowerCase() === 'path') ?? 'PATH'
+  const current = base[key] ?? ''
+  return { ...base, [key]: current ? `${current}${separator}${dir}` : dir }
 }
 
 export type EnsureOutcome =
@@ -94,7 +129,7 @@ export interface EnsureDeps {
   isAlive: (url: string) => Promise<boolean>
   locate: () => BrokerScriptLocation | null
   /** Spawn detached, stdio ignored, unref'd; throws when the executable is missing. */
-  spawn: (command: string, script: string) => void
+  spawn: (command: string, script: string, env: Record<string, string>) => void
   sleep: (ms: number) => Promise<void>
   /** Poll attempts after a spawn, each preceded by one sleep of `pollMs`. */
   attempts?: number
@@ -116,7 +151,7 @@ export async function ensureLoopbackBroker(
   const located = deps.locate()
   if (!located) return { action: 'not-found' }
   try {
-    deps.spawn(located.command, located.script)
+    deps.spawn(located.command, located.script, located.env)
   } catch (e) {
     return { action: 'failed', script: located.script, reason: e instanceof Error ? e.message : String(e) }
   }
