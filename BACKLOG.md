@@ -1063,14 +1063,14 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       préfixe s'afficheraient à l'identique ; les clés restent
       `(relay_id, relay_ref)` upstream et `(group_id, upstream_peer_id)` sur
       la replica. À vérifier avant tout usage de `via` comme discriminant.
-- [ ] **Le Deck ne démarre pas lui-même le broker loopback**, en mode local
-      comme en mode replica : seule une session (`server.ts`, via
-      `ensureBroker()`) le fait naître aujourd'hui. Conséquence : un Deck
-      ouvert sans aucune session active ne peut pas lire la roadmap (locale
-      ou replica) -- comportement déjà en vigueur en mode local, pas une
-      régression du mode replica, mais qui devient plus visible avec la
-      bannière d'état de la replica. Faire spawn/ensure le broker depuis le
-      Deck lui-même reste à cadrer.
+- [x] **Le Deck démarre lui-même le broker loopback** (modes local et
+      replica) — livré : au démarrage puis à chaque bascule « broker
+      injoignable » (au plus une fois par minute), le Deck sonde `/health` et
+      spawn `broker.ts` détaché, localisé par l'entrée MCP `claude-peers` du
+      `~/.claude.json` de l'utilisateur (même version que les sessions) ou,
+      à défaut, à côté du dépôt du Deck ; jamais depuis un fichier du projet.
+      Résiduel : une app empaquetée (electron-builder) sans dépôt à côté ni
+      entrée MCP ne trouve aucun script et le signale (`reportError`).
 - [x] **Toast Deck « N positions de file perdues »** à la reconnexion —
       livré : le broker publie `queue_replaced` (cumulatif depuis le
       démarrage du broker) dans l'instantané `RoadmapSyncStatus` ; le Deck

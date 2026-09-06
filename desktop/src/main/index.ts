@@ -62,6 +62,9 @@ import {
   sendAnnounce
 } from './broker-client'
 import { appendInboxHistory, clearInboxHistory, deleteInboxHistoryEntries } from './inbox-store'
+import { spawn as spawnProcess } from 'node:child_process'
+import { deckBrokerMode } from './broker-client'
+import { ensureLoopbackBroker, locateBrokerScript, RespawnThrottle } from './broker-spawn'
 import { createInboxSessionTracker, purgeInboxSessionCore } from './inbox-session'
 import {
   computeDeckProjectKey,
@@ -1091,9 +1094,75 @@ const brokerHealth = new BrokerHealthTracker((status) => {
     // restarted as a replica): re-probe the replication mode once instead of
     // trusting what the previous process answered.
     roadmapSyncProbeDue = true
-  } else reportError('broker', `broker unreachable: ${status.lastError ?? 'unknown error'}`)
+  } else {
+    reportError('broker', `broker unreachable: ${status.lastError ?? 'unknown error'}`)
+    // A loopback broker that stopped answering may simply have died with the
+    // session that spawned it: relaunch it, at most once a minute.
+    if (brokerRespawn.allow()) void startLoopbackBroker('outage')
+  }
   broadcast('broker:status', status)
 })
+
+const brokerRespawn = new RespawnThrottle(60_000)
+
+/**
+ * The Deck ensures the loopback broker itself (local and replica modes), so
+ * the roadmap, replication and federation live without any tile open. The
+ * script comes from the user's own ~/.claude.json MCP entry or from the
+ * repository the Deck runs from -- never from a project's files.
+ */
+async function startLoopbackBroker(reason: 'startup' | 'outage'): Promise<void> {
+  const endpoint = resolveBrokerEndpoint()
+  const outcome = await ensureLoopbackBroker(deckBrokerMode(), endpoint.url, {
+    isAlive: async (url) => {
+      try {
+        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) })
+        return res.ok
+      } catch {
+        return false
+      }
+    },
+    locate: () =>
+      locateBrokerScript(join(homedir(), '.claude.json'), app.getAppPath(), {
+        readFile: (p) => (existsSync(p) ? readFileSync(p, 'utf8') : null),
+        exists: (p) => existsSync(p),
+        warn: (m) => reportError('broker', m)
+      }),
+    spawn: (command, script) => {
+      // A GUI launch does not carry the login shell's PATH: bun's default
+      // install dir is added so the plain `bun` of an MCP entry resolves.
+      const bunDir = join(homedir(), '.bun', 'bin')
+      const child = spawnProcess(command, [script], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, PATH: `${process.env.PATH ?? ''}${process.platform === 'win32' ? ';' : ':'}${bunDir}` }
+      })
+      child.on('error', (e) => reportError('broker', `loopback broker process failed to start (${command} ${script})`, e))
+      child.unref()
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms))
+  })
+  switch (outcome.action) {
+    case 'skipped':
+      journal.add('session', 'broker: remote mode, nothing to start locally')
+      break
+    case 'already-running':
+      if (reason === 'startup') journal.add('session', 'broker: loopback broker already running')
+      break
+    case 'started':
+      journal.add('session', `broker: loopback broker started from ${outcome.script} (${outcome.source})`)
+      break
+    case 'not-found':
+      reportError(
+        'broker',
+        'no broker.ts to start: add the claude-peers MCP entry to ~/.claude.json (claude mcp add --scope user ...) or run the Deck from its repository'
+      )
+      break
+    case 'failed':
+      reportError('broker', `loopback broker did not start from ${outcome.script}: ${outcome.reason}`)
+      break
+  }
+}
 
 const notifyInbox = (batch: { from: string; text: string }[]): void => {
   if (!Notification.isSupported() || batch.length === 0) return
@@ -2996,6 +3065,9 @@ app.whenReady().then(async () => {
   // phone transport -- config.mobileApprovals only decides whether a question
   // is ALSO relayed to Telegram/Discord/ntfy, never whether it can be asked at
   // all. A failure only means the feature stays off; the app starts anyway.
+  // The broker first: everything below it polls the loopback endpoint, and a
+  // replica only replicates once its broker runs.
+  await startLoopbackBroker('startup')
   const armed = await armApprovalsAtStartup(approvals)
   journal.add('session', armed ? 'remote approvals armed' : 'remote approvals unavailable')
   service.start()

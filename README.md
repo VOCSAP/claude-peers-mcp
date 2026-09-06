@@ -229,7 +229,7 @@ You'll see your `peer_id`, current group, host, cwd, and `ws_connected: true`. T
 
 ## Running
 
-### Local-only (single PC, broker auto-spawned by server.ts)
+### Local-only (single PC, broker auto-spawned by server.ts or the Deck)
 
 `.mcp.json`:
 
@@ -644,7 +644,7 @@ Local PC                                      Broker host
 
 In HTTP mode, `server.ts` runs locally and connects directly to `CLAUDE_PEERS_BROKER_URL`. No SSH is involved.
 
-In local mode, `server.ts` auto-spawns a broker on loopback and resolves the group from the user config.
+In local mode, `server.ts` auto-spawns a broker on loopback and resolves the group from the user config; the Deck does the same at startup (from the `claude-peers` entry of `~/.claude.json`, or the repository it runs from), so a Deck with no session open still reads the roadmap.
 
 ---
 

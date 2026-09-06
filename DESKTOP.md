@@ -174,6 +174,20 @@ Electron + React 19 + zustand, xterm terminals over node-pty. Sources in
   floor, then a thin proportional scrollbar takes over; an expand button
   blows the lane up into a fullscreen foreground modal (same component,
   `fullscreen` prop).
+- **The Deck starts the loopback broker itself** (`main/broker-spawn.ts`,
+  local and replica modes): at startup, before any poller, and again on a
+  broker-health down-flip (throttled to once a minute), `ensureLoopbackBroker`
+  probes `/health` and, when nothing answers, spawns `broker.ts` detached
+  and waits up to 6 s for it -- so a Deck opened with no tile still reads the
+  roadmap and a replica replicates and federates on its own. The script is
+  located from GLOBAL configuration only: the `claude-peers` MCP entry of the
+  user's `~/.claude.json` (the very server.ts every session launches, so the
+  Deck runs the same version; its `command` is reused, `~/.bun/bin` is added
+  to PATH for a GUI launch), else `broker.ts` next to the repository the Deck
+  runs from; a project's `.mcp.json` is never read. Remote mode never spawns
+  (a loopback process would not serve that URL). Every outcome is journaled;
+  a missing script or a broker that never answers is reported through
+  `reportError`, not swallowed.
 - **Replica mode in the Deck (offline replica)**: when the local broker
   replicates a distant one, the Deck reads the replication state off its OWN
   broker and never addresses the upstream — pushing, pulling and relaying
