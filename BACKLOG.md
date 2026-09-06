@@ -1054,10 +1054,20 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       en mémoire, la grâce repart de zéro après la seconde passe échouée ;
       les lignes en file survivent en base. Borné à deux grâces, jamais
       silencieux ; non traité.
-- [ ] **`CLAUDE_PEERS_ACTIVE_STALE_SEC` sous 60 s en mode replica** : les
-      miroirs ne sont rafraîchis que par les passes (échouées) espacées par
-      le backoff (jusqu'à 60 s) ; une valeur inférieure fauche les miroirs en
-      pleine grâce. Documenter un plancher ou rafraîchir sur un minuteur.
+- [x] **`CLAUDE_PEERS_ACTIVE_STALE_SEC` sous 60 s en mode replica** — livré :
+      `sweepInactivePeers` applique deux seuils (`shared/peer-staleness.ts`,
+      `mirrorStaleSec`) -- les lignes miroir (`via IS NOT NULL AND relay_id IS
+      NULL`) planchées à deux fois le plus long intervalle entre deux passes
+      (backoff 60 s ou `SYNC_TICK_MS`), tout le reste (peers locaux, lignes
+      relayées upstream, peer local aliasé) inchangé ; un avertissement unique
+      au démarrage en mode replica dès que le plancher relève la valeur ou que
+      la valeur est invalide. Résiduels : le prédicat « miroir » du balayage
+      (`via IS NOT NULL AND relay_id IS NULL`) diffère des six autres sites
+      qui testent `via IS NOT NULL` seul (équivalent tant qu'une replica ne
+      sert pas de replicas) ; la fixture du test de câblage recopie la forme
+      des INSERT d'`upsertMirror` et de `/federation/sync` au lieu de les
+      produire ; une valeur NaN de `CLAUDE_PEERS_ACTIVE_STALE_SEC` fait
+      toujours échouer le balayage entier avant les deux UPDATE (N-LOG-1).
 - [ ] **`via` n'est qu'une étiquette d'affichage** : les 8 premiers
       caractères d'un `replica_id`, jamais une clé -- deux replicas au même
       préfixe s'afficheraient à l'identique ; les clés restent
@@ -1211,6 +1221,15 @@ configs MCP par lancement (`supervisor-mcp.json`, `demo-mcp.json`,
       `config.ts` à rapatrier (env > fichier > défaut, validation centralisée).
 - [ ] **M-MNT-3** — fonctions surdimensionnées (`handleRegister` ~150 l,
       `handleRoadmapUpsert` ~170 l) à découper.
+- [ ] **Tests dépendants du temps ou de l'ordre** (mesuré le 2026-09-06) :
+      `desktop-templates-composer-draft-reset` rouge dans la suite complète et
+      vert en isolation (ordre d'exécution) ; `broker-roadmap-replica`
+      « queue_replaced counts the local positions… » compte +4 au lieu de +2
+      selon la charge (1 échec sur 7 runs sur une base propre, jusqu'à 5 sur
+      8 sous charge), sans lien avec le code du balayage qui ne tourne jamais
+      dans les 21 s du fichier. Deux passes de pull semblent appliquer la même
+      page après la reconnexion ; à reproduire avec `CLAUDE_PEERS_SYNC_TICK_MS`
+      bas avant de toucher l'assertion.
 - [ ] **Dérive documentaire** (N-MNT-11) : réaligner versions/docs
       (`package.json` vs mentions de version dans la doc).
 - [ ] **Duplication & perfs** (N-MNT-1..10) : TOFU secret de groupe ×3, DELETE
