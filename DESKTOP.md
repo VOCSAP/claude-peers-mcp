@@ -128,7 +128,8 @@ Electron + React 19 + zustand, xterm terminals over node-pty. Sources in
   a doc with the pre-filled unsubmitted prompt node, flips the draft
   broker-side, and navigates the graph view onto it (`graphFocus` in the
   store). The inbox itself is persisted to `inbox-history.json`
-  (`inbox-store.ts`) because the broker drain is destructive.
+  (`inbox-store.ts`), under this window's session dir (see "State scopes"
+  below), because the broker drain is destructive.
 - **Roadmap (🗺 rail view)**: kanban board over the broker's shared roadmap —
   one column per status (idea/planned/in_progress/done, + archived behind the
   toggle), MoSCoW priority as a colored chip + in-column sort, native HTML5
@@ -343,6 +344,25 @@ Electron + React 19 + zustand, xterm terminals over node-pty. Sources in
   per-provider status, never a throw; tokens never cross the IPC boundary
   (reports carry percentages only); snapshot cached 3 min main-side because
   the Anthropic endpoint rate-limits aggressive polling.
+- **State scopes**: `userData` is shared by every Kory window on the machine
+  (no single-instance lock, by design), so before writing a file under
+  `userData/config` ask one question: *must two Kory windows see the same
+  value?* Three answers, three scopes -- **SESSION** (what THIS window lived
+  through: keyed by `group_id`, written under `sessions/<groupId>/` through
+  `sessionStateDir()` in `session-state.ts`, removed at exit for every scope
+  kind and swept at startup when older than `KORY_SESSION_STATE_TTL_DAYS`,
+  default 7 -- never "every group I do not know", a second live window owns
+  one), **PROJECT** (belongs to the repo whatever the window: keyed by
+  `project_key` like `approvals.json`, `graph-store.ts`, `review-pending.json`),
+  **MACHINE** (the operator and the workstation: `config.json`,
+  `operator.json`). A session-scoped file whose key is absent is not "global
+  by default", it is a leak: the inbox journal used to be one. Every file name
+  written under the state dir is classified with a reason in
+  `tests/desktop-state-scope.test.ts`, which also requires session files to
+  be reached through the per-group dir; a new store fails that test until it
+  is classified. Keying is not locking: two windows on the SAME repo writing
+  one project file still last-writer-win (`config.json` alone holds the
+  inter-process lock).
 - **Security gates**: any value that comes from a CLONED REPO (project
   `.claude/claude-peers/config.json`, project-local `templates/*.json`) and
   reaches a shell / spawn is an RCE vector, so it is either GLOBAL-config-only

@@ -1125,7 +1125,77 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       Kory partagent chaque store (config, workspaces, roadmap cache local,
       etc.) ; le verrou `config.json` livré ci-dessus ne couvre QUE ce fichier
       -- les autres stores écrits par plusieurs fenêtres restent exposés au
-      même dernier-écrivain-gagne silencieux.
+      même dernier-écrivain-gagne silencieux. Refusé pour l'instant par le
+      brief d'isolation (`docs/DESIGN-DECK-STATE-ISOLATION.md` §7) : un
+      verrou mono-instance fusionnerait deux `kory` lancés sur deux dépôts en
+      deux fenêtres d'un même processus ; à cadrer séparément.
+
+### 3.10 Isolation des états du Deck entre deux fenêtres Kory — résiduels
+
+Brief : `docs/DESIGN-DECK-STATE-ISOLATION.md`. Lots A à E livrés le
+2026-09-06 : inbox opérateur (`inbox-history.json`, `inbox-ack.json`) et
+configs MCP par lancement (`supervisor-mcp.json`, `demo-mcp.json`,
+`demo-scenario.md`) sous `sessions/<groupId>/` (`session-state.ts`), supprimés
+à la sortie et balayés au démarrage au-delà de `KORY_SESSION_STATE_TTL_DAYS` ;
+`review-pending.json` clé par `project_key` ; garde de discipline
+`tests/desktop-state-scope.test.ts`. Reste ouvert :
+
+- [ ] **Dernier-écrivain-gagne entre deux fenêtres** (§7, différé) : cléer
+      n'est pas verrouiller. Deux fenêtres sur le MÊME dépôt se perdent une
+      écriture sur `approvals.json`, `launch-approvals.json`, `sandbox.json`,
+      `graphs-<hash>.json` ; et `review-pending.json` étant une carte par
+      `project_key` dans UN fichier, deux fenêtres sur deux dépôts DISTINCTS
+      écrivant le même instant se perdent aussi une entrée (perte, jamais
+      fuite). Patron à généraliser : le verrou fichier de `peers-config-store.ts`.
+- [ ] **Deux fenêtres sur le MÊME scope custom** partagent `sessions/<groupId>/`
+      (même `group_id`) : la sortie propre de l'une supprime le journal
+      d'inbox de l'autre, qui le recrée vide à son prochain drain (perte,
+      jamais fuite ; le renderer garde sa liste en mémoire jusqu'au reload).
+      Le brief tolère les étrangetés « même dépôt » ; à traiter si l'usage
+      apparaît (un discriminant par fenêtre en plus du `group_id`).
+- [ ] **Q3 (§11)** : deux fenêtres ouvrant le companion (📱) se disputent le
+      port et `companion-cert.json` ; non audité.
+- [ ] **Q4 (§11)** : journal d'activité et logs (`main.log`,
+      `journal-<stamp>.log`) classés MACHINE par la garde, non audités pour une
+      fuite de contenu entre projets.
+- [ ] **Q5 (§11)** : `sessions.json` (écriture seule, plus rien ne le lit) --
+      à supprimer ou à laisser inerte ; classé MACHINE en attendant.
+- [ ] **Q6 (§11)** : TTL de balayage 7 jours par défaut ; un keepalive
+      horaire (`touchSessionStateDir`) protège une fenêtre vivante mais
+      silencieuse plus longue que le TTL. Un TTL plus court (24 h) reste
+      possible via `KORY_SESSION_STATE_TTL_DAYS`.
+- [ ] **Angles morts de la garde** (documentés en tête de
+      `tests/_state-scope-audit.ts`, mesurés verts en miroir par la revue
+      adverse du 2026-09-06) : le constructeur de répertoire est reconnu par
+      NOM et non par résolution d'import (une déclaration locale homonyme
+      rebranchée sur la racine passe) ; un `group_id` constant passé au
+      constructeur passe ; une constante de nom déclarée sous
+      `desktop/src/shared` et importée n'est pas balayée ; un export
+      d'`inbox-store.ts` en arrow-const ou à paramètre objet échappe au
+      contrôle des exports. Fermer chacun demande un vrai résolveur
+      d'imports, hors de proportion tant qu'aucun cas réel n'existe.
+- [ ] **Entrées étrangères sous `sessions/`** : un nom qui n'est pas un
+      `group_id` (32 hex minuscules) n'est jamais balayé (fail-safe, listé
+      `foreign` dans le log de balayage) ; §6.2 dit « tout dossier ».
+- [ ] **`review-pending.json` corrompu** : `clearReviewState` supprime alors
+      le fichier ENTIER (les entrées des autres projets avec, illisibles de
+      toute façon) ; le plafond de 512 KiB est par revue, pas par fichier ;
+      et `reviewProjectKey()` relance deux `git` à chaque `review-load/save/clear`.
+- [ ] **Veille longue** : les `setInterval` ne tirent pas pendant la veille ;
+      une fenêtre restée ouverte plus de `KORY_SESSION_STATE_TTL_DAYS` en
+      veille a un mtime périmé jusqu'au premier keepalive après réveil, et un
+      second Kory démarrant dans cette fenêtre balaierait son dossier vivant.
+- [ ] **Fichiers de contexte d'inférence** (`graph-context-<nodeId>-<cli>.md`,
+      `writeContextFile`) : nom sans discriminant de fenêtre ; deux fenêtres
+      lançant la même inférence utilitaire (help, wand, digest) au même
+      instant se recouvrent (perte de contexte, jamais fuite : le fichier est
+      lu par le CLI au lancement). Découvert par l'inventaire de la garde,
+      hors inventaire du brief §4.
+- [ ] **Migration du contenu d'inbox existant** : refusée (§5), le fichier
+      non clé est supprimé au premier démarrage avec une ligne de log
+      comptant les entrées jetées ; ne pas y revenir.
+- [ ] **Cloisonner la base du broker par groupe** : refusé (§12) ; ne pas y
+      revenir sans en parler à l'opérateur.
 
 ---
 

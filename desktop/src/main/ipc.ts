@@ -241,6 +241,12 @@ interface IpcDeps {
   /** Courrier lot 1E (card 1e81ee7b): manual delete, see inbox-store.ts. */
   inboxDelete: (ids: number[]) => Promise<number>
   /**
+   * SESSION-scoped state dir of this window, sessions/<groupId>/ under the
+   * shared state dir (session-state.ts). Every file that belongs to the
+   * window (inbox journal, per-run MCP configs) is written through it.
+   */
+  sessionStateDir: () => string
+  /**
    * Card 3c322f10 (piece 2, operator route): lazily start (or return the
    * already-started) deck-control HTTP endpoint. `sessions:create` awaits
    * this itself, proactively, BEFORE calling into SessionService.create()
@@ -280,7 +286,8 @@ export function registerIpc({
   announceTo,
   purgeInboxSession,
   inboxDelete,
-  ensureControlServer
+  ensureControlServer,
+  sessionStateDir
 }: IpcDeps): void {
   // ----- sessions -----
   regHandle('sessions:list', () => service.list())
@@ -405,6 +412,9 @@ export function registerIpc({
   // Sibling of, not inside, the annotations dir -- so the state file itself
   // is never swept by the annotations dir's 7-day prune.
   const reviewStateFile = (): string => join(app.getPath('userData'), APP_STATE_SUBDIR, 'review-pending.json')
+  // PROJECT scope, keyed like approvals.json: a pending review belongs to
+  // the repository, and two windows on distinct repos hold distinct entries.
+  const reviewProjectKey = (): string => computeDeckProjectKey(getConfig().projectDir)
 
   // Persist an annotated screenshot (page capture + operator strokes,
   // composited renderer-side) so the docked agent can Read the image file.
@@ -441,7 +451,7 @@ export function registerIpc({
   // against it); the state file itself is a sibling under app state, not
   // inside the annotations dir (so its own 7-day prune never touches it).
   regHandle('browser:review-load', () =>
-    readReviewState(reviewStateFile(), {
+    readReviewState(reviewStateFile(), reviewProjectKey(), {
       annotationsDir: reviewAnnotationsDir(),
       report: (m, e) => reportError('browser', m, e)
     })
@@ -457,7 +467,7 @@ export function registerIpc({
       throw new Error('invalid review state')
     }
     try {
-      await writeReviewState(reviewStateFile(), validated)
+      await writeReviewState(reviewStateFile(), reviewProjectKey(), validated, (m, e) => reportError('browser', m, e))
       return true
     } catch (err) {
       reportError('browser', 'review-save failed', err)
@@ -467,7 +477,7 @@ export function registerIpc({
 
   regHandle('browser:review-clear', async () => {
     try {
-      await clearReviewState(reviewStateFile())
+      await clearReviewState(reviewStateFile(), reviewProjectKey(), (m, e) => reportError('browser', m, e))
     } catch (err) {
       reportError('browser', 'review-clear failed', err)
       throw err
@@ -525,16 +535,21 @@ export function registerIpc({
       }
       const stateDir = join(app.getPath('userData'), APP_STATE_SUBDIR)
       const control = await startDemoControl(createBrowserDriver(wc))
+      // Per-run control token and the operator's scenario are this window's:
+      // written under its session dir, never the shared root. Resolved AFTER
+      // the await, so a quit during it refuses the write instead of
+      // recreating the removed directory.
+      const demoDir = sessionStateDir()
       try {
         const mcpConfigPath = writeDemoMcpConfig({
-          dir: stateDir,
+          dir: demoDir,
           mcpScriptPath: mcpScript,
           execPath: process.execPath,
           controlUrl: control.url,
           controlToken: control.token
         })
         const systemPromptFile = writeDemoSystemPrompt(stateDir)
-        const scenarioFile = writeDemoScenarioFile(stateDir, scenario.trim())
+        const scenarioFile = writeDemoScenarioFile(demoDir, scenario.trim())
         const command = buildDemoCommand({
           scenarioFile,
           systemPromptFile,
@@ -1514,9 +1529,7 @@ export function registerIpc({
   // drain (cursor by session_id) does not delete rows, session_id itself is
   // minted in-memory and never survives a restart, so the broker alone cannot
   // reconstruct history after one.
-  regHandle('inbox:history', () =>
-    loadInboxHistory(join(app.getPath('userData'), APP_STATE_SUBDIR))
-  )
+  regHandle('inbox:history', () => loadInboxHistory(sessionStateDir()))
   regHandle('inbox:delete', (_e, rawIds: unknown) => {
     // Hostile IPC arg (renderer/companion input): checking Array.isArray
     // alone left the ELEMENTS unvalidated, so string-shaped ids used to
@@ -1560,19 +1573,18 @@ export function registerIpc({
   // system of its own, so a hand-built payload bypassing TS could still
   // arrive shaped like an approval -- rejected there, never silently
   // coerced into a key.
-  const ackedStateDir = (): string => join(app.getPath('userData'), APP_STATE_SUBDIR)
   regHandle('inbox:ack-state', () =>
-    loadAckStateWithMigrationSeed(ackedStateDir(), (e) =>
+    loadAckStateWithMigrationSeed(sessionStateDir(), (e) =>
       journal.add('error', `inbox ack migration-seed persist failed: ${e instanceof Error ? e.message : String(e)}`)
     )
   )
   regHandle('inbox:mark-seen', (_e, entry: AckableInboxEntry) =>
-    appendSeenKey(ackedStateDir(), inboxEntryKey(entry), undefined, (e) =>
+    appendSeenKey(sessionStateDir(), inboxEntryKey(entry), undefined, (e) =>
       journal.add('error', `inbox seen persist failed: ${e instanceof Error ? e.message : String(e)}`)
     )
   )
   regHandle('inbox:ack', (_e, entry: AckableInboxEntry) =>
-    appendAckedKey(ackedStateDir(), inboxEntryKey(entry), undefined, (e) =>
+    appendAckedKey(sessionStateDir(), inboxEntryKey(entry), undefined, (e) =>
       journal.add('error', `inbox ack persist failed: ${e instanceof Error ? e.message : String(e)}`)
     )
   )
