@@ -29,6 +29,17 @@ inacceptable. Leur duree de vie est celle de la session Kory, ce qui est
 DEJA la regle du flux vivant (un `session_id` d'inbox est minte en memoire et
 jamais persiste, donc un redemarrage repart d'un curseur vierge).
 
+**DECIDE (operateur, 2026-09-06)** -- cette ephemerite est INCONDITIONNELLE :
+un scope `custom` ne conserve pas davantage son inbox qu'un scope `ephemeral`.
+Le `group_id` d'un scope personnalise est stable, mais les PEERS derriere ne
+le sont pas -- une nouvelle session Kory mint de nouveaux `peer_id`, et rien
+ne garantit qu'un message conserve corresponde encore a un agent vivant ni au
+travail en cours. Garder l'inbox inviterait a repondre a une question sans
+rapport avec ce que fait le peer qui porte aujourd'hui ce nom. La stabilite de
+la CLE ne vaut pas stabilite des IDENTITES qu'elle indexe : c'est la meme
+regle que celle qui interdit de traiter un `peer_id` comme une identite
+portable (`docs/DESIGN-PEER-FEDERATION.md` §1).
+
 ---
 
 ## 2. Ce que le code fait aujourd'hui
@@ -95,7 +106,7 @@ dernier-ecrivain-gagne sans fuite de contenu.
 |---|---|---|---|---|
 | `inbox-history.json` (`inbox-store.ts:14`) | messages operateur draines, `{id, from, text, sentAt}` | **aucune** | SESSION | **FUITE** |
 | `inbox-ack.json` (`inbox-store.ts:116`) | etat d'acquittement par entree | **aucune** | SESSION | **FUITE** |
-| `review-pending.json` (`ipc.ts:407`) | revue de diff en attente | **aucune** | SESSION ou PROJET (§10 Q2) | **FUITE** |
+| `review-pending.json` (`ipc.ts:407`) | revue de diff en attente | **aucune** | PROJET (tranche, §11 Q2) | **FUITE** |
 | `sessions.json` (`store.ts:117`) | liste des tuiles, ecrite par `persist()` (`session-service.ts:1542`) | **aucune** | -- | **BRUIT** : ecriture seule, la restauration passe par les workspaces (`session-service.ts:280`) |
 | `config.json` (`store.ts:116`) | reglages de l'app | aucune, VOULU | MACHINE | OK (verrou fichier livre) |
 | `graphs/graphs-<hash(project_key)>.json` (`graph-store.ts:43`) | graphes persistes | `project_key` | PROJET | OK |
@@ -155,6 +166,10 @@ userData/config/sessions/<groupId>/inbox-ack.json
   reecriture. Les signatures deviennent `(sessionDir)` ou le Deck passe
   `sessionStateDir(stateDir, groupId)`.
 
+**DECIDE** -- aucun etat de portee SESSION ne survit a la fermeture, quel que
+soit le genre de scope (§1). Le dossier est un cache de la session en cours,
+jamais un historique.
+
 **DECIDE** -- pas de migration des fichiers existants. Le contenu actuel est un
 melange non attribuable de plusieurs groupes : le repartir serait deviner. Le
 fichier historique est **supprime** au premier demarrage qui applique la
@@ -172,13 +187,16 @@ fuite de disque (un dossier par demarrage de Kory).
 **DECIDE** -- trois regles cumulatives :
 
 1. **Sortie propre** : a la fermeture de la fenetre, le dossier de son groupe
-   est supprime si le scope est `ephemeral`. Un scope `custom` (`kory
-   mon-scope`) est reproductible et son etat SURVIT -- c'est ce qui rend le
-   scope personnalise utile.
-2. **Balayage au demarrage** : tout dossier de `sessions/` dont le groupe n'a
-   ni secret vivant dans `scope-secrets.json` ni activite depuis
-   `KORY_SESSION_STATE_TTL_DAYS` (defaut 7) est supprime. C'est le filet des
-   sorties non propres (crash, arret machine).
+   est supprime -- `ephemeral` comme `custom`, sans exception (§1 : la
+   stabilite de la cle ne vaut pas stabilite des peers indexes). Aucune
+   branche conditionnelle sur `scopeKind` : une seule regle, donc aucun
+   chemin ou un etat survivrait par omission.
+2. **Balayage au demarrage** : tout dossier de `sessions/` dont le `mtime` est
+   plus vieux que `KORY_SESSION_STATE_TTL_DAYS` (defaut 7) est supprime. C'est
+   le filet des sorties non propres (crash, arret machine) -- le seul chemin
+   par lequel un dossier survit a sa fenetre. La presence d'un secret dans
+   `scope-secrets.json` n'exempte RIEN : ce fichier sert a rejoindre un
+   groupe, pas a conserver ce qu'il a recu.
 3. **Jamais pendant qu'une autre fenetre tourne** : le balayage ne supprime que
    des dossiers dont le `mtime` est plus vieux que le TTL, jamais « tous les
    groupes que je ne connais pas » -- une seconde fenetre vivante possede un
@@ -265,7 +283,7 @@ repertoires injectes -- aucun import d'electron, conformement aux suites
 |---|---|---|
 | **A** | `sessionStateDir(stateDir, groupId)` + bascule de `inbox-history.json` et `inbox-ack.json` + suppression du fichier historique + tests 9.1 et 9.2 | ferme F1, la fuite que l'operateur juge inacceptable |
 | **B** | Nettoyage (§6) + test 9.3 | sans lui, A fait grossir le disque a chaque demarrage ; A et B ne devraient pas etre separes de plus d'un lot |
-| **C** | `review-pending.json` selon Q2 | ferme F2 |
+| **C** | `review-pending.json` bascule en portee PROJET, clee par `project_key` comme `approvals.json` | ferme F2 |
 | **D** | Garde de discipline (§8) + classification des fichiers existants | rend la classe fail-closed ; en dernier parce qu'elle exige que A a C aient fixe la disposition |
 | **E** | Documentation : `DESKTOP.md` (une regle de portee), `BACKLOG.md` (items coches, residuels du §7) | -- |
 
@@ -274,16 +292,16 @@ de revenir et ne doit pas etre repousse indefiniment.
 
 ---
 
-## 11. Questions ouvertes, a trancher avant le lot A
+## 11. Arbitrages et questions restantes
 
 | # | Question | Proposition | Alternative |
 |---|---|---|---|
-| Q1 | Un scope `custom` (`kory mon-scope`) conserve-t-il son inbox entre deux lancements ? | oui : c'est la difference utile entre `custom` et `ephemeral`, et la duree de vie « session Kory » se lit alors comme « session de CE scope » | non : tout est ephemere, `custom` ne sert qu'a retrouver ses agents |
-| Q2 | Portee de `review-pending.json` | PROJET (`project_key`) : une revue de diff appartient au depot, pas a la fenetre, et la retrouver au redemarrage a de la valeur | SESSION, par coherence stricte avec l'inbox |
+| Q1 | Un scope `custom` conserve-t-il son inbox entre deux lancements ? | **TRANCHE (operateur, 2026-09-06) : NON**, l'ephemerite est inconditionnelle -- la cle est stable, les peers qu'elle indexe ne le sont pas (§1) | -- |
+| Q2 | Portee de `review-pending.json` | **TRANCHE (operateur, 2026-09-06) : PROJET** (`project_key`) -- une revue de diff appartient au depot, pas a la fenetre, et la retrouver au redemarrage a de la valeur | -- |
 | Q3 | Deux fenetres ouvrant le companion (📱) | hors perimetre, a verifier separement : elles se disputent un port et un certificat | traiter dans ce lot |
 | Q4 | Journal d'activite et logs | a inventorier : je ne les ai pas audites, ils sont probablement de portee MACHINE et sans fuite de contenu sensible entre projets | -- |
 | Q5 | `sessions.json` (ecriture seule, legacy) | le supprimer : plus rien ne le lit, il ne fait qu'ajouter une ecriture concurrente | le laisser, inerte |
-| Q6 | TTL de balayage | 7 jours | plus court (24 h) : moins de residus, mais un poste eteint une semaine perd des dossiers encore utiles a un scope `custom` |
+| Q6 | TTL de balayage | 7 jours | plus court (24 h) : le dossier ne survit qu'a une sortie non propre (Q1), donc un TTL court ne fait perdre que le rattrapage d'un crash suivi d'une semaine sans relancer |
 
 ---
 
