@@ -6,12 +6,12 @@ Brief ecrit le 2026-09-06, avant implementation, pour lever la limite v1 du
 mode `replica` (`docs/DESIGN-OFFLINE-REPLICA.md` §2.2 et §10, `BACKLOG.md`
 §3.9 item n°1) : en mode replica les tables `peers` et `messages` sont locales
 a chaque broker, donc la messagerie inter-machines est coupee MEME EN LIGNE.
-Les arbitrages ouverts sont en §11 ; ils sont a trancher AVANT le code.
+Les huit arbitrages de §11 ont ete tranches par l'operateur le 2026-09-06 ;
+le brief est la reference du lot d'implementation.
 
 Etiquettes : **MESURE** (commande executee, sortie citee), **DEDUIT** (lu dans
-le code, `file:line`), **DECIDE** (arbitrage propose ici ; ceux marques
-« operateur, 2026-09-06 » sont tranches, les autres restent a confirmer en
-§11).
+le code, `file:line`), **DECIDE** (arbitrage ; ceux marques « operateur,
+2026-09-06 » ont ete tranches par l'operateur, les autres par l'architecte).
 
 ---
 
@@ -151,8 +151,8 @@ locale et l'expose dans `list_peers` (`Federated as: <nom>`) ; le nom local
 ne change pas (un `set_id` sous les pieds d'un agent est pire qu'un alias).
 Un `set_id` local repart au passage suivant et l'upstream renomme la ligne
 relayee si le nouveau nom est libre. L'affectation est COLLANTE : tant que la
-replica propose le meme nom, la ligne garde le sien. (**a confirmer**, §11
-Q5 : l'alternative est de refuser le relais du peer en collision.)
+replica propose le meme nom, la ligne garde le sien. **DECIDE (operateur,
+2026-09-06)** -- confirme.
 
 ### 2.2 Ce que l'upstream fait d'un peer relaye
 
@@ -212,10 +212,11 @@ noms) les voient alors sans qu'aucune requete ne change. Une ligne miroir :
 - `pid = 0`, `client_pid = 0` ; `host`, `cwd`, `git_root`, `project_key`,
   `summary`, `role`, `last_activity_at`, `status` copies ; `last_seen = now`
   du passage ;
-- non recue dans un passage -> dormante ; a la bascule OFFLINE (hysteresis
-  de `runSyncPass`) -> TOUTES dormantes immediatement, sans attendre les
-  120 s du sweep : hors ligne, un agent local ne doit pas voir un peer
-  distant comme joignable ;
+- non recue dans un passage REUSSI -> dormante ; pendant une coupure les
+  miroirs restent visibles, marques « lien tombe depuis N s », jusqu'a
+  l'expiration de la grace de federation (§5), puis passent TOUS dormants.
+  Le sweep local (`last_seen` + 120 s) est neutralise pour eux : `last_seen`
+  est rafraichi a chaque passage, meme echoue, tant que la grace court ;
 - `cleanStalePeers` phase 1 EXCLUT `via IS NOT NULL` ; phase 2 les purge
   comme les autres (recreees au prochain passage) ;
 - collision avec une ligne LOCALE de meme `peer_id` (peer local enregistre
@@ -249,9 +250,11 @@ upstream, `/federation/send` resout l'expediteur = ligne
 reutilise `handleSendMessage` avec le token INTERNE de cette ligne : le
 destinataire natif recoit en WS, un destinataire relaye par une autre
 replica attend son passage ; `to_peer_id = 'operator'` est REFUSE par
-`/federation/send` (§2.5 : l'inbox ne traverse jamais). Un echec reseau ou un 5xx rend `{ ok: false, error: "peer 'X' is on
-another machine and the upstream broker did not answer" }` a l'agent --
-immediat, explicite, aucune file (§5).
+`/federation/send` (§2.5 : l'inbox ne traverse jamais). Un 4xx de l'upstream
+(peer inconnu, groupe refuse) rend son `{ ok: false, error }` a l'agent tel
+quel. Un echec RESEAU ou un 5xx, ou un lien deja tombe, bascule sur la file
+de grace (§5) : le message est accepte, mis en file locale, et l'agent en
+est informe dans l'ack.
 
 **Entrant (peer distant -> agent local)** -- tire par `/federation/sync` :
 la reponse porte les lignes `messages` upstream non livrees dont `to_token`
@@ -262,8 +265,10 @@ La replica insere chaque ligne LOCALEMENT : `to_token` = le peer local dont
 `relay_ref` correspond, `from_token` = la ligne miroir de `from_peer_id` dans
 le groupe (creee dormante si inconnue, pour que la FK et `resolveSenderMeta`
 tiennent), `federation_id` = l'`id` upstream avec un index UNIQUE partiel
-(`INSERT OR IGNORE` : un lot re-tire apres un crash ne duplique rien), puis
-pousse en WS local et laisse `check_messages`/`peek` faire le reste : les
+(`INSERT OR IGNORE` : un lot re-tire apres un crash ne duplique rien) --
+par `insertMessage` direct, JAMAIS par `recordMessageTx` : la mecanique A y
+marquerait livres les messages en file ADRESSES a ce miroir (§5), c'est-a-
+dire les supprimerait sans les envoyer -- puis pousse en WS local et laisse `check_messages`/`peek` faire le reste : les
 trois chemins de reception de `server.ts` sont inchanges. Les ids inseres
 sont renvoyes dans `ack` au passage suivant ; l'upstream ne marque
 `delivered = 1` QU'a l'acquittement. Ni la purge TTL (7 j, non livres) ni
@@ -304,11 +309,17 @@ Migrations idempotentes `ALTER TABLE ... ADD COLUMN`, meme motif que
 | `peers.upstream_peer_id TEXT` | replica | nom de cette ligne chez l'upstream : alias affecte a un peer local relaye, ou vrai nom d'un miroir ; index UNIQUE partiel `(group_id, upstream_peer_id) WHERE via IS NOT NULL` |
 | `messages.federation_id INTEGER` | replica | `id` upstream d'un message tire ; UNIQUE partiel `WHERE federation_id IS NOT NULL` |
 
+La file de grace (§5) n'a pas de colonne : une ligne `messages` dont
+`to_token` est un miroir (`via IS NOT NULL`) et `delivered = 0` EST la file,
+ordonnee par `id`.
+
 Pas de nouvelle table, aucune nouvelle cle dans `roadmap_sync_meta`.
 
 Toute colonne ajoutee a `peers` est LISTEE dans la nouvelle pick-list de
 `toPublicPeer` (§7) : `via` et `upstream_peer_id` publies, `relay_id` et
-`relay_ref` retenus. Un test compare la pick-list au schema vivant et
+`relay_ref` retenus. Un champ calcule, `link_down_since` (ISO ou null), est
+ajoute par `handleListPeers` sur les miroirs pendant la grace : il ne vit
+dans aucune colonne. Un test compare la pick-list au schema vivant et
 echoue sur toute colonne non decidee.
 
 ---
@@ -362,38 +373,50 @@ reponse est celle de ce handler.
 
 ---
 
-## 5. Hors ligne : le sort des messages est un refus explicite
+## 5. Hors ligne : grace de federation et file de meme duree
 
-**DECIDE** (**a confirmer**, §11 Q1) -- aucune file d'attente. Un message
-inter-machines emis hors ligne est REFUSE immediatement, l'agent recoit
-`ok: false` avec la raison, et decide lui-meme (retenter, informer, passer
-en local). Motifs :
+**DECIDE (operateur, 2026-09-06)** -- ni refus sec ni file sans fin. Les deux
+extremes ont un defaut nomme par l'operateur : un refus immediat invite
+l'agent a re-tenter en boucle alors que la machine est peut-etre loin du
+reseau pour des heures ; une file illimitee livre a la reconnexion des
+messages trop vieux, a un destinataire qui n'est sans doute plus la. La
+regle retenue couple la VISIBILITE du peer distant et la DUREE DE VIE de la
+file sur une seule constante :
 
-- le contrat de `send_message` est deja « feu et oublie, le broker ne
-  garantit que le depot » ; une file avec expiration ajouterait un troisieme
-  sort (« depose puis expire ») dont l'agent ne serait jamais informe -- une
-  perte SILENCIEUSE, exactement ce que le brief replica refuse pour la file
-  de dispatch (§4) ;
-- le relais synchrone (§2.4) EST le detecteur : entre la coupure reelle et
-  la bascule de l'hysteresis (deux passages), un envoi echoue sur l'appel
-  lui-meme et rend le meme refus -- pas de fenetre ou un message serait
-  accepte puis perdu ;
-- les messages ENTRANTS ne sont pas concernes : emis par un tiers vers un
-  peer relaye pendant la coupure, ils attendent `delivered = 0` upstream
-  (TTL 7 j) et arrivent au premier passage de la reconnexion. Rien n'est
-  perdu cote local ; les messages locaux ne quittent jamais la machine.
+`CLAUDE_PEERS_FEDERATION_GRACE_SEC` (defaut 600 = `LOCK_GRACE_SEC`, la
+grace que l'upstream accorde deja a une replica muette pour ses verrous ;
+plancher 30). Elle mesure, cote replica, depuis combien de temps le lien
+avec l'upstream est tombe (`syncStateSince` de la bascule offline).
 
-Formulation du refus quand la cible est un miroir DORMANT et la replica est
-`offline` : « peer 'X' is on another machine (via ...) and the upstream
-broker is unreachable, working offline » -- distinct du « not found in your
-group » d'un nom inconnu, pour que l'agent ne conclue pas que le peer a
-disparu.
+| Depuis la bascule offline | Peers distants dans `list_peers` | `send_message` vers un peer distant |
+|---|---|---|
+| lien vivant | visibles, `Via: upstream broker` | relais synchrone (§2.4) ; sur echec reseau -> file |
+| < grace | visibles, `Via: upstream broker (link down for Ns, Ms left)` | accepte : `{ ok: true, queued: true }`, ack « queued, will be delivered if the link returns within M min, dropped otherwise » |
+| >= grace | ABSENTS (miroirs dormants) | « not found in your group » ; l'agent ne peut plus viser un peer qu'il ne voit pas |
 
-Hors ligne, `list_peers` ne montre AUCUN peer distant (tous dormants, §2.3) ;
-la messagerie locale et la roadmap continuent (brief replica). A la
-reconnexion : premier passage -> miroirs reactives, lignes relayees
-reactivees upstream (elles y etaient passees dormantes par le sweep),
-messages en attente tires.
+La file : une ligne `messages` locale ordinaire vers le token du miroir
+(§3). A chaque passage REUSSI, les lignes `delivered = 0` vers un miroir
+partent dans l'ordre par `/federation/send` ; 200 -> `delivered = 1` ; 4xx
+-> ligne supprimee et expediteur informe (ci-dessous) ; echec reseau -> la
+passe echoue, la ligne attend. A l'EXPIRATION de la grace, dans le meme
+tick qui rend les miroirs dormants : toutes les lignes en file sont
+supprimees et CHAQUE expediteur recoit un message local du sentinel `deck`
+(meme emetteur que l'evenement d'abandon de verrou du sweep,
+`emitLockAbandonedEvent`) : « your message to 'B' (sent Ns ago) was dropped:
+the upstream broker stayed unreachable for M min ». Aucune perte
+silencieuse : un message en file finit livre, refuse avec raison, ou
+notifie comme abandonne.
+
+Les messages ENTRANTS ne sont pas concernes : emis par un tiers vers un peer
+relaye pendant la coupure, ils attendent `delivered = 0` upstream (TTL 7 j)
+et arrivent au premier passage de la reconnexion. Les messages locaux ne
+quittent jamais la machine.
+
+A la reconnexion, premier passage : miroirs reactives, lignes relayees
+reactivees upstream (elles y etaient passees dormantes par le sweep), file
+videe dans l'ordre, messages en attente tires. Si la reconnexion survient
+apres la grace, il n'y a plus de file : les miroirs reapparaissent
+simplement.
 
 ---
 
@@ -405,7 +428,8 @@ messages en attente tires.
 | `/federation/sync` replica -> upstream | chaque passage de `runSyncPass`, `CLAUDE_PEERS_SYNC_TICK_MS` (5 s), backoff jusqu'a 60 s hors ligne | `last_seen = now` sur chaque ligne relayee presente ; absente -> dormante immediatement |
 | `sweepInactivePeers` upstream | 60 s, seuil 120 s | replica muette -> ses lignes relayees dormantes en <= 180 s (**mecanisme existant**, aucune clause ajoutee) |
 | `sweepInactivePeers` replica | idem | un miroir non rafraichi tombe dormant meme si la bascule offline n'a pas encore eu lieu |
-| bascule `offline` (2 echecs) | -- | tous les miroirs dormants immediatement |
+| bascule `offline` (2 echecs) | -- | miroirs marques « lien tombe », file de grace ouverte |
+| grace ecoulee (`CLAUDE_PEERS_FEDERATION_GRACE_SEC`, 600 s) | -- | miroirs dormants, file supprimee et expediteurs notifies (§5) |
 
 **DECIDE** -- la passe de federation s'ajoute a `runSyncPass` APRES les
 trois passes roadmap (pull, push, verrous), dans la meme fonction, avec la
@@ -418,8 +442,8 @@ la replication roadmap ; les miroirs restent absents, `list_peers` reste
 local, comme en v1.
 
 Latence entrante = au plus un tick (5 s) + le WS local ; sortante = un
-aller-retour upstream. (**a confirmer**, §11 Q4 : un tick dedie plus court
-ou un WS replica -> upstream sont possibles plus tard, pas dans ce lot.)
+aller-retour upstream. **DECIDE (operateur, 2026-09-06)** -- pas de tick
+dedie ; un WS replica -> upstream reste un lot ulterieur.
 
 Une replica dont un peer local s'est tu (heartbeat) le voit passer dormant
 par son propre sweep, l'omet du passage suivant, et l'upstream le bascule
@@ -476,20 +500,27 @@ Ajoutee a `runSyncPass` apres `syncLockPass` :
    `groups` ; `ack` = ids inseres au passage precedent.
 2. Un `POST /federation/sync`. Sur 404 : desactivation (§6). Sur 403/5xx/
    reseau : throw, hysteresis.
-3. Appliquer en UNE transaction locale : `assigned` -> `upstream_peer_id`
+3. Vider la file de grace (§5) : chaque ligne `delivered = 0` vers un miroir,
+   par `id`, via `/federation/send` ; 200 -> livree, 4xx -> supprimee et
+   expediteur notifie, reseau -> throw.
+4. Appliquer en UNE transaction locale : `assigned` -> `upstream_peer_id`
    des lignes locales (journal `warn` une fois par alias qui differe) ;
    `peers` -> upsert des miroirs par `(group_id, upstream_peer_id)`,
    miroirs non recus -> dormants ; `messages` -> `INSERT OR IGNORE` par
    `federation_id`, WS push local pour chaque insertion effective ;
    `refused_groups` -> journal `warn` une fois par groupe et par raison.
-4. Compteurs publies dans le MEME instantane `syncPublished`, en `finally`
+5. Compteurs publies dans le MEME instantane `syncPublished`, en `finally`
    (jamais a mi-passage) : `federation: { active: boolean, relayed, remote,
    refused_groups, last_error }`, exposes par `/roadmap/sync/status` sous
    une cle optionnelle `federation` de `RoadmapSyncStatus` (replica
    seulement) et par `/health` (`federation: 'on' | 'off' | 'unsupported'`).
 
-La bascule `offline` (deja dans `runSyncPass`) execute en plus « tous les
-miroirs dormants ». Rien d'autre ne change dans la boucle.
+Chaque passage ECHOUE, tant que `now - syncStateSince < grace`, rafraichit
+`last_seen` des miroirs (le sweep local ne doit pas les faucher avant la
+grace) ; au premier passage echoue AU-DELA de la grace : miroirs dormants,
+file supprimee, expediteurs notifies (§5). Une grace expiree ne se rejoue
+pas tant que le lien n'est pas revenu. Rien d'autre ne change dans la
+boucle.
 
 ---
 
@@ -497,10 +528,10 @@ miroirs dormants ». Rien d'autre ne change dans la boucle.
 
 | Client | Change |
 |---|---|
-| `server.ts` | `formatPeer` rend `Via:` et `Federated as:` quand presents ; le texte de l'outil `list_peers` mentionne que les peers distants sont marques. Aucun transport, aucun corps de requete, aucun test de parite de corps (`register-body-parity`) ne bouge. |
+| `server.ts` | `formatPeer` rend `Via: upstream broker` (avec « link down for Ns, Ms left » quand `link_down_since` est present) et `Federated as:` quand presents ; l'ack de `send_message` rend la mention « queued » quand la reponse porte `queued: true`. Aucun transport, aucun corps de requete, aucun test de parite de corps (`register-body-parity`) ne bouge. |
 | `cli.ts` | `peers` affiche la colonne `via` (lecture de `/admin/peers`, qui projette par la meme pick-list). |
-| Deck (`desktop/`) | RIEN d'obligatoire : pas de liste de peers, `/announce` et `/operator-inbox` inchanges et locaux (§2.5). Optionnel (**a confirmer**, §11 Q7) : `sanitizeSyncStatus` accepte `federation`, et Settings « Broker » affiche « N agents relayes, M peers distants » avec `last_error` ; deux cles de locale (`en.json`, `fr.json`, `EN_DEFAULTS`). |
-| Docs | `ARCHITECTURE.md` (paragraphe « Replica mode » : peers/messages ne sont plus locaux ; routes ; pick-list), `README.md` (routes, la note « la messagerie est locale en mode replica » retiree), `BACKLOG.md` §3.9 item coche et residuels ajoutes, `DESKTOP.md` seulement si Q7 = oui. |
+| Deck (`desktop/`) | RIEN (operateur, 2026-09-06) : pas de liste de peers, `/announce` et `/operator-inbox` inchanges et locaux (§2.5), pas de compteurs dans Settings. `sanitizeSyncStatus` (pick-list) ignore la cle `federation` du statut sans erreur. |
+| Docs | `ARCHITECTURE.md` (paragraphe « Replica mode » : peers/messages ne sont plus locaux ; routes ; pick-list), `README.md` (routes, la note « la messagerie est locale en mode replica » retiree), `BACKLOG.md` §3.9 item coche et residuels ajoutes. |
 
 ---
 
@@ -552,10 +583,18 @@ peer natif C sur U ; A enregistre sur R1, B sur R2 :
   l'inbox R1 et dans AUCUNE autre (U, R2) ; une annonce Deck diffusee sur
   R1 n'atteint pas B, une annonce ciblee sur B repond 404, et aucune ligne
   `messages` n'apparait sur U ;
-- coupure R1 : `list_peers` de A ne montre plus B ni C ; A -> B refuse avec
-  le message « working offline » ; C -> A accepte, en attente ; C voit A
-  dormant apres `ACTIVE_STALE_SEC` (fixe a 2 s + sweep 1 s par env) ;
-  reconnexion : A recoit le message de C, redevient actif pour C, B revisible ;
+- coupure R1, grace fixee a 3 s par env : `list_peers` de A montre encore B
+  avec `link_down_since` ; A -> B repond `queued: true` ; C -> A accepte, en
+  attente ; C voit A dormant apres `ACTIVE_STALE_SEC` (fixe a 2 s + sweep
+  1 s par env) ; reconnexion AVANT la grace : B recoit le message en file,
+  A recoit celui de C, A redevient actif pour C ;
+- coupure R1 au-dela de la grace : B et C disparaissent de `list_peers`, la
+  ligne en file est supprimee, A recoit un message du sentinel `deck`
+  nommant B et la duree ; A -> B repond « not found » ; reconnexion : B
+  revisible, rien n'est livre a B ;
+- une ligne en file n'est JAMAIS marquee livree par la mecanique A locale
+  quand un message entrant du meme miroir arrive (rouge d'abord si
+  l'insertion passait par `recordMessageTx`) ;
 - collision : A et B renommes `same` par `set_id` ; l'un des deux est
   `same-2` upstream, `Federated as` visible sur sa replica, les deux
   joignables par leur nom upstream depuis C ;
@@ -569,14 +608,14 @@ peer natif C sur U ; A enregistre sur R1, B sur R2 :
 
 | # | Question | Proposition (DECIDE ci-dessus) | Alternative |
 |---|---|---|---|
-| Q1 | Sort d'un message inter-machines emis hors ligne | refus immediat, `ok: false` explicite, aucune file (§5) | file locale avec expiration (`CLAUDE_PEERS_FEDERATION_QUEUE_TTL_MIN`), perte silencieuse a l'expiration |
+| Q1 | Sort d'un message inter-machines emis hors ligne | TRANCHE (operateur, 2026-09-06) : grace de federation, peer distant visible et file acceptee pendant la grace, puis peer invisible, file supprimee et expediteur notifie (§5) | -- |
 | Q2 | Inbox operateur | TRANCHE (operateur, 2026-09-06) : locale, jamais relayee (§2.5) | -- |
 | Q3 | Annonces Deck vers les peers distants | TRANCHE (operateur, 2026-09-06) : locales, les miroirs sont ignores (§2.5) | -- |
 | Q4 | Transport entrant | TRANCHE (operateur, 2026-09-06) : meme passage que la roadmap, tick 5 s (§6) | WS replica -> upstream reste un lot ulterieur (`BACKLOG`) |
 | Q5 | Collision de `peer_id` upstream | TRANCHE (operateur, 2026-09-06) : suffixe upstream, alias `Federated as` (§2.1) | -- |
-| Q6 | Interrupteur | aucun : la federation fait partie du mode `replica` ; l'upstream la gouverne deja par `serve_replicas` | `federate_peers: false` / `CLAUDE_PEERS_FEDERATE_PEERS=0` pour une replica roadmap-seule |
-| Q7 | Deck | compteurs `federation` dans `/roadmap/sync/status` + deux lignes dans Settings « Broker » (§9) | rien cote Deck dans ce lot (compteurs broker-only, `/health` et journal) |
-| Q8 | Groupe `default` | federe comme en mode `remote` | exclu de la federation (loopback uniquement) |
+| Q6 | Interrupteur | TRANCHE (operateur, 2026-09-06) : aucun, la federation fait partie du mode `replica` | -- |
+| Q7 | Deck | TRANCHE (operateur, 2026-09-06) : rien cote Deck ; compteurs broker-only (`/roadmap/sync/status`, `/health`, journal) | -- |
+| Q8 | Groupe `default` | TRANCHE (operateur, 2026-09-06) : federe, les sessions sans groupe se voient comme aujourd'hui en `remote` | -- |
 
 ---
 
