@@ -23,6 +23,8 @@ export interface BrokerScriptLocation {
 export interface LocateDeps {
   readFile: (path: string) => string | null
   exists: (path: string) => boolean
+  /** The operator's home directory, so a hand-written `~/...` entry resolves. */
+  homeDir: string
   /** Trace sink for a claude.json that cannot be parsed (the fallback still runs). */
   warn: (message: string) => void
 }
@@ -50,10 +52,14 @@ export function locateBrokerScript(
     if (entry) {
       const serverArg = entry.args.find((a) => /(^|[\\/])server\.ts$/.test(a))
       if (serverArg) {
+        // `claude mcp add ... -- bun ~/koryphaios/server.ts` stores whatever the
+        // shell handed it, normally already absolute; a file edited by hand can
+        // still carry the tilde, which no filesystem call expands.
+        const expanded = /^~[\\/]/.test(serverArg) ? deps.homeDir + serverArg.slice(1) : serverArg
         // Suffix swap rather than dirname/join: the entry was written on the
         // machine it names, in that platform's separator, which the posix
         // path module of a Linux CI run would not recognise.
-        const script = serverArg.slice(0, -'server.ts'.length) + 'broker.ts'
+        const script = expanded.slice(0, -'server.ts'.length) + 'broker.ts'
         if (deps.exists(script)) return { script, command: entry.command, source: 'claude-json' }
       }
     }

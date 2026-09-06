@@ -26,6 +26,7 @@ function locateDeps(files: Record<string, string>, existing: string[]) {
         return files[p] ?? null;
       },
       exists: (p: string) => existing.includes(p),
+      homeDir: "/home/op",
       warn: (m: string) => warnings.push(m),
     },
   };
@@ -42,6 +43,16 @@ test("the script is the sibling of the server.ts named by the user-scope claude.
     source: "claude-json",
   });
   expect(reads, "only the user-scope claude.json is ever read, never a project .mcp.json").toEqual([CLAUDE_JSON]);
+});
+
+test("a hand-written tilde path is expanded against the operator's home", () => {
+  const { deps } = locateDeps(
+    { [CLAUDE_JSON]: JSON.stringify({ mcpServers: { "claude-peers": { command: "bun", args: ["~/koryphaios/server.ts"] } } }) },
+    ["/home/op/koryphaios/broker.ts"]
+  );
+  expect(locateBrokerScript(CLAUDE_JSON, APP_ROOT, deps)?.script, "a tilde no filesystem call expands must be resolved before the existence check").toBe(
+    "/home/op/koryphaios/broker.ts"
+  );
 });
 
 test("a Windows-style server.ts path resolves to its sibling too", () => {

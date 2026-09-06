@@ -1126,6 +1126,7 @@ async function startLoopbackBroker(reason: 'startup' | 'outage'): Promise<void> 
       locateBrokerScript(join(homedir(), '.claude.json'), app.getAppPath(), {
         readFile: (p) => (existsSync(p) ? readFileSync(p, 'utf8') : null),
         exists: (p) => existsSync(p),
+        homeDir: homedir(),
         warn: (m) => reportError('broker', m)
       }),
     spawn: (command, script) => {
