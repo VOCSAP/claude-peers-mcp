@@ -9,8 +9,9 @@ a chaque broker, donc la messagerie inter-machines est coupee MEME EN LIGNE.
 Les arbitrages ouverts sont en §11 ; ils sont a trancher AVANT le code.
 
 Etiquettes : **MESURE** (commande executee, sortie citee), **DEDUIT** (lu dans
-le code, `file:line`), **DECIDE** (arbitrage propose ici, a confirmer par
-l'operateur en §11 quand il est marque « a confirmer »).
+le code, `file:line`), **DECIDE** (arbitrage propose ici ; ceux marques
+« operateur, 2026-09-06 » sont tranches, les autres restent a confirmer en
+§11).
 
 ---
 
@@ -94,9 +95,9 @@ existent et `Last exchange`. Aucun champ d'origine n'existe.
 les peers : il n'appelle que `/announce`, `/operator-inbox`, les routes
 roadmap/approbations/drafts/dispatch. Le mapping tuile -> peer passe par le
 fichier de cache `peer-id-<cwd>-<session>.txt` (`peer-state.ts:50-86`),
-jamais par le broker. Le perimetre Deck de ce lot est donc REDUIT : aucune
-liste de peers a marquer, seulement les annonces (§2.5) et, en option,
-des compteurs (§9).
+jamais par le broker. Le perimetre Deck de ce lot est donc NUL cote
+messagerie : aucune liste de peers a marquer, et §2.5 garde inbox et
+annonces locales. Seuls des compteurs optionnels restent en question (§9).
 
 **MESURE** (`tests/broker-roadmap-replica.test.ts:58-71`, `:134-148`) -- le
 harnais a deux brokers existe : un proxy `Bun.serve` entre replica et
@@ -115,8 +116,8 @@ upstream suffisent, une par sens de responsabilite :
 
 | Route | Qui appelle | Role |
 |---|---|---|
-| `POST /federation/sync` | la replica, a chaque passage | pousse la LISTE de ses peers actifs (= enregistrement + heartbeat + deconnexion en un seul message), recoit l'annuaire des peers distants, les messages entrants et l'inbox operateur, acquitte le lot precedent |
-| `POST /federation/send` | la replica, SYNCHRONE, depuis `handleSendMessage` / `handleAnnounce` | relaie un message d'un de ses peers (ou de son Deck) vers un peer distant ou l'operateur |
+| `POST /federation/sync` | la replica, a chaque passage | pousse la LISTE de ses peers actifs (= enregistrement + heartbeat + deconnexion en un seul message), recoit l'annuaire des peers distants et les messages entrants, acquitte le lot precedent |
+| `POST /federation/send` | la replica, SYNCHRONE, depuis `handleSendMessage` | relaie un message d'un de ses peers vers un peer distant |
 
 Les deux sont gardees par les trois gardes existantes (§7). Aucune autre
 route ne change de contrat ; `/register`, `/heartbeat`, `/send-message`,
@@ -247,8 +248,8 @@ upstream, `/federation/send` resout l'expediteur = ligne
 `(relay_id = replica_id, relay_ref = from_ref)`, refuse 404 sinon, puis
 reutilise `handleSendMessage` avec le token INTERNE de cette ligne : le
 destinataire natif recoit en WS, un destinataire relaye par une autre
-replica attend son passage, `operator` tombe dans l'inbox upstream du groupe
-(§2.5). Un echec reseau ou un 5xx rend `{ ok: false, error: "peer 'X' is on
+replica attend son passage ; `to_peer_id = 'operator'` est REFUSE par
+`/federation/send` (§2.5 : l'inbox ne traverse jamais). Un echec reseau ou un 5xx rend `{ ok: false, error: "peer 'X' is on
 another machine and the upstream broker did not answer" }` a l'agent --
 immediat, explicite, aucune file (§5).
 
@@ -268,39 +269,25 @@ sont renvoyes dans `ack` au passage suivant ; l'upstream ne marque
 `delivered = 1` QU'a l'acquittement. Ni la purge TTL (7 j, non livres) ni
 `flushPendingForToken` ne changent.
 
-### 2.5 Operateur et Deck
+### 2.5 Operateur et Deck : strictement locaux
 
-**DECIDE** (**a confirmer**, §11 Q2) -- parite avec le mode `remote`, ou
-tous les Decks d'un groupe voient la meme inbox. En ligne, un
-`send_message('operator')` d'un agent local est relaye a l'upstream (meme
-route `/federation/send`, `to_peer_id = 'operator'`) et N'EST PAS depose
-localement ; l'inbox upstream est ensuite TIREE par `/federation/sync` pour
-chaque groupe, avec une session de curseur `replica:<replica_id>` (le chemin
-non destructif de `handleOperatorInbox`, `broker.ts:6052-6081`, en mode
-« lire au-dessus du curseur sans marquer, avancer a l'acquittement »), et
-chaque ligne est deposee dans l'inbox LOCALE (expediteur = miroir, cible =
-`__operator__` du groupe). Le Deck local draine son inbox loopback comme
-aujourd'hui, avec ~un tick de retard ; le Deck d'une machine en mode
-`remote` et ceux des autres replicas voient les memes messages. Pas de
-doublon : le message n'a jamais ete depose localement. Hors ligne, ou si
-l'appel echoue, depot LOCAL comme aujourd'hui (l'operateur de CETTE machine
-le lit) et jamais rejoue vers l'upstream a la reconnexion (il a deja ete lu
-par le seul operateur qui pouvait l'etre). Groupe `default` : refuse aux deux
-bouts comme aujourd'hui, la replica n'essaie meme pas le relais.
+**DECIDE (operateur, 2026-09-06)** -- l'inbox operateur et les annonces Deck
+ne traversent JAMAIS la frontiere, en ligne comme hors ligne. Raison de
+construction : l'inbox n'a d'utilite que dans le Deck Kory, et elle est
+cloisonnee a la session Kory qui la draine ; le Deck ne parle qu'aux sessions
+ouvertes en son sein. Une notification d'un autre utilisateur ou d'un autre
+Deck ne peut donc, par construction, atterrir dans une autre session Kory.
 
-**DECIDE** (**a confirmer**, §11 Q3) -- `handleAnnounce` local : une cible
-miroir (annonce ciblee, ou chaque miroir actif d'une diffusion) est relayee
-par `POST <upstream>/announce { group_id, group_secret_hash, text,
-to_peer_id: <upstream_peer_id> }` -- la route Deck existante, avec le
-sentinel `deck` de l'UPSTREAM comme expediteur, donc le cadrage « ne pas
-accuser reception » est identique a une annonce recue en mode `remote`. Un
-appel par cible, sequentiel ; un echec est journalise et compte dans
-`sent` seulement s'il a abouti. La replica n'appelle jamais `/announce` sans
-`to_peer_id` : la diffusion upstream toucherait ses propres peers relayes en
-double.
-
-Le Deck lui-meme ne change pas de transport et n'a rien a afficher de
-nouveau pour la messagerie ; §9 liste ce qui est optionnel.
+- `send_message('operator')` d'un agent local reste un depot LOCAL,
+  byte-identique a aujourd'hui, quel que soit l'etat de l'upstream.
+- `/federation/send` REFUSE `to_peer_id = 'operator'` (400, message
+  explicite) : une replica ne peut pas ecrire dans l'inbox d'un autre
+  broker, et l'inbox upstream n'est jamais tiree.
+- `handleAnnounce` local ignore les lignes miroir : une diffusion ne les
+  compte pas dans `sent`, une annonce ciblee sur un miroir repond 404 comme
+  pour un peer absent. Le Deck ne connait de toute facon que ses tuiles.
+- Le brief replica §2.2 reste vrai pour ces tables : approbations, dispatch,
+  graph drafts, inbox sont locaux.
 
 ---
 
@@ -317,10 +304,7 @@ Migrations idempotentes `ALTER TABLE ... ADD COLUMN`, meme motif que
 | `peers.upstream_peer_id TEXT` | replica | nom de cette ligne chez l'upstream : alias affecte a un peer local relaye, ou vrai nom d'un miroir ; index UNIQUE partiel `(group_id, upstream_peer_id) WHERE via IS NOT NULL` |
 | `messages.federation_id INTEGER` | replica | `id` upstream d'un message tire ; UNIQUE partiel `WHERE federation_id IS NOT NULL` |
 
-Pas de nouvelle table. `roadmap_sync_meta` gagne une cle
-`federation_inbox_cursor:<group_id>` (dernier `id` d'inbox acquitte par
-groupe, cote replica) -- l'upstream, lui, tient le curseur dans
-`operator_inbox_sessions` sous `session_id = 'replica:<replica_id>'`.
+Pas de nouvelle table, aucune nouvelle cle dans `roadmap_sync_meta`.
 
 Toute colonne ajoutee a `peers` est LISTEE dans la nouvelle pick-list de
 `toPublicPeer` (§7) : `via` et `upstream_peer_id` publies, `relay_id` et
@@ -336,8 +320,8 @@ Bearer ordinaire + les trois gardes de §7.
 
 | Route | Corps | Reponse |
 |---|---|---|
-| `/federation/sync` | `{ replica_id, groups: [{ group_id, group_secret_hash }], peers: FederationRelayPeer[], ack: { messages: number[], inbox: [{ group_id, last_id }] } }` | `{ assigned: [{ relay_ref, peer_id }], peers: FederatedPeer[], messages: FederatedMessage[], inbox: FederatedInboxMessage[], refused_groups: [{ group_id, reason }] }` |
-| `/federation/send` | `{ replica_id, from_ref, to_peer_id, text }` | `SendMessageResponse` (`{ ok, error? }`) ; 404 si `(replica_id, from_ref)` n'est pas une ligne relayee par cet appelant |
+| `/federation/sync` | `{ replica_id, groups: [{ group_id, group_secret_hash }], peers: FederationRelayPeer[], ack: number[] }` | `{ assigned: [{ relay_ref, peer_id }], peers: FederatedPeer[], messages: FederatedMessage[], refused_groups: [{ group_id, reason }] }` |
+| `/federation/send` | `{ replica_id, from_ref, to_peer_id, text }` | `SendMessageResponse` (`{ ok, error? }`) ; 404 si `(replica_id, from_ref)` n'est pas une ligne relayee par cet appelant ; 400 si `to_peer_id` est `operator` (§2.5) |
 
 ```
 FederationRelayPeer   = { relay_ref, peer_id, group_id, host, cwd, git_root,
@@ -346,7 +330,6 @@ FederatedPeer         = { peer_id, group_id, host, cwd, git_root, project_key,
                           summary, role, status, last_seen, last_activity_at, via }
 FederatedMessage      = { id, to_ref, from_peer_id, from_summary, from_host,
                           from_cwd, group_id, text, sent_at }
-FederatedInboxMessage = { id, group_id, from_peer_id, text, sent_at }
 ```
 
 Semantique de `sync`, dans l'ordre, en UNE transaction upstream :
@@ -363,22 +346,18 @@ Semantique de `sync`, dans l'ordre, en UNE transaction upstream :
    replica ne porte pas mille agents).
 3. Toute ligne `relay_id = replica_id` ABSENTE du corps -> `status =
    'dormant'`.
-4. `ack.messages` : `UPDATE messages SET delivered = 1 WHERE id IN (...) AND
+4. `ack` : `UPDATE messages SET delivered = 1 WHERE id IN (...) AND
    to_token IN (lignes relayees par replica_id)` -- un id qui n'est pas
    adresse a un peer de cette replica est ignore, jamais marque.
-   `ack.inbox` : avance le curseur `replica:<replica_id>` du groupe.
 5. Reponse : `peers` = actifs des groupes acceptes, `relay_id IS NULL OR
    relay_id <> replica_id`, hors sentinels, projetes par pick-list ;
    `messages` = non livres adresses aux lignes relayees par `replica_id`,
-   ordre `id`, plafond 200 par passage (le reste part au passage suivant) ;
-   `inbox` = lignes de l'inbox operateur au-dessus du curseur de la replica
-   pour chaque groupe qui peut la porter (`groupMayCarryOperatorInbox`),
-   plafond 200, SANS marquer livre ni avancer le curseur.
+   ordre `id`, plafond 200 par passage (le reste part au passage suivant).
 
 Semantique de `send` : `from_ref` resolu en ligne relayee ; le `text` passe
 par les memes limites que `/send-message` ; puis `handleSendMessage({
-from_token: <token interne>, to_peer_id, text })` -- y compris le refus
-`operator` en groupe `default` et le « not found in your group ». La
+from_token: <token interne>, to_peer_id, text })` -- y compris le « not
+found in your group ». `operator` est refuse AVANT ce handler (§2.5). La
 reponse est celle de ce handler.
 
 ---
@@ -414,7 +393,7 @@ Hors ligne, `list_peers` ne montre AUCUN peer distant (tous dormants, §2.3) ;
 la messagerie locale et la roadmap continuent (brief replica). A la
 reconnexion : premier passage -> miroirs reactives, lignes relayees
 reactivees upstream (elles y etaient passees dormantes par le sweep),
-messages en attente tires, inbox rattrapee depuis le curseur.
+messages en attente tires.
 
 ---
 
@@ -463,7 +442,7 @@ de SES peers, comme pour ses verrous (brief replica §5).
   Elle ne peut PAS : parler au nom d'un peer d'une autre replica (`from_ref`
   n'est resolu que sous SON `relay_id`), marquer livres des messages qui ne
   sont pas adresses a ses peers (`ack` filtre par `relay_id`), lire les
-  peers ou l'inbox d'un groupe dont elle ne presente pas le bon secret
+  peers d'un groupe dont elle ne presente pas le bon secret
   (TOFU par groupe), s'inscrire sous `deck`/`operator`/`system`
   (`RESERVED_PEER_IDS` -> suffixe, comme `deriveDefaultId`), ni presenter un
   `relay_ref` d'une autre forme que 32 hex.
@@ -471,7 +450,7 @@ de SES peers, comme pour ses verrous (brief replica §5).
   test qui la compare au schema vivant de `peers` : `relay_id`, `relay_ref`,
   `instance_token`, `pid`, `client_pid`, `claude_cli_pid` retenus ; `via` et
   `upstream_peer_id` publies. Les projections `FederatedPeer`,
-  `FederatedMessage`, `FederatedInboxMessage` sont des pick-lists aussi, et
+  `FederatedMessage` sont des pick-lists aussi, et
   un test affirme l'ABSENCE de `instance_token`, `from_token`, `to_token`,
   `pid`, `client_pid`, `relay_ref` dans une reponse de `/federation/sync`.
 - Entree hostile n°2 : un champ recu de l'upstream (`peer_id`, `host`,
@@ -494,15 +473,14 @@ Ajoutee a `runSyncPass` apres `syncLockPass` :
 1. Construire `peers` = lignes locales `status = 'active'`, `via IS NULL`,
    hors sentinels, projetees en `FederationRelayPeer` (pick-list, `relay_ref`
    calcule) ; `groups` = les groupes de ces peers avec `secret_hash` lu dans
-   `groups` ; `ack` = ids inseres au passage precedent + curseurs inbox.
+   `groups` ; `ack` = ids inseres au passage precedent.
 2. Un `POST /federation/sync`. Sur 404 : desactivation (§6). Sur 403/5xx/
    reseau : throw, hysteresis.
 3. Appliquer en UNE transaction locale : `assigned` -> `upstream_peer_id`
    des lignes locales (journal `warn` une fois par alias qui differe) ;
    `peers` -> upsert des miroirs par `(group_id, upstream_peer_id)`,
    miroirs non recus -> dormants ; `messages` -> `INSERT OR IGNORE` par
-   `federation_id`, WS push local pour chaque insertion effective ; `inbox`
-   -> depot local vers `__operator__` du groupe, curseur memorise ;
+   `federation_id`, WS push local pour chaque insertion effective ;
    `refused_groups` -> journal `warn` une fois par groupe et par raison.
 4. Compteurs publies dans le MEME instantane `syncPublished`, en `finally`
    (jamais a mi-passage) : `federation: { active: boolean, relayed, remote,
@@ -521,7 +499,7 @@ miroirs dormants ». Rien d'autre ne change dans la boucle.
 |---|---|
 | `server.ts` | `formatPeer` rend `Via:` et `Federated as:` quand presents ; le texte de l'outil `list_peers` mentionne que les peers distants sont marques. Aucun transport, aucun corps de requete, aucun test de parite de corps (`register-body-parity`) ne bouge. |
 | `cli.ts` | `peers` affiche la colonne `via` (lecture de `/admin/peers`, qui projette par la meme pick-list). |
-| Deck (`desktop/`) | RIEN d'obligatoire : pas de liste de peers, `/announce` et `/operator-inbox` inchanges cote Deck (le relais est broker-side). Optionnel (**a confirmer**, §11 Q7) : `sanitizeSyncStatus` accepte `federation`, et Settings « Broker » affiche « N agents relayes, M peers distants » avec `last_error` ; deux cles de locale (`en.json`, `fr.json`, `EN_DEFAULTS`). |
+| Deck (`desktop/`) | RIEN d'obligatoire : pas de liste de peers, `/announce` et `/operator-inbox` inchanges et locaux (§2.5). Optionnel (**a confirmer**, §11 Q7) : `sanitizeSyncStatus` accepte `federation`, et Settings « Broker » affiche « N agents relayes, M peers distants » avec `last_error` ; deux cles de locale (`en.json`, `fr.json`, `EN_DEFAULTS`). |
 | Docs | `ARCHITECTURE.md` (paragraphe « Replica mode » : peers/messages ne sont plus locaux ; routes ; pick-list), `README.md` (routes, la note « la messagerie est locale en mode replica » retiree), `BACKLOG.md` §3.9 item coche et residuels ajoutes, `DESKTOP.md` seulement si Q7 = oui. |
 
 ---
@@ -555,9 +533,8 @@ jouent la replica (aucune vraie replica) :
   qui l'attendent (rouge d'abord : aujourd'hui `recordMessageTx` les
   marque) ;
 - `send` : `from_ref` inconnu ou appartenant a une autre `replica_id` ->
-  404 ; `to_peer_id = 'operator'` en `default` -> refus identique a
-  `/send-message` ; inbox tiree sans marquage ni avance, avancee a l'`ack`,
-  purge `scope='session'` d'un Deck respecte le curseur de la replica ;
+  404 ; `to_peer_id = 'operator'` -> 400, et l'inbox upstream du groupe
+  reste vide ;
 - groupe au secret divergent -> `refused_groups`, ses peers ignores, les
   autres groupes servis ; groupe `default` sans secret servi.
 
@@ -571,10 +548,10 @@ peer natif C sur U ; A enregistre sur R1, B sur R2 :
 - messagerie : A -> B recu par B en WS sur R2 et par `check_messages`
   (une seule fois : `federation_id` UNIQUE) ; B -> A ; A -> C (WS sur U) ;
   C -> A ; `from_peer_id` = le nom upstream de l'expediteur ;
-- operateur : A -> `operator` en ligne est absent de l'inbox R1 avant le
-  tick, present dans l'inbox U et, un tick plus tard, dans l'inbox R1 ET
-  R2 ; hors ligne, present dans R1 seulement, et jamais rejoue ; annonce
-  Deck ciblee sur R1 vers B arrive a B cadree `deck` ;
+- operateur et Deck restent locaux : A -> `operator` en ligne est dans
+  l'inbox R1 et dans AUCUNE autre (U, R2) ; une annonce Deck diffusee sur
+  R1 n'atteint pas B, une annonce ciblee sur B repond 404, et aucune ligne
+  `messages` n'apparait sur U ;
 - coupure R1 : `list_peers` de A ne montre plus B ni C ; A -> B refuse avec
   le message « working offline » ; C -> A accepte, en attente ; C voit A
   dormant apres `ACTIVE_STALE_SEC` (fixe a 2 s + sweep 1 s par env) ;
@@ -593,13 +570,13 @@ peer natif C sur U ; A enregistre sur R1, B sur R2 :
 | # | Question | Proposition (DECIDE ci-dessus) | Alternative |
 |---|---|---|---|
 | Q1 | Sort d'un message inter-machines emis hors ligne | refus immediat, `ok: false` explicite, aucune file (§5) | file locale avec expiration (`CLAUDE_PEERS_FEDERATION_QUEUE_TTL_MIN`), perte silencieuse a l'expiration |
-| Q2 | Inbox operateur | parite `remote` : relais upstream en ligne, miroir de l'inbox upstream vers chaque replica, depot local hors ligne (§2.5) | v1 stricte : `operator` reste toujours local a la machine de l'agent ; seul Deck -> agent distant traverse |
-| Q3 | Annonces Deck vers les peers distants | relayees, ciblees comme diffusees (join/rotation/spawn-ack), par `/announce` upstream cible par cible (§2.5) | ciblees seulement ; ou aucune (annonces locales a la machine) |
-| Q4 | Transport entrant | meme passage que la roadmap, tick 5 s, latence <= 5 s + WS local (§6) | tick federation dedie (2 s) ; ou WS replica -> upstream (lot ulterieur, `BACKLOG`) |
-| Q5 | Collision de `peer_id` upstream | suffixe upstream, alias persiste et affiche `Federated as` (§2.1) | refuser le relais de ce peer (invisible et injoignable depuis les autres machines) tant que le nom est pris |
+| Q2 | Inbox operateur | TRANCHE (operateur, 2026-09-06) : locale, jamais relayee (§2.5) | -- |
+| Q3 | Annonces Deck vers les peers distants | TRANCHE (operateur, 2026-09-06) : locales, les miroirs sont ignores (§2.5) | -- |
+| Q4 | Transport entrant | TRANCHE (operateur, 2026-09-06) : meme passage que la roadmap, tick 5 s (§6) | WS replica -> upstream reste un lot ulterieur (`BACKLOG`) |
+| Q5 | Collision de `peer_id` upstream | TRANCHE (operateur, 2026-09-06) : suffixe upstream, alias `Federated as` (§2.1) | -- |
 | Q6 | Interrupteur | aucun : la federation fait partie du mode `replica` ; l'upstream la gouverne deja par `serve_replicas` | `federate_peers: false` / `CLAUDE_PEERS_FEDERATE_PEERS=0` pour une replica roadmap-seule |
 | Q7 | Deck | compteurs `federation` dans `/roadmap/sync/status` + deux lignes dans Settings « Broker » (§9) | rien cote Deck dans ce lot (compteurs broker-only, `/health` et journal) |
-| Q8 | Groupe `default` | federe comme en mode `remote` (sans inbox operateur, deja refusee) | exclu de la federation (loopback uniquement) |
+| Q8 | Groupe `default` | federe comme en mode `remote` | exclu de la federation (loopback uniquement) |
 
 ---
 
@@ -611,9 +588,9 @@ peer natif C sur U ; A enregistre sur R1, B sur R2 :
   reconnexion et son propre cadrage d'auth.
 - **Federation des approbations, dispatch, graph drafts** : hors perimetre,
   inchange (brief replica §2.2).
-- **Rejeu vers l'upstream des messages `operator` deposes hors ligne** :
-  refuse (l'operateur local les a lus ; un rejeu les dupliquerait sur les
-  autres Decks sans contexte de date).
+- **Federation de l'inbox operateur et des annonces Deck** : refusee
+  (operateur, 2026-09-06, §2.5) -- l'inbox est cloisonnee a la session Kory
+  qui la draine, il n'existe pas de destinataire distant.
 - **Changement d'upstream d'une replica existante** : `federation_id` ne
   porte pas l'URL de l'upstream ; re-pointer une replica vers un autre
   upstream sans vider sa base peut rejeter (`INSERT OR IGNORE`) un message
