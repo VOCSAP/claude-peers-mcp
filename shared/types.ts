@@ -36,6 +36,22 @@ export interface Peer {
   // Read-only to the agent: reserved by role, not resistant to a deliberately
   // hostile agent -- never call this "secure".
   role: string | null;
+  /**
+   * Federation origin label (DESIGN-PEER-FEDERATION §2.2/§2.3). NULL = a
+   * client of THIS broker. On an upstream, the first 8 chars of the replica_id
+   * that relays the row; on a replica, 'upstream' for a native upstream peer or
+   * the 8-char label of the other replica relaying it. A display label, never
+   * a key: the keys are relay_id/relay_ref (upstream) and
+   * (group_id, upstream_peer_id) (replica), neither of which is public.
+   */
+  via: string | null;
+  /**
+   * The name this row carries on the UPSTREAM broker, when it differs from or
+   * defines it: the alias assigned to a local peer whose peer_id collided
+   * upstream, or the true upstream name of a mirrored remote peer. NULL when
+   * not federated.
+   */
+  upstream_peer_id: string | null;
 }
 
 export type PeerStatus = "active" | "dormant";
@@ -47,7 +63,14 @@ export type ActivityStatus = "active" | "sleep" | "closed";
  * NEVER serialized to a client — only these public columns are. list-peers and
  * admin/peers both project to this shape.
  */
-export type PublicPeer = Omit<Peer, "instance_token" | "pid" | "client_pid">;
+export type PublicPeer = Omit<Peer, "instance_token" | "pid" | "client_pid"> & {
+  /**
+   * Computed by /list-peers on a mirrored remote peer while the replica's
+   * link to its upstream is down and the federation grace still runs (ISO
+   * timestamp of the cut). Absent or null otherwise. Lives in no column.
+   */
+  link_down_since?: string | null;
+};
 
 export interface Message {
   id: number;
@@ -174,6 +197,14 @@ export interface SendMessageRequest {
 export interface SendMessageResponse {
   ok: boolean;
   error?: string;
+  /**
+   * Set by a replica when the target is a remote peer and the upstream link is
+   * down within the federation grace: the message sits in the local queue and
+   * leaves at the first successful pass, or is dropped (sender notified) when
+   * the grace expires. `grace_left_sec` says how long it can still wait.
+   */
+  queued?: boolean;
+  grace_left_sec?: number;
 }
 
 export interface PollMessagesRequest {
@@ -636,6 +667,8 @@ export interface RoadmapSyncStatus {
    */
   queue_replaced?: number;
   locks?: { local: number; global: number; contested: number; remote: number };
+  /** Replica only; absent on an upstream/local broker. */
+  federation?: FederationStatus;
 }
 
 export interface RoadmapSyncConflict {
@@ -671,6 +704,92 @@ export interface RoadmapSyncResolveRequest {
 
 export interface RoadmapSyncResolveResponse {
   item: RoadmapItem;
+}
+
+// --- Peer federation (DESIGN-PEER-FEDERATION §4): a replica relays its peers ---
+
+/** A local peer as the replica presents it upstream. Pick-list: no token, no PID. */
+export interface FederationRelayPeer {
+  /** sha256(instance_token) hex, 32 chars: the peer's reference upstream, never its token. */
+  relay_ref: string;
+  peer_id: PeerId;
+  group_id: GroupId;
+  host: string;
+  cwd: string;
+  git_root: string | null;
+  project_key: string | null;
+  summary: string;
+  role: string | null;
+  last_activity_at: string | null;
+}
+
+/** A remote peer as the upstream hands it to a replica. Pick-list. */
+export interface FederatedPeer {
+  peer_id: PeerId;
+  group_id: GroupId;
+  host: string;
+  cwd: string;
+  git_root: string | null;
+  project_key: string | null;
+  summary: string;
+  role: string | null;
+  status: PeerStatus;
+  last_seen: string;
+  last_activity_at: string | null;
+  /** 'upstream' for a native upstream peer, else the 8-char label of the relaying replica. */
+  via: string;
+}
+
+/** An undelivered upstream message addressed to one of the replica's relayed peers. */
+export interface FederatedMessage {
+  /** The upstream messages.id: acked back by the replica, deduplicated locally. */
+  id: number;
+  /** relay_ref of the local recipient. */
+  to_ref: string;
+  from_peer_id: string;
+  from_summary: string;
+  from_host: string;
+  from_cwd: string;
+  group_id: GroupId;
+  text: string;
+  sent_at: string;
+}
+
+export interface FederationSyncRequest {
+  replica_id: string;
+  groups: { group_id: GroupId; group_secret_hash: string | null }[];
+  peers: FederationRelayPeer[];
+  /** Upstream message ids inserted locally by the previous pass. */
+  ack: number[];
+}
+
+export interface FederationSyncResponse {
+  /** The upstream-visible name of every relayed peer (suffixed on collision). */
+  assigned: { relay_ref: string; peer_id: PeerId }[];
+  peers: FederatedPeer[];
+  messages: FederatedMessage[];
+  refused_groups: { group_id: GroupId; reason: string }[];
+}
+
+export interface FederationSendRequest {
+  replica_id: string;
+  from_ref: string;
+  to_peer_id: PeerId;
+  text: string;
+}
+
+/** Broker-wide federation counters, published with the replication snapshot. */
+export interface FederationStatus {
+  /** false when the upstream answered 404 on the federation routes (older version). */
+  active: boolean;
+  /** Local peers currently relayed upstream. */
+  relayed: number;
+  /** Remote peers currently mirrored and active. */
+  remote: number;
+  /** Outbound messages waiting in the grace queue. */
+  queued: number;
+  refused_groups: number;
+  last_error: string | null;
 }
 
 /**
