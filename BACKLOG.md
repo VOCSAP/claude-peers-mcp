@@ -1024,14 +1024,45 @@ Brief : `docs/DESIGN-OFFLINE-REPLICA.md`. La v1 réplique `roadmap_items`
 (contenu par révisions entières, file « upstream l'emporte », verrous relayés
 par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
 
-- [ ] **Fédération peers/messages** (item n°1, priorité relevée après la revue
-      adversariale du 2026-09-05) : en mode `replica`, la messagerie est
-      locale à la machine **même en ligne**, pas seulement pendant une
-      coupure -- décision explicite de l'opérateur (§10 du brief), pas une
-      dégradation temporaire à corriger en passant. Relayer enregistrements,
-      `send-message` et `list-peers` vers l'upstream avec heartbeat relais ;
-      identité Ed25519 des peers déjà compatible avec un ré-enregistrement
-      sur un autre broker.
+- [x] **Fédération peers/messages** (item n°1) — livré : en mode `replica`
+      le broker local relaie ses peers actifs vers l'upstream sous son
+      `replica_id` (`POST /federation/sync` à chaque passe, après les trois
+      passes roadmap : enregistrement + heartbeat + déconnexion en un seul
+      message ; `POST /federation/send` synchrone depuis `send_message`),
+      reçoit l'annuaire des peers distants (lignes miroir locales, `Via:
+      upstream broker`) et les messages entrants, acquittés au passage
+      suivant. Inbox opérateur et annonces Deck restent strictement
+      locales. Hors ligne : grâce `CLAUDE_PEERS_FEDERATION_GRACE_SEC`
+      (600 s) pendant laquelle les peers distants restent visibles et les
+      envois sont mis en file, puis miroirs dormants, file supprimée et
+      expéditeur notifié par le sentinel `deck`. Correction de l'énoncé
+      initial : un peer n'a AUCUNE identité Ed25519 (les seules clés du
+      broker sont la credential OPÉRATEUR des approbations) ni aucune
+      identité portable ; ce qui traverse la frontière est `relay_ref =
+      sha256(instance_token)[:32]`, jamais le token. Brief :
+      `docs/DESIGN-PEER-FEDERATION.md`.
+- [ ] **WS replica → upstream** pour la livraison entrante sous la seconde :
+      différé ; le tirage par passe (tick 5 s + WS local) suffit à la parité
+      fonctionnelle, un WS ajouterait un client WS dans le broker, sa
+      reconnexion et son propre cadrage d'auth.
+- [ ] **Replica dont la base est vidée** (nouveau `replica_id`) : ses
+      anciennes lignes relayées upstream passent dormantes après 120 s mais
+      bloquent leurs noms jusqu'à la purge dormante (24 h) ; les nouvelles
+      lignes restent alors suffixées (`Federated as: alice-2`) tant que
+      l'affectation collante tient. Acceptable, à surveiller.
+- [ ] **Redémarrage d'une replica pendant la grâce** : l'état hors ligne est
+      en mémoire, la grâce repart de zéro après la seconde passe échouée ;
+      les lignes en file survivent en base. Borné à deux grâces, jamais
+      silencieux ; non traité.
+- [ ] **`CLAUDE_PEERS_ACTIVE_STALE_SEC` sous 60 s en mode replica** : les
+      miroirs ne sont rafraîchis que par les passes (échouées) espacées par
+      le backoff (jusqu'à 60 s) ; une valeur inférieure fauche les miroirs en
+      pleine grâce. Documenter un plancher ou rafraîchir sur un minuteur.
+- [ ] **`via` n'est qu'une étiquette d'affichage** : les 8 premiers
+      caractères d'un `replica_id`, jamais une clé -- deux replicas au même
+      préfixe s'afficheraient à l'identique ; les clés restent
+      `(relay_id, relay_ref)` upstream et `(group_id, upstream_peer_id)` sur
+      la replica. À vérifier avant tout usage de `via` comme discriminant.
 - [ ] **Le Deck ne démarre pas lui-même le broker loopback**, en mode local
       comme en mode replica : seule une session (`server.ts`, via
       `ensureBroker()`) le fait naître aujourd'hui. Conséquence : un Deck

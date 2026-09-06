@@ -103,6 +103,32 @@ export function findRoleWritesOutsideHandleRegister(src: string): string[] {
   const fnStart = fnKeywordMatch.index + lastBraceInSigLine;
   const fnEnd = findMatchingClose(src, fnStart, "{", "}");
 
+  // The federation writers copy a role another broker's handleRegister already
+  // normalized (an upstream relaying a replica's peer, a replica mirroring a
+  // remote one); they are the only other legitimate writers, and each must run
+  // the value through normalizeRole itself so a hostile relay cannot plant an
+  // unnormalized role. Their regions are located by their parameter list, not
+  // by a signature-line brace: their signatures span several lines.
+  const regions: { start: number; end: number }[] = [{ start: fnStart, end: fnEnd }];
+  for (const needle of ["const federationSyncTx = db.transaction(", "function upsertMirror("]) {
+    const at = src.indexOf(needle);
+    if (at === -1) {
+      failures.push(`${needle} not found in broker.ts -- has the federation writer been renamed?`);
+      continue;
+    }
+    const paren = at + needle.length - 1;
+    const paramsEnd = findMatchingClose(src, paren, "(", ")");
+    const bodyStart = src.indexOf("{", needle.startsWith("const") ? paren : paramsEnd);
+    const bodyEnd = findMatchingClose(src, bodyStart, "{", "}");
+    const region = { start: bodyStart, end: bodyEnd };
+    if (!/\bnormalizeRole\(/.test(src.slice(region.start, region.end))) {
+      failures.push(`${needle} writes peers.role without normalizeRole(...)`);
+    }
+    regions.push(region);
+  }
+  const inAllowedRegion = (index: number): boolean =>
+    regions.some((r) => index >= r.start && index <= r.end);
+
   // Matches 'INSERT OR IGNORE/REPLACE INTO' as well as plain 'INSERT INTO':
   // broker.ts's own sentinel-row seed uses that form.
   const roleWritingStatements = findSqlStatements(src).filter(
@@ -115,8 +141,8 @@ export function findRoleWritesOutsideHandleRegister(src: string): string[] {
   for (const stmt of roleWritingStatements) {
     if (stmt.varName === null) {
       // Inline db.run(...): the write call IS the declaration site.
-      if (stmt.declIndex < fnStart || stmt.declIndex > fnEnd) {
-        failures.push(`inline db.run(...) writing peers.role at offset ${stmt.declIndex} is outside handleRegister`);
+      if (!inAllowedRegion(stmt.declIndex)) {
+        failures.push(`inline db.run(...) writing peers.role at offset ${stmt.declIndex} is outside handleRegister and the federation writers`);
       }
       continue;
     }
@@ -126,9 +152,9 @@ export function findRoleWritesOutsideHandleRegister(src: string): string[] {
     let callSiteCount = 0;
     while ((callMatch = callRe.exec(src))) {
       callSiteCount++;
-      if (callMatch.index < fnStart || callMatch.index > fnEnd) {
+      if (!inAllowedRegion(callMatch.index)) {
         failures.push(
-          `${stmt.varName}.run(...) (writes peers.role) called at offset ${callMatch.index}, outside handleRegister`
+          `${stmt.varName}.run(...) (writes peers.role) called at offset ${callMatch.index}, outside handleRegister and the federation writers`
         );
       }
     }

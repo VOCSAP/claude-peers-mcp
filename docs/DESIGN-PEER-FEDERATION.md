@@ -385,13 +385,13 @@ file sur une seule constante :
 
 `CLAUDE_PEERS_FEDERATION_GRACE_SEC` (defaut 600 = `LOCK_GRACE_SEC`, la
 grace que l'upstream accorde deja a une replica muette pour ses verrous ;
-plancher 30). Elle mesure, cote replica, depuis combien de temps le lien
+plancher 1, les valeurs sous 30 s ne servant qu'aux tests). Elle mesure, cote replica, depuis combien de temps le lien
 avec l'upstream est tombe (`syncStateSince` de la bascule offline).
 
 | Depuis la bascule offline | Peers distants dans `list_peers` | `send_message` vers un peer distant |
 |---|---|---|
 | lien vivant | visibles, `Via: upstream broker` | relais synchrone (§2.4) ; sur echec reseau -> file |
-| < grace | visibles, `Via: upstream broker (link down for Ns, Ms left)` | accepte : `{ ok: true, queued: true }`, ack « queued, will be delivered if the link returns within M min, dropped otherwise » |
+| < grace | visibles, `Via: upstream broker (link down for Ns)` ; le temps restant est dit par l'ack de `send_message` | accepte : `{ ok: true, queued: true }`, ack « queued, will be delivered if the link returns within M min, dropped otherwise » |
 | >= grace | ABSENTS (miroirs dormants) | « not found in your group » ; l'agent ne peut plus viser un peer qu'il ne voit pas |
 
 La file : une ligne `messages` locale ordinaire vers le token du miroir
@@ -461,7 +461,13 @@ de SES peers, comme pour ses verrous (brief replica §5).
   Bearer generique. Un broker qui ne sert pas de replicas ne federe pas ;
   une replica ne federe jamais pour une autre (pas de chainage).
 - `replica_id` est un identifiant, pas un secret (brief replica §6) : la
-  credential est le `broker_token`. Une replica compromise mais porteuse du
+  credential est le `broker_token`. HYPOTHESE EXPLICITE : l'isolation entre
+  replicas (« ne parle pas au nom des peers d'une autre, n'acquitte pas ses
+  messages ») repose sur le fait qu'un `replica_id` est un UUID v4 que rien
+  ne publie en clair (`via` n'en montre que 8 caracteres) ; un detenteur du
+  token qui CONNAIT le `replica_id` d'une autre replica a le meme pouvoir
+  que sur le relais roadmap -- meme niveau de confiance, pas un niveau
+  inferieur. Une replica compromise mais porteuse du
   token peut mentir sur ses peers -- au meme niveau que le relais roadmap.
   Elle ne peut PAS : parler au nom d'un peer d'une autre replica (`from_ref`
   n'est resolu que sous SON `relay_id`), marquer livres des messages qui ne
@@ -528,7 +534,7 @@ boucle.
 
 | Client | Change |
 |---|---|
-| `server.ts` | `formatPeer` rend `Via: upstream broker` (avec « link down for Ns, Ms left » quand `link_down_since` est present) et `Federated as:` quand presents ; l'ack de `send_message` rend la mention « queued » quand la reponse porte `queued: true`. Aucun transport, aucun corps de requete, aucun test de parite de corps (`register-body-parity`) ne bouge. |
+| `server.ts` | `formatPeer` rend `Via: upstream broker` (avec « link down for Ns » quand `link_down_since` est present ; le temps restant n'est dit que par l'ack, qui porte `grace_left_sec`) et `Federated as:` quand presents ; l'ack de `send_message` rend la mention « queued » quand la reponse porte `queued: true`. Aucun transport, aucun corps de requete, aucun test de parite de corps (`register-body-parity`) ne bouge. |
 | `cli.ts` | `peers` affiche la colonne `via` (lecture de `/admin/peers`, qui projette par la meme pick-list). |
 | Deck (`desktop/`) | RIEN (operateur, 2026-09-06) : pas de liste de peers, `/announce` et `/operator-inbox` inchanges et locaux (§2.5), pas de compteurs dans Settings. `sanitizeSyncStatus` (pick-list) ignore la cle `federation` du statut sans erreur. |
 | Docs | `ARCHITECTURE.md` (paragraphe « Replica mode » : peers/messages ne sont plus locaux ; routes ; pick-list), `README.md` (routes, la note « la messagerie est locale en mode replica » retiree), `BACKLOG.md` §3.9 item coche et residuels ajoutes. |

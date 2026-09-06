@@ -189,6 +189,13 @@ import type {
   RoadmapSyncRow,
   RoadmapSyncState,
   RoadmapSyncStatus,
+  FederatedMessage,
+  FederatedPeer,
+  FederationRelayPeer,
+  FederationSendRequest,
+  FederationStatus,
+  FederationSyncRequest,
+  FederationSyncResponse,
 } from "./shared/types.ts";
 import {
   DECK_INSTANCE_TOKEN,
@@ -221,12 +228,14 @@ const PEER_ID_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 const ROLE_REGEX = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 const ACTIVITY_TIMEOUT_MS = parseInt(process.env.CLAUDE_PEERS_ACTIVITY_TIMEOUT_SEC ?? "1800", 10) * 1000;
 const WS_IDLE_TIMEOUT_SEC = parseInt(process.env.CLAUDE_PEERS_WS_IDLE_TIMEOUT_SEC ?? "600", 10);
+// Floored at 1 s, not 10: a federation test drives the sweep to seconds to
+// watch a silent replica's peers fall dormant; production keeps the defaults.
 const ACTIVE_STALE_SEC = Math.max(
-  10,
+  1,
   parseInt(process.env.CLAUDE_PEERS_ACTIVE_STALE_SEC ?? "120", 10)
 );
 const SWEEP_INTERVAL_SEC = Math.max(
-  10,
+  1,
   parseInt(process.env.CLAUDE_PEERS_DORMANT_SWEEP_SEC ?? "60", 10)
 );
 const CLEAN_INTERVAL_MS = Math.max(
@@ -317,6 +326,23 @@ process.on("unhandledRejection", (e) => {
   log.error("unhandled rejection, exiting", e);
   process.exit(1);
 });
+
+// How long a replica keeps its remote peers visible, and their outbound
+// messages queued, once its upstream link has fallen; the default is the same
+// grace the upstream grants a silent replica's locks. Rejected rather than
+// clamped when not an integer: a NaN passes every Math.max unnoticed.
+// Floored at 1 s (a test runs it at 3 s); an operator has no reason to go
+// under a minute.
+const FEDERATION_GRACE_SEC = (() => {
+  const raw = process.env.CLAUDE_PEERS_FEDERATION_GRACE_SEC;
+  if (raw === undefined || raw === "") return 600;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    log.warn(`CLAUDE_PEERS_FEDERATION_GRACE_SEC=${raw} is not a positive integer, using 600`);
+    return 600;
+  }
+  return parsed;
+})();
 
 // Replicating on ONESELF is a configuration error, not a case to tolerate: the
 // pass would pull its own rows back and every card would look conflicted.
@@ -510,6 +536,25 @@ try {
   if (!msg.includes("duplicate column name")) log.error(`migration: ${msg}`);
 }
 
+// Migration (idempotent): peer federation. relay_id/relay_ref key a row an
+// upstream holds for a replica's peer; via is the public origin label; a
+// replica keys its mirrors of remote peers by (group_id, upstream_peer_id).
+// The unique indexes are partial: a native row leaves every column NULL.
+for (const column of ["relay_id TEXT", "relay_ref TEXT", "relay_base TEXT", "via TEXT", "upstream_peer_id TEXT"]) {
+  try {
+    db.run(`ALTER TABLE peers ADD COLUMN ${column}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes("duplicate column name")) log.error(`migration: ${msg}`);
+  }
+}
+db.run(
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_peers_relay ON peers(relay_id, relay_ref) WHERE relay_id IS NOT NULL`
+);
+db.run(
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_peers_mirror ON peers(group_id, upstream_peer_id) WHERE via IS NOT NULL`
+);
+
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -541,6 +586,21 @@ for (const sentinel of SENTINEL_DEFINITIONS) {
 }
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_messages_pending ON messages(to_token, delivered)`);
+
+// Migration (idempotent): `<upstream_id>:<id>` of a message a replica pulled,
+// qualified by the answering broker's identity so that a numeric id reused
+// after an upstream database reset names a different message. The partial
+// unique index is what makes a re-pull after a crash an INSERT OR IGNORE
+// rather than a duplicate delivery.
+try {
+  db.run("ALTER TABLE messages ADD COLUMN federation_id TEXT");
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!msg.includes("duplicate column name")) log.error(`migration: ${msg}`);
+}
+db.run(
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_federation ON messages(federation_id) WHERE federation_id IS NOT NULL`
+);
 
 db.run(`
   CREATE TABLE IF NOT EXISTS peer_sessions (
@@ -828,6 +888,22 @@ function syncMetaSet(key: string, value: string): void {
     [key, value]
   );
 }
+
+const BROKER_ID_REGEX = /^[A-Za-z0-9-]{8,64}$/;
+/**
+ * This broker's persistent identity, minted once per database in every mode:
+ * a replica qualifies the message ids it pulls with it, so an upstream whose
+ * database was reset (ids restarting at 1) never has a new message mistaken
+ * for one already delivered.
+ */
+function ensureBrokerId(): string {
+  const stored = syncMetaGet("broker_id");
+  if (stored && BROKER_ID_REGEX.test(stored)) return stored;
+  const minted = randomUUID();
+  syncMetaSet("broker_id", minted);
+  return minted;
+}
+const BROKER_ID = ensureBrokerId();
 
 // Rows written before this migration all carry rev = 0, and the pull cursor is
 // exclusive (`rev > since_rev`, starting at 0) -- left at 0 they would be
@@ -1370,8 +1446,12 @@ const BROKER_HOST = hostname();
 
 function cleanStalePeers(): void {
   // Phase 1: bascule active -> dormant pour les pids morts (same-host only).
+  // A relayed or mirrored row (pid 0) is excluded by its columns, not by its
+  // host: it may well carry this very hostname, and its liveness is the
+  // replica's business, propagated through last_seen.
   const actives = db.query(
-    "SELECT instance_token, pid FROM peers WHERE status = 'active' AND host = ?"
+    `SELECT instance_token, pid FROM peers
+     WHERE status = 'active' AND host = ? AND relay_id IS NULL AND via IS NULL`
   ).all(BROKER_HOST) as { instance_token: string; pid: number }[];
   for (const peer of actives) {
     try {
@@ -1754,13 +1834,22 @@ const purgeOperatorInboxByIds = (ids: number[]) =>
 // This is a deliberate asymmetry from the recency queries' sent_at-first order,
 // not an inconsistency: this needs a tie-free cutoff, those need a
 // business-meaningful recency window.
+// Never applied to a relayed or mirrored sender: "X answered, so X has read
+// what awaited it" holds for a client reading its own broker, not for a peer
+// whose messages still wait to be pulled by its replica, or for a mirror whose
+// queued messages have not left this broker yet.
 const ackPriorMessagesForSender = db.prepare(
   `UPDATE messages
      SET delivered = 1
    WHERE to_token = ?
      AND group_id = ?
      AND delivered = 0
-     AND id < ?`
+     AND id < ?
+     AND NOT EXISTS (
+       SELECT 1 FROM peers
+        WHERE peers.instance_token = messages.to_token
+          AND (peers.relay_id IS NOT NULL OR peers.via IS NOT NULL)
+     )`
 );
 
 // Message insert + activity refresh + heuristic ack land atomically: an abrupt
@@ -1779,6 +1868,16 @@ const recordMessageTx = db.transaction(
 const purgeOldUndeliveredStmt = db.prepare(
   `DELETE FROM messages
    WHERE delivered = 0
+     AND sent_at < datetime('now', ?)`
+);
+
+// A pulled message keeps its row after delivery so its federation_id keeps
+// deduplicating a re-pull; past the TTL the upstream has purged its own copy
+// and nothing can present the id again.
+const purgeDeliveredFederatedStmt = db.prepare(
+  `DELETE FROM messages
+   WHERE federation_id IS NOT NULL
+     AND delivered = 1
      AND sent_at < datetime('now', ?)`
 );
 
@@ -1806,7 +1905,7 @@ const purgeOpenedDraftsStmt = db.prepare(
      AND opened_at < datetime('now', ?)`
 );
 
-function purgeOldMessages(): { messages: number; drafts: number } {
+function purgeOldMessages(): { messages: number; federated: number; drafts: number } {
   const cutoff = `-${MESSAGE_TTL_DAYS} days`;
   const result = purgeOldUndeliveredStmt.run(cutoff);
   if (result.changes > 0) {
@@ -1814,8 +1913,12 @@ function purgeOldMessages(): { messages: number; drafts: number } {
       `purged ${result.changes} stale undelivered messages (>${MESSAGE_TTL_DAYS}d)`
     );
   }
+  const federated = purgeDeliveredFederatedStmt.run(cutoff);
+  if (federated.changes > 0) {
+    log.info(`purged ${federated.changes} delivered federated messages (>${MESSAGE_TTL_DAYS}d)`);
+  }
   const drafts = purgeOpenedDraftsStmt.run(`-${GRAPH_DRAFT_TTL_DAYS} days`);
-  return { messages: result.changes, drafts: drafts.changes };
+  return { messages: result.changes, federated: federated.changes, drafts: drafts.changes };
 }
 purgeOldMessages();
 guardedInterval("purgeOldMessages", purgeOldMessages, PURGE_INTERVAL_SEC * 1000);
@@ -2162,11 +2265,30 @@ function handleSetId(body: SetIdRequest): SetIdResponse | { error: string; statu
   return { peer_id: body.new_peer_id, previous: me.peer_id };
 }
 
-// B1: strip the routing token + local PIDs before a peer row crosses the HTTP
-// boundary. Only the public columns are serialized to any client.
+// B1: the shape of a peer row on the HTTP boundary, as a pick-list so that a
+// column added to peers is NOT published until it is named here. Retained on
+// purpose: instance_token, pid, client_pid, claude_cli_pid (the impersonation
+// and local-process capabilities), relay_id, relay_ref and relay_base (the
+// federation keys and the name last proposed for a relayed row).
 function toPublicPeer(p: Peer): PublicPeer {
-  const { instance_token: _t, pid: _p, client_pid: _c, ...pub } = p;
-  return pub;
+  return {
+    peer_id: p.peer_id,
+    group_id: p.group_id,
+    cwd: p.cwd,
+    git_root: p.git_root,
+    tty: p.tty,
+    summary: p.summary,
+    registered_at: p.registered_at,
+    last_seen: p.last_seen,
+    host: p.host,
+    project_key: p.project_key,
+    status: p.status,
+    last_activity_at: p.last_activity_at,
+    activity_status: p.activity_status,
+    role: p.role,
+    via: p.via,
+    upstream_peer_id: p.upstream_peer_id,
+  };
 }
 
 // NF-A: resolve a message's sender to its public identity (peer_id + meta),
@@ -2241,6 +2363,11 @@ function handleListPeers(body: ListPeersRequest): PublicPeer[] {
   }
 
   const now = Date.now();
+  // A mirrored remote peer stays listed while the upstream link is down and
+  // the federation grace runs; the moment the link fell rides along so the
+  // agent can tell a peer it can reach from one it can only queue for.
+  const linkDownSince =
+    BROKER_MODE === "replica" && syncOnlineState === "offline" ? syncStateSince : null;
   return rows
     .filter((p) => p.instance_token !== body.instance_token)
     .map((p): PublicPeer => {
@@ -2253,11 +2380,13 @@ function handleListPeers(body: ListPeersRequest): PublicPeer[] {
         activity_status = "sleep";
       }
       // Project to the public shape: instance_token / pids never leave the broker.
-      return toPublicPeer({ ...p, activity_status });
+      const pub = toPublicPeer({ ...p, activity_status });
+      if (linkDownSince && p.via !== null) pub.link_down_since = linkDownSince;
+      return pub;
     });
 }
 
-function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
+async function handleSendMessage(body: SendMessageRequest): Promise<SendMessageResponse> {
   // Card 37a2b8c7 volet 2 (Chain A): the sentinel constants are PUBLIC, so a
   // client declaring one as ITS OWN from_token is an impersonation attempt,
   // never a legitimate identity -- refuse by shape before the lookup can ever
@@ -2279,6 +2408,9 @@ function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
       }
     | null;
   if (!sender) return { ok: false, error: "Sender not registered" };
+  if (typeof body.text !== "string" || body.text.length > MESSAGE_TEXT_MAX) {
+    return { ok: false, error: `text must be a string of at most ${MESSAGE_TEXT_MAX} characters` };
+  }
 
   // Operator inbox (PLAN C12): 'operator' routes to the reserved sentinel,
   // scoped to the sender's group (the Deck drains it per group). No WS pool
@@ -2303,12 +2435,31 @@ function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
 
   const target =
     body.to_peer_id === OPERATOR_PEER_ID
-      ? { instance_token: OPERATOR_INSTANCE_TOKEN }
+      ? { instance_token: OPERATOR_INSTANCE_TOKEN, peer_id: OPERATOR_PEER_ID, via: null, upstream_peer_id: null }
       : (db.query(
-          "SELECT instance_token FROM peers WHERE peer_id = ? AND group_id = ? AND status = 'active'"
-        ).get(body.to_peer_id, sender.group_id) as { instance_token: InstanceToken } | null);
+          "SELECT instance_token, peer_id, via, upstream_peer_id FROM peers WHERE peer_id = ? AND group_id = ? AND status = 'active'"
+        ).get(body.to_peer_id, sender.group_id) as
+          | { instance_token: InstanceToken; peer_id: string; via: string | null; upstream_peer_id: string | null }
+          | null);
   if (!target) {
+    // A remote peer this replica knows but cannot reach: the upstream stopped
+    // federating, and the mirror was hidden for that reason, not because the
+    // peer left.
+    if (BROKER_MODE === "replica" && federationUnsupported && body.to_peer_id !== OPERATOR_PEER_ID) {
+      const hidden = db
+        .query("SELECT 1 FROM peers WHERE peer_id = ? AND group_id = ? AND via IS NOT NULL")
+        .get(body.to_peer_id, sender.group_id);
+      if (hidden) return { ok: false, error: unfederatedPeerError(body.to_peer_id) };
+    }
     return { ok: false, error: `Peer '${body.to_peer_id}' not found in your group` };
+  }
+
+  // A mirrored remote peer: relayed through the upstream, or queued for the
+  // federation grace when the link is down. Only a replica holds mirrors; on
+  // an upstream a relayed row (via set as well) is a local delivery that its
+  // replica pulls.
+  if (BROKER_MODE === "replica" && target.via !== null) {
+    return relayOutboundMessage(sender, { ...target, upstream_peer_id: target.upstream_peer_id ?? target.peer_id }, body.text);
   }
 
   const sentAt = new Date().toISOString();
@@ -2320,30 +2471,54 @@ function handleSendMessage(body: SendMessageRequest): SendMessageResponse {
     sentAt
   );
 
-  // Try WebSocket push if the target is connected.
-  const ws = wsPool.get(target.instance_token);
-  if (ws && ws.readyState === 1) {
-    try {
-      ws.send(
-        JSON.stringify({
-          type: "message",
-          id: messageId,
-          from_peer_id: sender.peer_id,
-          from_summary: sender.summary,
-          from_host: sender.host,
-          from_cwd: sender.cwd,
-          text: body.text,
-          sent_at: sentAt,
-        })
-      );
-      // Do NOT markDelivered here: the WS notification is fire-and-forget.
-      // delivered=0 stays until check_messages is explicitly called by the LLM.
-    } catch {
-      // ws.send can throw on a half-closed socket; let the polling fallback ship it.
-    }
-  }
+  // Try WebSocket push if the target is connected. Never markDelivered here:
+  // the WS notification is fire-and-forget, delivered=0 stays until
+  // check_messages is explicitly called by the LLM.
+  pushPeerMessage(target.instance_token, messageId, sender, body.text, sentAt);
 
   return { ok: true };
+}
+
+/**
+ * A half-closed socket makes ws.send throw; the polling fallback ships the
+ * message, so the failure is traced once per socket rather than per message.
+ */
+const wsPushWarned = new Set<InstanceToken>();
+function warnWsPushFailed(token: InstanceToken, e: unknown): void {
+  if (wsPushWarned.has(token)) return;
+  wsPushWarned.add(token);
+  log.warn("ws push failed, polling fallback will deliver", { instance_token: token.slice(0, 8), error: e instanceof Error ? e.message : String(e) });
+}
+
+/** Upper bound of a message body, on the local route and the federation relay alike. */
+const MESSAGE_TEXT_MAX = 64 * 1024;
+
+/** Fire-and-forget WS push of a peer-to-peer message to a connected recipient. */
+function pushPeerMessage(
+  token: InstanceToken,
+  messageId: number,
+  sender: { peer_id: string; summary: string; host: string; cwd: string },
+  text: string,
+  sentAt: string
+): void {
+  const ws = wsPool.get(token);
+  if (!ws || ws.readyState !== 1) return;
+  try {
+    ws.send(
+      JSON.stringify({
+        type: "message",
+        id: messageId,
+        from_peer_id: sender.peer_id,
+        from_summary: sender.summary,
+        from_host: sender.host,
+        from_cwd: sender.cwd,
+        text,
+        sent_at: sentAt,
+      })
+    );
+  } catch (e) {
+    warnWsPushFailed(token, e);
+  }
 }
 
 // Fire-and-forget WS push for a Deck announcement. Mirrors handleSendMessage's
@@ -2369,8 +2544,8 @@ function pushDeckMessage(
         sent_at: sentAt,
       })
     );
-  } catch {
-    // ws.send can throw on a half-closed socket; the polling fallback ships it.
+  } catch (e) {
+    warnWsPushFailed(token, e);
   }
 }
 
@@ -2392,9 +2567,12 @@ function handleAnnounce(body: AnnounceRequest): AnnounceResponse | { error: stri
   // Targeted announce (PLAN C10): deliver to ONE active peer (the team-lead
   // notification path). Same sender/no-reply semantics; 404 surfaces a
   // missing/dormant target so the Deck can tell the operator.
+  // A Deck announcement never crosses a federation boundary: a mirrored or
+  // relayed row (via set) is not one of this Deck's tiles, so it is neither a
+  // broadcast recipient nor a valid target.
   if (body.to_peer_id) {
     const target = db.query(
-      "SELECT instance_token FROM peers WHERE group_id = ? AND peer_id = ? AND status = 'active'"
+      "SELECT instance_token FROM peers WHERE group_id = ? AND peer_id = ? AND status = 'active' AND via IS NULL"
     ).get(groupId, body.to_peer_id) as { instance_token: InstanceToken } | null;
     if (!target) return { error: `no active peer '${body.to_peer_id}' in group`, status: 404 };
     const at = new Date().toISOString();
@@ -2409,6 +2587,7 @@ function handleAnnounce(body: AnnounceRequest): AnnounceResponse | { error: stri
     `SELECT instance_token FROM peers
      WHERE group_id = ? AND status = 'active'
        AND instance_token <> ?
+       AND via IS NULL
        AND (? IS NULL OR peer_id <> ?)`
   ).all(groupId, DECK_INSTANCE_TOKEN, exclude, exclude) as { instance_token: InstanceToken }[];
 
@@ -4548,6 +4727,329 @@ function requireReplica(route: string): { error: string; status: number } | null
   };
 }
 
+// --- Peer federation: the routes an upstream broker serves ---
+
+/** A replica names its peer by sha256(instance_token) truncated: 32 hex chars, never the token. */
+const RELAY_REF_REGEX = /^[a-f0-9]{32}$/;
+/** A replica carries agents, not a fleet: the cap on one pass, both ways. */
+const FEDERATION_MAX_PEERS = 200;
+const FEDERATION_MAX_MESSAGES = 200;
+const FEDERATION_MAX_ACK = 1000;
+/** Groups one pass may present: a replica's agents span a handful, never hundreds. */
+const FEDERATION_MAX_GROUPS = 50;
+/** The shape computeGroupId produces: sha256 truncated to 32 hex chars, or the literal 'default'. */
+const GROUP_ID_REGEX = /^[a-f0-9]{32}$/;
+/** Every string off the federation wire lands in a TEXT column: bounded, never trusted for length. */
+const FEDERATION_MAX_FIELD = 4096;
+
+/** The same three guards as the roadmap sync routes, in the same order. */
+function federationGuards(route: string): { error: string; status: number } | null {
+  return refuseWhenReplica(route) ?? requireServeReplicas(route) ?? requireBrokerToken(route);
+}
+
+function boundedText(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value.slice(0, FEDERATION_MAX_FIELD) : fallback;
+}
+
+function boundedNullable(value: unknown): string | null {
+  return typeof value === "string" ? value.slice(0, FEDERATION_MAX_FIELD) : null;
+}
+
+/**
+ * The display name of a relayed row. Sticky on the PROPOSAL, not on the
+ * shape of the name: while the replica proposes the same name it proposed
+ * last time (relay_base), the row keeps whatever it was given, so a name
+ * freed later does not rename an agent under its peers' feet. A different
+ * proposal (a local set_id) is granted when free or already this row's, else
+ * suffixed the way deriveDefaultId does.
+ */
+function relayedDisplayName(
+  proposed: string,
+  groupId: GroupId,
+  existing: { instance_token: string; peer_id: string; relay_base: string | null } | null
+): string {
+  if (existing && existing.relay_base === proposed) return existing.peer_id;
+  const self = existing?.instance_token ?? "";
+  const taken = (name: string): boolean =>
+    RESERVED_PEER_IDS.includes(name) ||
+    db
+      .query("SELECT 1 FROM peers WHERE peer_id = ? AND group_id = ? AND instance_token <> ?")
+      .get(name, groupId, self) !== null;
+  if (!taken(proposed)) return proposed;
+  for (let suffix = 2; suffix <= 1000; suffix++) {
+    const candidate = `${proposed}-${suffix}`;
+    if (!taken(candidate)) return candidate;
+  }
+  return `${proposed}-${Date.now().toString(36)}`;
+}
+
+type PeerRow = Omit<Peer, "activity_status">;
+
+/** Pick-list: what a replica learns about a remote peer. No token, no PID, no relay key. */
+function toFederatedPeer(p: PeerRow): FederatedPeer {
+  return {
+    peer_id: p.peer_id,
+    group_id: p.group_id,
+    host: p.host,
+    cwd: p.cwd,
+    git_root: p.git_root,
+    project_key: p.project_key,
+    summary: p.summary,
+    role: p.role,
+    status: p.status,
+    last_seen: p.last_seen,
+    last_activity_at: p.last_activity_at,
+    via: p.via ?? "upstream",
+  };
+}
+
+function handleFederationSync(
+  body: FederationSyncRequest
+): FederationSyncResponse | { error: string; status: number } {
+  const refused = federationGuards("/federation/sync");
+  if (refused) return refused;
+  const replicaId = syncReplicaId(body.replica_id);
+  if (typeof replicaId !== "string") return replicaId;
+  if (!Array.isArray(body.peers)) return { error: "peers must be an array", status: 400 };
+  if (body.peers.length > FEDERATION_MAX_PEERS) {
+    return { error: `peers carries at most ${FEDERATION_MAX_PEERS} entries per pass`, status: 400 };
+  }
+  if (!Array.isArray(body.groups)) return { error: "groups must be an array", status: 400 };
+  if (body.groups.length > FEDERATION_MAX_GROUPS) {
+    return { error: `groups carries at most ${FEDERATION_MAX_GROUPS} entries per pass`, status: 400 };
+  }
+  for (const g of body.groups) {
+    if (
+      !g ||
+      typeof g !== "object" ||
+      typeof g.group_id !== "string" ||
+      !(isTofuExemptGroup(g.group_id) || GROUP_ID_REGEX.test(g.group_id))
+    ) {
+      return { error: "group_id must be 32 hex chars or 'default'", status: 400 };
+    }
+  }
+  for (const p of body.peers) {
+    if (!p || typeof p !== "object" || typeof p.relay_ref !== "string" || !RELAY_REF_REGEX.test(p.relay_ref)) {
+      return { error: "relay_ref must be 32 hex chars", status: 400 };
+    }
+  }
+  const ack = Array.isArray(body.ack)
+    ? body.ack.filter((id): id is number => typeof id === "number" && Number.isInteger(id)).slice(0, FEDERATION_MAX_ACK)
+    : [];
+  return federationSyncTx(replicaId, body.groups, body.peers, ack, new Date().toISOString());
+}
+
+/**
+ * One transaction: pin or check every group (the /register TOFU, per group),
+ * upsert the caller's relayed rows, mark its absent ones dormant, apply its
+ * ack, then answer with the directory and the waiting messages -- computed
+ * AFTER the ack so an acked message never rides the same response.
+ */
+const federationSyncTx = db.transaction(
+  (
+    replicaId: string,
+    groups: FederationSyncRequest["groups"],
+    peers: FederationRelayPeer[],
+    ack: number[],
+    now: string
+  ): FederationSyncResponse => {
+    const via = replicaId.slice(0, RELAY_ID_CHARS);
+    const accepted = new Set<GroupId>();
+    const refusedGroups: FederationSyncResponse["refused_groups"] = [];
+    // A group is PINNED only when a presented peer lives in it: listing a
+    // group is not registering in it. One without peers is still checked
+    // against its pinned secret when it exists, and never created otherwise.
+    const populated = new Set(peers.map((p) => p.group_id).filter((g): g is string => typeof g === "string"));
+    for (const g of groups) {
+      const hash = typeof g.group_secret_hash === "string" ? g.group_secret_hash : null;
+      if (isTofuExemptGroup(g.group_id)) {
+        accepted.add(g.group_id);
+        continue;
+      }
+      const existing = db.query("SELECT secret_hash FROM groups WHERE group_id = ?").get(g.group_id) as
+        | { secret_hash: string | null }
+        | null;
+      if (existing) {
+        if (!safeEqual(existing.secret_hash, hash)) {
+          log.warn(`federation sync: replica ${via} presented a divergent secret for a group, refused`, {
+            group_id: g.group_id,
+          });
+          refusedGroups.push({ group_id: g.group_id, reason: "group_secret_hash mismatch (TOFU rejected)" });
+          continue;
+        }
+      } else if (populated.has(g.group_id)) {
+        db.run("INSERT INTO groups (group_id, secret_hash, name, created_at) VALUES (?, ?, NULL, ?)", [
+          g.group_id,
+          hash,
+          now,
+        ]);
+      } else {
+        continue;
+      }
+      accepted.add(g.group_id);
+    }
+
+    const present: InstanceToken[] = [];
+    const assigned: FederationSyncResponse["assigned"] = [];
+    for (const p of peers) {
+      if (typeof p.peer_id !== "string" || !PEER_ID_REGEX.test(p.peer_id)) {
+        log.warn(`federation sync: replica ${via} proposed an invalid peer_id, skipped`, {
+          peer_id: String(p.peer_id).slice(0, 64),
+        });
+        continue;
+      }
+      if (typeof p.group_id !== "string" || !accepted.has(p.group_id)) {
+        log.warn(`federation sync: replica ${via} relayed a peer in a group it did not present or was refused, skipped`, {
+          peer_id: p.peer_id,
+          group_id: String(p.group_id).slice(0, 64),
+        });
+        continue;
+      }
+      const existing = db
+        .query("SELECT instance_token, peer_id, group_id, relay_base FROM peers WHERE relay_id = ? AND relay_ref = ?")
+        .get(replicaId, p.relay_ref) as
+        | { instance_token: string; peer_id: string; group_id: GroupId; relay_base: string | null }
+        | null;
+      if (existing && existing.group_id !== p.group_id) {
+        // A peer never changes group under one token (switch_group registers
+        // anew), so a moved relay_ref is not this row: ignored, and the row
+        // goes dormant as absent rather than being rewritten into a group
+        // where its name may already be held.
+        log.warn(`federation sync: replica ${via} re-presented a relayed peer under another group, ignored`, {
+          peer_id: p.peer_id,
+          relay_ref: p.relay_ref,
+        });
+        continue;
+      }
+      const name = relayedDisplayName(p.peer_id, p.group_id, existing);
+      const host = boundedText(p.host, "");
+      const cwd = boundedText(p.cwd, "");
+      const gitRoot = boundedNullable(p.git_root);
+      const projectKey = normalizeIncomingProjectKey(p.project_key, { host, client_pid: 0 });
+      const summary = boundedText(p.summary, "");
+      const role = normalizeRole(p.role);
+      const lastActivityAt = boundedNullable(p.last_activity_at);
+      if (existing) {
+        db.run(
+          `UPDATE peers
+             SET peer_id = ?, relay_base = ?, status = 'active', last_seen = ?, host = ?, cwd = ?,
+                 git_root = ?, project_key = ?, summary = ?, role = ?, last_activity_at = ?, via = ?
+           WHERE instance_token = ?`,
+          [name, p.peer_id, now, host, cwd, gitRoot, projectKey, summary, role, lastActivityAt, via, existing.instance_token]
+        );
+        present.push(existing.instance_token);
+      } else {
+        // The internal token is minted here and never returned: the replica
+        // addresses this row by (replica_id, relay_ref) only.
+        const token = randomUUID();
+        db.run(
+          `INSERT INTO peers
+             (instance_token, peer_id, group_id, pid, cwd, git_root, tty, summary, registered_at, last_seen,
+              last_activity_at, host, client_pid, project_key, claude_cli_pid, role, status, relay_id, relay_ref, relay_base, via)
+           VALUES (?, ?, ?, 0, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, NULL, ?, 'active', ?, ?, ?, ?)`,
+          [token, name, p.group_id, cwd, gitRoot, summary, now, now, lastActivityAt, host, projectKey, role, replicaId, p.relay_ref, p.peer_id, via]
+        );
+        present.push(token);
+      }
+      assigned.push({ relay_ref: p.relay_ref, peer_id: name });
+    }
+
+    const notPresent = present.length ? `AND instance_token NOT IN (${present.map(() => "?").join(", ")})` : "";
+    db.run(
+      `UPDATE peers SET status = 'dormant', last_seen = ? WHERE relay_id = ? AND status = 'active' ${notPresent}`,
+      [now, replicaId, ...present]
+    );
+
+    if (ack.length) {
+      db.run(
+        `UPDATE messages SET delivered = 1
+          WHERE id IN (${ack.map(() => "?").join(", ")})
+            AND to_token IN (SELECT instance_token FROM peers WHERE relay_id = ?)`,
+        [...ack, replicaId]
+      );
+    }
+
+    const acceptedList = [...accepted];
+    let remotePeers: FederatedPeer[] = [];
+    let messages: FederatedMessage[] = [];
+    if (acceptedList.length) {
+      const groupsIn = acceptedList.map(() => "?").join(", ");
+      const sentinelsIn = SENTINEL_INSTANCE_TOKENS.map(() => "?").join(", ");
+      const rows = db
+        .query(
+          `SELECT * FROM peers
+            WHERE status = 'active' AND group_id IN (${groupsIn})
+              AND (relay_id IS NULL OR relay_id <> ?)
+              AND instance_token NOT IN (${sentinelsIn})
+            ORDER BY group_id, peer_id`
+        )
+        .all(...acceptedList, replicaId, ...SENTINEL_INSTANCE_TOKENS) as PeerRow[];
+      remotePeers = rows.map(toFederatedPeer);
+      // A sentinel sender never crosses: Deck announcements and the operator
+      // inbox are local to each broker.
+      const waiting = db
+        .query(
+          `SELECT m.id, m.from_token, m.group_id, m.text, m.sent_at, p.relay_ref AS to_ref
+             FROM messages m JOIN peers p ON p.instance_token = m.to_token
+            WHERE m.delivered = 0 AND p.relay_id = ? AND p.status = 'active'
+              AND p.group_id IN (${groupsIn})
+              AND m.from_token NOT IN (${sentinelsIn})
+            ORDER BY m.id ASC
+            LIMIT ?`
+        )
+        .all(replicaId, ...acceptedList, ...SENTINEL_INSTANCE_TOKENS, FEDERATION_MAX_MESSAGES) as {
+        id: number;
+        from_token: InstanceToken;
+        group_id: GroupId;
+        text: string;
+        sent_at: string;
+        to_ref: string;
+      }[];
+      messages = waiting.map((m) => ({
+        id: m.id,
+        to_ref: m.to_ref,
+        ...resolveSenderMeta(m.from_token),
+        group_id: m.group_id,
+        text: m.text,
+        sent_at: m.sent_at,
+      }));
+    }
+    return { upstream_id: BROKER_ID, assigned, peers: remotePeers, messages, refused_groups: refusedGroups };
+  }
+);
+
+/**
+ * The sender is resolved as an OBJECT first -- the row relayed by this very
+ * caller under from_ref -- so a replica can only ever speak for its own peers;
+ * the delivery itself is the ordinary send with that row's internal token.
+ */
+async function handleFederationSend(
+  body: FederationSendRequest
+): Promise<SendMessageResponse | { error: string; status: number }> {
+  const refused = federationGuards("/federation/send");
+  if (refused) return refused;
+  const replicaId = syncReplicaId(body.replica_id);
+  if (typeof replicaId !== "string") return replicaId;
+  if (typeof body.from_ref !== "string" || !RELAY_REF_REGEX.test(body.from_ref)) {
+    return { error: "from_ref must be 32 hex chars", status: 400 };
+  }
+  if (typeof body.to_peer_id !== "string" || !body.to_peer_id) return { error: "to_peer_id is required", status: 400 };
+  if (typeof body.text !== "string" || body.text.length > MESSAGE_TEXT_MAX) {
+    return { error: `text must be a string of at most ${MESSAGE_TEXT_MAX} characters`, status: 400 };
+  }
+  if (body.to_peer_id === OPERATOR_PEER_ID) {
+    return {
+      error: "the operator inbox is local to each broker and never federated: a relayed peer cannot message this broker's operator",
+      status: 400,
+    };
+  }
+  const sender = db
+    .query("SELECT instance_token FROM peers WHERE relay_id = ? AND relay_ref = ?")
+    .get(replicaId, body.from_ref) as { instance_token: InstanceToken } | null;
+  if (!sender) return { error: "from_ref is not a peer relayed by this replica", status: 404 };
+  return handleSendMessage({ from_token: sender.instance_token, to_peer_id: body.to_peer_id, text: body.text });
+}
+
 /**
  * Pick-list, not a rest-spread: `locked_by_token` and `operator_id` must never
  * cross the replication boundary in either direction, and a rest-spread would
@@ -5087,6 +5589,7 @@ function handleRoadmapSyncStatus(): RoadmapSyncStatus {
     refused_locks: syncPublished.refused_locks,
     queue_replaced: syncPublished.queue_replaced,
     locks,
+    federation: syncPublished.federation,
   };
 }
 
@@ -5322,6 +5825,7 @@ interface SyncPublishedState {
   refused: number;
   refused_locks: number;
   queue_replaced: number;
+  federation: FederationStatus;
 }
 let syncPublished: SyncPublishedState = {
   online: false,
@@ -5331,6 +5835,7 @@ let syncPublished: SyncPublishedState = {
   refused: 0,
   refused_locks: 0,
   queue_replaced: 0,
+  federation: { active: true, relayed: 0, remote: 0, queued: 0, refused_groups: 0, last_error: null },
 };
 /**
  * Broker-lifetime tally of the local queue positions the upstream order has
@@ -5895,6 +6400,576 @@ async function syncLockPass(): Promise<void> {
   }
 }
 
+// --- Peer federation: the pass a replica runs, and its outbound relay ---
+
+/** A local peer's reference upstream: its token digested, never the token itself. */
+function relayRef(token: InstanceToken): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 32);
+}
+
+/**
+ * true while the LAST /federation/sync answered 404: an upstream that does
+ * not serve the route. Asked again every pass (an upstream can be upgraded
+ * under a running replica), the line logged once per process; while it holds,
+ * no mirror is listed and nothing is queued. Roadmap replication is unaffected.
+ */
+let federationUnsupported = false;
+let federationUnsupportedLogged = false;
+/** Upstream ids of the messages present locally after the last pass, acked on the next one. */
+let federationPendingAck: number[] = [];
+let federationRelayedCount = 0;
+let federationRefusedGroupsCount = 0;
+let federationLastError: string | null = null;
+/** Set when the offline grace ran out, cleared by the next successful pass: expiry acts once per outage. */
+let federationGraceExpired = false;
+const federationWarned = new Set<string>();
+let federationLastSnapshot: FederationStatus = {
+  active: true,
+  relayed: 0,
+  remote: 0,
+  queued: 0,
+  refused_groups: 0,
+  last_error: null,
+};
+
+/** Transitions and per-object oddities are logged once, not every tick. */
+function federationWarnOnce(key: string, message: string, ctx?: Record<string, unknown>): void {
+  if (federationWarned.has(key)) return;
+  federationWarned.add(key);
+  log.warn(message, ctx);
+}
+
+function federationLinkUp(): boolean {
+  return !federationUnsupported && syncOnlineState === "online";
+}
+
+function unfederatedPeerError(peerId: string): string {
+  return `peer '${peerId}' is on another machine and the upstream broker does not federate peers`;
+}
+
+/** Seconds a queued message can still wait: the full grace while the link is up, what is left of it once it fell. */
+function federationGraceLeftSec(): number {
+  if (syncOnlineState !== "offline") return FEDERATION_GRACE_SEC;
+  const downSec = Math.floor((Date.now() - new Date(syncStateSince).getTime()) / 1000);
+  return Math.max(0, FEDERATION_GRACE_SEC - downSec);
+}
+
+function ageSec(sentAt: string, now: string): number {
+  return Math.max(0, Math.round((new Date(now).getTime() - new Date(sentAt).getTime()) / 1000));
+}
+
+/** Counters read by the status route, taken at the end of a pass only. */
+function federationSnapshot(): FederationStatus {
+  try {
+    const remote = (
+      db.query("SELECT COUNT(*) AS n FROM peers WHERE via IS NOT NULL AND status = 'active'").get() as { n: number }
+    ).n;
+    const queued = (
+      db
+        .query(
+          `SELECT COUNT(*) AS n FROM messages m JOIN peers p ON p.instance_token = m.to_token
+            WHERE m.delivered = 0 AND p.via IS NOT NULL`
+        )
+        .get() as { n: number }
+    ).n;
+    federationLastSnapshot = {
+      active: !federationUnsupported,
+      relayed: federationRelayedCount,
+      remote,
+      queued,
+      refused_groups: federationRefusedGroupsCount,
+      last_error: federationLastError,
+    };
+  } catch (e) {
+    log.error("federation: could not count mirrors and queued messages, status keeps the previous counts", e);
+  }
+  return federationLastSnapshot;
+}
+
+/**
+ * The local name of a mirror. A local peer registered while offline may hold
+ * the upstream name already: the mirror is then suffixed and keeps the true
+ * name in upstream_peer_id, which is what the relay always translates to.
+ */
+function mirrorDisplayName(upstreamName: string, groupId: GroupId): string {
+  const taken = (name: string): boolean =>
+    db.query("SELECT 1 FROM peers WHERE peer_id = ? AND group_id = ?").get(name, groupId) !== null;
+  if (!taken(upstreamName)) return upstreamName;
+  for (let suffix = 2; suffix <= 1000; suffix++) {
+    const candidate = `${upstreamName}-${suffix}`;
+    if (!taken(candidate)) {
+      federationWarnOnce(
+        `collision:${groupId}:${upstreamName}`,
+        `federation: a local peer already holds '${upstreamName}', the remote one is listed as '${candidate}'`
+      );
+      return candidate;
+    }
+  }
+  return `${upstreamName}-${Date.now().toString(36)}`;
+}
+
+type LocalRelayRow = {
+  instance_token: InstanceToken;
+  peer_id: string;
+  group_id: GroupId;
+  host: string;
+  cwd: string;
+  git_root: string | null;
+  project_key: string | null;
+  summary: string;
+  role: string | null;
+  last_activity_at: string | null;
+  upstream_peer_id: string | null;
+};
+
+type SenderMeta = { instance_token: InstanceToken; peer_id: string; summary: string; host: string; cwd: string };
+
+/** Creates or refreshes the mirror of one remote peer; returns its local token. */
+function upsertMirror(
+  fp: FederatedPeer,
+  status: "active" | "dormant",
+  now: string
+): InstanceToken {
+  const existing = db
+    .query("SELECT instance_token FROM peers WHERE group_id = ? AND upstream_peer_id = ? AND via IS NOT NULL")
+    .get(fp.group_id, fp.peer_id) as { instance_token: InstanceToken } | null;
+  const host = boundedText(fp.host, "");
+  const cwd = boundedText(fp.cwd, "");
+  const gitRoot = boundedNullable(fp.git_root);
+  const projectKey = normalizeIncomingProjectKey(fp.project_key, { host, client_pid: 0 });
+  const summary = boundedText(fp.summary, "");
+  const role = normalizeRole(fp.role);
+  const lastActivityAt = boundedNullable(fp.last_activity_at);
+  const via = boundedText(fp.via, "upstream").slice(0, 32) || "upstream";
+  if (existing) {
+    db.run(
+      `UPDATE peers
+         SET status = ?, last_seen = ?, host = ?, cwd = ?, git_root = ?, project_key = ?,
+             summary = ?, role = ?, last_activity_at = ?, via = ?
+       WHERE instance_token = ?`,
+      [status, now, host, cwd, gitRoot, projectKey, summary, role, lastActivityAt, via, existing.instance_token]
+    );
+    return existing.instance_token;
+  }
+  // Minted locally, known to nobody: no client can ever present it.
+  const token = randomUUID();
+  db.run(
+    `INSERT INTO peers
+       (instance_token, peer_id, group_id, pid, cwd, git_root, tty, summary, registered_at, last_seen,
+        last_activity_at, host, client_pid, project_key, claude_cli_pid, role, status, via, upstream_peer_id)
+     VALUES (?, ?, ?, 0, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?)`,
+    [
+      token,
+      mirrorDisplayName(fp.peer_id, fp.group_id),
+      fp.group_id,
+      cwd,
+      gitRoot,
+      summary,
+      now,
+      now,
+      lastActivityAt,
+      host,
+      projectKey,
+      role,
+      status,
+      via,
+      fp.peer_id,
+    ]
+  );
+  return token;
+}
+
+/**
+ * Applies one sync response in ONE transaction: aliases on the local rows,
+ * mirrors upserted (absent ones dormant), inbound messages inserted by
+ * federation_id through insertMessage's shape and never recordMessageTx --
+ * whose mechanic A would mark the queue to that very mirror delivered without
+ * sending it. Returns what to ack and what to push, once committed.
+ */
+const applyFederationTx = db.transaction(
+  (
+    body: FederationSyncResponse,
+    upstreamId: string,
+    byRef: Map<string, LocalRelayRow>,
+    now: string
+  ): { acked: number[]; pushes: { token: InstanceToken; id: number; sender: SenderMeta; text: string; sent_at: string }[] } => {
+    for (const a of Array.isArray(body.assigned) ? body.assigned : []) {
+      if (!a || typeof a !== "object" || typeof a.relay_ref !== "string" || typeof a.peer_id !== "string") continue;
+      const local = byRef.get(a.relay_ref);
+      if (!local) continue;
+      if (local.upstream_peer_id !== a.peer_id) {
+        db.run("UPDATE peers SET upstream_peer_id = ? WHERE instance_token = ?", [a.peer_id, local.instance_token]);
+      }
+      if (a.peer_id !== local.peer_id) {
+        federationWarnOnce(
+          `alias:${local.instance_token}:${a.peer_id}`,
+          `federation: local peer '${local.peer_id}' is known upstream as '${a.peer_id}' (its name is taken there)`
+        );
+      }
+    }
+
+    const present: InstanceToken[] = [];
+    for (const fp of body.peers) {
+      if (!fp || typeof fp !== "object") continue;
+      if (typeof fp.peer_id !== "string" || !PEER_ID_REGEX.test(fp.peer_id) || RESERVED_PEER_IDS.includes(fp.peer_id)) {
+        federationWarnOnce(`badpeer:${String(fp.peer_id).slice(0, 64)}`, "federation: upstream sent a peer with an invalid name, ignored", {
+          peer_id: String(fp.peer_id).slice(0, 64),
+        });
+        continue;
+      }
+      if (typeof fp.group_id !== "string" || !groupExists(fp.group_id)) {
+        federationWarnOnce(`badgroup:${String(fp.group_id).slice(0, 64)}`, "federation: upstream sent a peer of a group unknown here, ignored", {
+          group_id: String(fp.group_id).slice(0, 64),
+        });
+        continue;
+      }
+      present.push(upsertMirror(fp, fp.status === "dormant" ? "dormant" : "active", now));
+    }
+    const notPresent = present.length ? `AND instance_token NOT IN (${present.map(() => "?").join(", ")})` : "";
+    db.run(`UPDATE peers SET status = 'dormant', last_seen = ? WHERE via IS NOT NULL AND status = 'active' ${notPresent}`, [
+      now,
+      ...present,
+    ]);
+
+    const acked: number[] = [];
+    const pushes: { token: InstanceToken; id: number; sender: SenderMeta; text: string; sent_at: string }[] = [];
+    for (const m of Array.isArray(body.messages) ? body.messages : []) {
+      if (
+        !m ||
+        typeof m !== "object" ||
+        typeof m.id !== "number" ||
+        !Number.isInteger(m.id) ||
+        typeof m.to_ref !== "string" ||
+        typeof m.text !== "string" ||
+        typeof m.group_id !== "string" ||
+        typeof m.from_peer_id !== "string"
+      ) {
+        federationWarnOnce("badmsg", "federation: upstream sent a malformed message, ignored");
+        continue;
+      }
+      const to = byRef.get(m.to_ref);
+      if (!to) {
+        federationWarnOnce(`noref:${m.to_ref}`, "federation: a message is addressed to a local peer no longer here, left upstream", {
+          to_ref: m.to_ref,
+        });
+        continue;
+      }
+      if (!groupExists(m.group_id)) {
+        federationWarnOnce(`msggroup:${m.group_id.slice(0, 64)}`, "federation: a message belongs to a group unknown here, left upstream", {
+          group_id: m.group_id.slice(0, 64),
+        });
+        continue;
+      }
+      if (!PEER_ID_REGEX.test(m.from_peer_id) || RESERVED_PEER_IDS.includes(m.from_peer_id)) {
+        // The upstream no longer knows the sender (or it is a sentinel, which
+        // never crosses): nothing to attribute it to, so it is acked away
+        // rather than pulled forever.
+        federationWarnOnce(
+          `nosender:${m.group_id.slice(0, 64)}:${m.from_peer_id.slice(0, 64)}`,
+          "federation: a message has no attributable sender upstream, dropped",
+          { from_peer_id: m.from_peer_id.slice(0, 64) }
+        );
+        acked.push(m.id);
+        continue;
+      }
+      let from = db
+        .query("SELECT instance_token, peer_id, summary, host, cwd FROM peers WHERE group_id = ? AND upstream_peer_id = ? AND via IS NOT NULL")
+        .get(m.group_id, m.from_peer_id) as SenderMeta | null;
+      if (!from) {
+        // A sender not in the directory (gone between two passes): a dormant
+        // mirror so the FK and the sender resolution hold.
+        const token = upsertMirror(
+          {
+            peer_id: m.from_peer_id,
+            group_id: m.group_id,
+            host: boundedText(m.from_host, ""),
+            cwd: boundedText(m.from_cwd, ""),
+            git_root: null,
+            project_key: null,
+            summary: boundedText(m.from_summary, ""),
+            role: null,
+            status: "dormant",
+            last_seen: now,
+            last_activity_at: null,
+            via: "upstream",
+          },
+          "dormant",
+          now
+        );
+        from = db
+          .query("SELECT instance_token, peer_id, summary, host, cwd FROM peers WHERE instance_token = ?")
+          .get(token) as SenderMeta;
+      }
+      const sentAt = boundedNullable(m.sent_at) ?? now;
+      // Keyed by the answering broker AND its id: after an upstream database
+      // reset a reused id is a different message, inserted and acked anew.
+      const federationId = `${upstreamId}:${m.id}`;
+      const inserted = db.run(
+        `INSERT OR IGNORE INTO messages (from_token, to_token, group_id, text, sent_at, delivered, federation_id)
+         VALUES (?, ?, ?, ?, ?, 0, ?)`,
+        [from.instance_token, to.instance_token, m.group_id, m.text, sentAt, federationId]
+      );
+      const held =
+        inserted.changes > 0 ||
+        db.query("SELECT 1 FROM messages WHERE federation_id = ?").get(federationId) !== null;
+      if (held) acked.push(m.id);
+      if (inserted.changes > 0) {
+        updateLastActivity.run(sentAt, to.instance_token);
+        pushes.push({ token: to.instance_token, id: Number(inserted.lastInsertRowid), sender: from, text: m.text, sent_at: sentAt });
+      }
+    }
+    return { acked, pushes };
+  }
+);
+
+type QueuedRow = {
+  id: number;
+  from_token: InstanceToken;
+  group_id: GroupId;
+  text: string;
+  sent_at: string;
+  mirror_peer_id: string;
+  upstream_peer_id: string | null;
+};
+
+/** Removes a queued row and tells its sender why, from the Deck sentinel like the lock sweep does. */
+const dropQueuedMessageTx = db.transaction((row: QueuedRow, text: string, now: string): number => {
+  db.run("DELETE FROM messages WHERE id = ?", [row.id]);
+  const res = insertMessage.run(DECK_INSTANCE_TOKEN, row.from_token, row.group_id, text, now);
+  updateLastActivity.run(now, row.from_token);
+  return Number(res.lastInsertRowid);
+});
+
+/**
+ * The grace queue leaves in order, one relay per row. 200 ok -> delivered;
+ * 200 with a refusal or any 4xx -> dropped and the sender told (retrying
+ * cannot settle it); anything else stops the pass so the row waits.
+ */
+async function federationFlushQueue(): Promise<void> {
+  const rows = db
+    .query(
+      `SELECT m.id, m.from_token, m.group_id, m.text, m.sent_at, p.peer_id AS mirror_peer_id, p.upstream_peer_id
+         FROM messages m JOIN peers p ON p.instance_token = m.to_token
+        WHERE m.delivered = 0 AND p.via IS NOT NULL
+        ORDER BY m.id ASC`
+    )
+    .all() as QueuedRow[];
+  for (const row of rows) {
+    const res = await upstreamPost<SendMessageResponse>("/federation/send", {
+      replica_id: REPLICA_ID,
+      from_ref: relayRef(row.from_token),
+      to_peer_id: row.upstream_peer_id ?? row.mirror_peer_id,
+      text: row.text,
+    });
+    if (res.status === 200 && res.body && res.body.ok) {
+      markDelivered.run(row.id);
+      continue;
+    }
+    if (res.status === 200 || (res.status >= 400 && res.status < 500)) {
+      const now = new Date().toISOString();
+      const reason = res.status === 200 ? (res.body?.error ?? "refused") : upstreamErrorText(res.body);
+      const text = `Your message to '${row.mirror_peer_id}' (sent ${ageSec(row.sent_at, now)}s ago) was refused by the upstream broker: ${reason}`;
+      log.warn(`federation: queued message ${row.id} refused by the upstream, dropped and the sender told`, { reason });
+      const noticeId = dropQueuedMessageTx(row, text, now);
+      pushDeckMessage(row.from_token, noticeId, text, now);
+      continue;
+    }
+    throw new Error(`federation send refused (${res.status}) for queued message ${row.id}: ${upstreamErrorText(res.body)}`);
+  }
+}
+
+/**
+ * One sync (peers up, directory and inbound down), then the queue, then the
+ * response applied. A failure here fails the pass like a failed pull: same
+ * upstream, same hysteresis. Its own error is kept apart for the status.
+ */
+async function federationPass(): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    const sentinelsIn = SENTINEL_INSTANCE_TOKENS.map(() => "?").join(", ");
+    const locals = db
+      .query(
+        `SELECT instance_token, peer_id, group_id, host, cwd, git_root, project_key, summary, role,
+                last_activity_at, upstream_peer_id
+           FROM peers
+          WHERE status = 'active' AND via IS NULL AND instance_token NOT IN (${sentinelsIn})
+          ORDER BY peer_id`
+      )
+      .all(...SENTINEL_INSTANCE_TOKENS) as LocalRelayRow[];
+    const byRef = new Map<string, LocalRelayRow>();
+    const peers: FederationRelayPeer[] = locals.map((row) => {
+      const ref = relayRef(row.instance_token);
+      byRef.set(ref, row);
+      return {
+        relay_ref: ref,
+        peer_id: row.peer_id,
+        group_id: row.group_id,
+        host: row.host,
+        cwd: row.cwd,
+        git_root: row.git_root,
+        project_key: row.project_key,
+        summary: row.summary,
+        role: row.role,
+        last_activity_at: row.last_activity_at,
+      };
+    });
+    const groups = [...new Set(locals.map((r) => r.group_id))].map((gid) => ({
+      group_id: gid,
+      group_secret_hash:
+        (db.query("SELECT secret_hash FROM groups WHERE group_id = ?").get(gid) as { secret_hash: string | null } | null)
+          ?.secret_hash ?? null,
+    }));
+    const res = await upstreamPost<FederationSyncResponse>("/federation/sync", {
+      replica_id: REPLICA_ID,
+      groups,
+      peers,
+      ack: federationPendingAck,
+    });
+    if (res.status === 404) {
+      if (!federationUnsupportedLogged) {
+        federationUnsupportedLogged = true;
+        log.warn(
+          `federation: upstream ${UPSTREAM_URL} does not federate peers (older version): remote peers stay unlisted, roadmap replication continues`
+        );
+      }
+      if (!federationUnsupported) {
+        // Nothing can reach a remote peer through this upstream: what was
+        // mirrored or queued from an earlier, federating answer is settled now.
+        federationUnsupported = true;
+        const dropped = dropFederationTx(now, "the upstream broker does not federate peers.");
+        for (const d of dropped) pushDeckMessage(d.token, d.id, d.text, now);
+        if (dropped.length > 0) {
+          log.warn(`federation: ${dropped.length} queued message(s) dropped, the upstream does not federate peers`);
+        }
+      }
+      federationLastError = null;
+      return;
+    }
+    if (res.status !== 200 || !res.body || !Array.isArray(res.body.peers)) {
+      throw new Error(`federation sync refused (${res.status}): ${upstreamErrorText(res.body)}`);
+    }
+    if (typeof res.body.upstream_id !== "string" || !BROKER_ID_REGEX.test(res.body.upstream_id)) {
+      throw new Error("federation sync answered without a valid upstream_id");
+    }
+    federationUnsupported = false;
+    // The upstream applied the ack inside its transaction: nothing to resend.
+    federationPendingAck = [];
+    federationRelayedCount = peers.length;
+    await federationFlushQueue();
+    const applied = applyFederationTx(res.body, res.body.upstream_id, byRef, now);
+    federationPendingAck = applied.acked;
+    federationRefusedGroupsCount = Array.isArray(res.body.refused_groups) ? res.body.refused_groups.length : 0;
+    for (const g of Array.isArray(res.body.refused_groups) ? res.body.refused_groups : []) {
+      federationWarnOnce(`refused:${g.group_id}:${g.reason}`, `federation: upstream refused a group, its peers are not relayed`, {
+        group_id: g.group_id,
+        reason: g.reason,
+      });
+    }
+    for (const p of applied.pushes) pushPeerMessage(p.token, p.id, p.sender, p.text, p.sent_at);
+    federationGraceExpired = false;
+    federationLastError = null;
+  } catch (e) {
+    federationLastError = e instanceof Error ? e.message : String(e);
+    throw e;
+  }
+}
+
+/**
+ * Hides every mirror and drops every queued row, telling each sender why:
+ * what a failed pass does once the outage has outlived the grace, and what a
+ * 404 does when the upstream turns out not to federate.
+ */
+const dropFederationTx = db.transaction(
+  (now: string, reason: string): { token: InstanceToken; id: number; text: string }[] => {
+    db.run("UPDATE peers SET status = 'dormant', last_seen = ? WHERE via IS NOT NULL AND status = 'active'", [now]);
+    const queued = db
+      .query(
+        `SELECT m.id, m.from_token, m.group_id, m.text, m.sent_at, p.peer_id AS mirror_peer_id, p.upstream_peer_id
+           FROM messages m JOIN peers p ON p.instance_token = m.to_token
+          WHERE m.delivered = 0 AND p.via IS NOT NULL
+          ORDER BY m.id ASC`
+      )
+      .all() as QueuedRow[];
+    const dropped: { token: InstanceToken; id: number; text: string }[] = [];
+    for (const row of queued) {
+      const text = `Your message to '${row.mirror_peer_id}' (sent ${ageSec(row.sent_at, now)}s ago) was dropped: ${reason}`;
+      dropped.push({ token: row.from_token, id: dropQueuedMessageTx(row, text, now), text });
+    }
+    return dropped;
+  }
+);
+
+/**
+ * After a failed pass: within the grace the mirrors are kept alive against
+ * the local sweep (their last_seen is the link's, not theirs); at the first
+ * failed pass beyond it the grace expires, once per outage.
+ */
+function federationAfterFailedPass(): void {
+  if (federationUnsupported) return;
+  const now = new Date().toISOString();
+  const downMs = syncOnlineState === "offline" ? Date.now() - new Date(syncStateSince).getTime() : 0;
+  if (downMs < FEDERATION_GRACE_SEC * 1000) {
+    db.run("UPDATE peers SET last_seen = ? WHERE via IS NOT NULL AND status = 'active'", [now]);
+    return;
+  }
+  if (federationGraceExpired) return;
+  federationGraceExpired = true;
+  const minutes = Math.max(1, Math.round(downMs / 60_000));
+  const dropped = dropFederationTx(now, `the upstream broker stayed unreachable for ${minutes} min.`);
+  for (const d of dropped) pushDeckMessage(d.token, d.id, d.text, now);
+  log.warn(
+    `federation: upstream unreachable beyond the ${FEDERATION_GRACE_SEC}s grace: remote peers hidden, ${dropped.length} queued message(s) dropped and their senders told`
+  );
+}
+
+/**
+ * A local agent writing to a mirror. Relayed synchronously while the link is
+ * up, the upstream's verdict returned as is; queued for the grace when the
+ * link is down, or when the relay itself fails (network, 5xx, or a 404 on a
+ * sender the next pass will only then have relayed). Only the sender's own
+ * bookkeeping is local: no messages row is written for a relayed message.
+ */
+async function relayOutboundMessage(
+  sender: SenderMeta & { group_id: GroupId },
+  target: { instance_token: InstanceToken; peer_id: string; upstream_peer_id: string },
+  text: string
+): Promise<SendMessageResponse> {
+  const sentAt = new Date().toISOString();
+  if (federationUnsupported) return { ok: false, error: unfederatedPeerError(target.peer_id) };
+  if (federationLinkUp()) {
+    try {
+      const res = await upstreamPost<SendMessageResponse>("/federation/send", {
+        replica_id: REPLICA_ID,
+        from_ref: relayRef(sender.instance_token),
+        to_peer_id: target.upstream_peer_id,
+        text,
+      });
+      if (res.status === 200 && res.body && typeof res.body.ok === "boolean") {
+        updateLastActivity.run(sentAt, sender.instance_token);
+        ackPriorMessagesForSender.run(sender.instance_token, sender.group_id, Number.MAX_SAFE_INTEGER);
+        return res.body.ok ? { ok: true } : { ok: false, error: res.body.error ?? "refused by the upstream broker" };
+      }
+      if (res.status >= 400 && res.status < 500 && res.status !== 404) {
+        return { ok: false, error: `refused by the upstream broker (${res.status}): ${upstreamErrorText(res.body)}` };
+      }
+      log.warn(`federation: relay to '${target.peer_id}' answered ${res.status}, message queued`, {
+        error: upstreamErrorText(res.body),
+      });
+    } catch (e) {
+      log.warn(`federation: relay to '${target.peer_id}' failed, message queued`, e);
+    }
+  }
+  const graceLeft = federationGraceLeftSec();
+  if (graceLeft <= 0) {
+    return {
+      ok: false,
+      error: `Peer '${target.peer_id}' is unreachable: the upstream broker has been unreachable for longer than the ${FEDERATION_GRACE_SEC}s federation grace`,
+    };
+  }
+  recordMessageTx(sender.instance_token, target.instance_token, sender.group_id, text, sentAt);
+  return { ok: true, queued: true, grace_left_sec: graceLeft };
+}
+
 async function runSyncPass(): Promise<void> {
   if (syncInFlight) return;
   syncInFlight = true;
@@ -5902,6 +6977,7 @@ async function runSyncPass(): Promise<void> {
     await syncPullPass();
     await syncPushPass();
     await syncLockPass();
+    await federationPass();
     syncLastSyncAt = new Date().toISOString();
     // A pass that completed still reports the rows the upstream refused inside
     // it: they are the reason a card is not there, and clearing the field would
@@ -5927,6 +7003,13 @@ async function runSyncPass(): Promise<void> {
       syncStateSince = new Date().toISOString();
       log.error(`roadmap sync: upstream ${UPSTREAM_URL} unreachable, working offline`, e);
     }
+    // Decided after the hysteresis above, since it reads the offline state.
+    // Its own failure must not escape this handler: nothing awaits the pass.
+    try {
+      federationAfterFailedPass();
+    } catch (inner) {
+      log.error("federation: the offline bookkeeping failed after a failed pass", inner);
+    }
   } finally {
     // One assignment, after the pass has decided everything it decides.
     syncPublished = {
@@ -5937,6 +7020,7 @@ async function runSyncPass(): Promise<void> {
       refused: syncRefusedPushes.size,
       refused_locks: syncRefusedLocks.size,
       queue_replaced: syncQueueReplacedTotal,
+      federation: federationSnapshot(),
     };
     syncInFlight = false;
     armSyncTimer(syncOnlineState === "offline" ? syncBackoffMs : SYNC_TICK_MS);
@@ -7983,7 +9067,14 @@ const server = Bun.serve<WsData>({
           serve_replicas: SERVE_REPLICAS,
           // Only a replica has an upstream to be online against; on the other
           // modes the field is absent rather than a misleading `true`.
-          ...(BROKER_MODE === "replica" ? { upstream_online: syncOnlineState === "online" } : {}),
+          ...(BROKER_MODE === "replica"
+            ? {
+                upstream_online: syncOnlineState === "online",
+                // 'unsupported' once the upstream answered that it has no
+                // federation routes; 'off' while the link is down.
+                federation: federationUnsupported ? "unsupported" : syncOnlineState === "online" ? "on" : "off",
+              }
+            : {}),
         });
       }
       if (path === "/group-stats") {
@@ -8010,6 +9101,7 @@ const server = Bun.serve<WsData>({
         const approvals = sweepApprovals();
         return Response.json({
           purged: result.messages,
+          purged_federated: result.federated,
           purged_drafts: result.drafts,
           expired_approvals: approvals.expired,
           purged_approvals: approvals.purged,
@@ -8062,7 +9154,7 @@ const server = Bun.serve<WsData>({
         case "/list-peers":
           return Response.json(handleListPeers(body as ListPeersRequest));
         case "/send-message":
-          return Response.json(handleSendMessage(body as SendMessageRequest));
+          return Response.json(await handleSendMessage(body as SendMessageRequest));
         case "/announce": {
           const result = handleAnnounce(body as AnnounceRequest);
           if ("error" in result) {
@@ -8176,6 +9268,22 @@ const server = Bun.serve<WsData>({
         }
         case "/roadmap/sync/status":
           return Response.json(handleRoadmapSyncStatus());
+        case "/federation/sync": {
+          const result = handleFederationSync(body as FederationSyncRequest);
+          if ("error" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
+        case "/federation/send": {
+          const result = await handleFederationSend(body as FederationSendRequest);
+          // Narrowed on `status`, not `error`: the send's own refusal carries
+          // an error field inside a 200 body, as /send-message answers it.
+          if ("status" in result) {
+            return Response.json({ error: result.error }, { status: result.status });
+          }
+          return Response.json(result);
+        }
         case "/roadmap/sync/conflicts": {
           const result = handleRoadmapSyncConflicts(body as RoadmapSyncConflictsRequest);
           if ("error" in result) {
@@ -8328,6 +9436,8 @@ log.info(
   `active_stale=${ACTIVE_STALE_SEC}s, sweep_interval=${SWEEP_INTERVAL_SEC}s, ` +
   `lock_ttl=${LOCK_TTL_SEC}s, lock_grace=${LOCK_GRACE_SEC}s, ` +
   `mode=${BROKER_MODE}, serve_replicas=${SERVE_REPLICAS ? "on" : "off"}` +
-  (BROKER_MODE === "replica" ? `, upstream=${UPSTREAM_URL}, sync_tick=${SYNC_TICK_MS}ms` : "") +
+  (BROKER_MODE === "replica"
+    ? `, upstream=${UPSTREAM_URL}, sync_tick=${SYNC_TICK_MS}ms, federation_grace=${FEDERATION_GRACE_SEC}s`
+    : "") +
   `, auth=${BROKER_TOKEN ? "token" : "none"})`
 );

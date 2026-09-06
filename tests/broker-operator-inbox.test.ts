@@ -283,6 +283,13 @@ const RECIPIENT_ROUTES: Record<string, RecipientClassification> = {
     reason:
       "The deposit half of volet 1: to_peer_id === 'operator' is refused when the sender's group is TOFU-exempt (groupMayCarryOperatorInbox). Proven by the 'volet 1 deposit' test above.",
   },
+  FederationSendRequest: {
+    field: "to_peer_id",
+    route: "/federation/send",
+    verdict: "guarded",
+    reason:
+      "A replica relaying one of its peers: to_peer_id === 'operator' is refused 400 before any lookup (the operator inbox never crosses the federation boundary), and every other target then goes through handleSendMessage with the relayed row's internal token, so the /send-message guard above applies unchanged. Proven by the federation route tests.",
+  },
   AnnounceRequest: {
     field: "to_peer_id",
     route: "/announce",

@@ -764,6 +764,13 @@ export interface FederationSyncRequest {
 }
 
 export interface FederationSyncResponse {
+  /**
+   * The answering broker's persistent identity, minted once per database.
+   * The replica dedupes inbound messages by `<upstream_id>:<id>`: a bare
+   * numeric id would collide with a different message after an upstream
+   * database reset.
+   */
+  upstream_id: string;
   /** The upstream-visible name of every relayed peer (suffixed on collision). */
   assigned: { relay_ref: string; peer_id: PeerId }[];
   peers: FederatedPeer[];
