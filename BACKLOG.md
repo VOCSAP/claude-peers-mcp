@@ -1083,10 +1083,12 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
 - [ ] **Provenance opérateur inter-brokers** : `operator_id` ne traverse
       jamais la frontière ; si un besoin apparaît, signature vérifiable
       upstream, jamais un champ déclaré par la replica.
-- [ ] **Tables hors roadmap pendant une coupure** : approbations, dispatch,
-      graph drafts, inbox restent locaux ; une approbation levée hors ligne
-      n'est pas répondable depuis un autre Deck ni via un canal de
-      notification tenu par l'upstream.
+- [x] **Tables hors roadmap pendant une coupure** : approbations, dispatch,
+      graph drafts, inbox restent locaux -- TRANCHÉ (opérateur, 2026-09-06),
+      par conception et non par manque : une approbation ou une notification
+      ne vit que le temps du Kory Deck qui l'a levée (credential révoquée à
+      la sortie, `peer_id` réattribuables), rien n'a de sens côté broker
+      centralisé. Règle inscrite dans `CLAUDE.md` ; ne pas rouvrir.
 - [ ] **Fusion automatique par champ** : REFUSÉE (une clôture d'un côté et un
       enrichissement de l'autre doivent rester un conflit dur) ; ne revenir
       dessus qu'avec un instantané de base et une règle explicite sur
@@ -1115,12 +1117,12 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       statut de replication côté renderer. Rationale : c'est une information
       de configuration DE L'HÔTE, l'écriture était déjà bloquée, et un
       téléphone n'a aucun usage de l'URL/état du broker.
-- [ ] **Autres écritures `.tmp` fixe hors `config.json`** (résiduel) :
-      `workspace-store.ts` portait le même motif (nom de fichier temporaire
-      fixe, sujet à collision entre deux écritures concurrentes) et bascule
-      sur `writeFileAtomic` dans ce lot -- auditer chaque écriture
-      `tmp`+`rename` restante en ligne dans `desktop/src/main` pour la même
-      classe de bug avant de la considérer close partout.
+- [x] **Autres écritures `.tmp` fixe hors `config.json`** (résiduel) --
+      clos, mesuré le 2026-09-06 : `grep -rn "renameSync\|\.tmp" desktop/src/main`
+      hors `atomic-write.ts` ne rend que la sauvegarde unique de
+      `operator-identity.ts` et la rotation de `log.ts`, aucun motif
+      `tmp`+`rename` en ligne ; toute écriture atomique passe par
+      `writeFileAtomic` (nom temporaire par pid et par appel).
 - [ ] **Le Deck n'a pas de verrou mono-instance** (résiduel) : deux fenêtres
       Kory partagent chaque store (config, workspaces, roadmap cache local,
       etc.) ; le verrou `config.json` livré ci-dessus ne couvre QUE ce fichier
