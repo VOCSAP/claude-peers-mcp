@@ -69,11 +69,14 @@ async function getGitRoot(cwd: string): Promise<string | null> {
 }
 
 function formatPeerLine(p: Peer): string {
+  // The name other machines must use, when the upstream broker renamed it.
+  const federated = p.upstream_peer_id && p.upstream_peer_id !== p.peer_id ? ` (${p.upstream_peer_id})` : "";
   const head = p.host && p.client_pid
-    ? `[${p.group_id}] ${p.peer_id}  (${p.host} - PID: ${p.client_pid})`
-    : `[${p.group_id}] ${p.peer_id}  PID:${p.pid}`;
+    ? `[${p.group_id}] ${p.peer_id}${federated}  (${p.host} - PID: ${p.client_pid})`
+    : `[${p.group_id}] ${p.peer_id}${federated}  PID:${p.pid}`;
   const statusTag = p.status === "active" ? "" : `  <${p.status}>`;
-  return `${head}${statusTag}  ${p.cwd}`;
+  const viaTag = p.via ? `  via:${p.via}` : "";
+  return `${head}${statusTag}  ${p.cwd}${viaTag}`;
 }
 
 const cmd = process.argv[2];

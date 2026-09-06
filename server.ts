@@ -30,6 +30,7 @@ import type {
   RoadmapArchiveResponse,
   RoadmapContextAppendResponse,
   RoadmapUpsertAckField,
+  SendMessageResponse,
 } from "./shared/types.ts";
 import {
   generateSummary,
@@ -100,6 +101,7 @@ import {
   type WaitCandidateMessage,
 } from "./shared/wait-for-message.ts";
 import { composeOutboundMessage } from "./shared/message-framing.ts";
+import { formatPeer, renderSendAck } from "./shared/peer-render.ts";
 import { resolveProjectKey } from "./shared/project-key.ts";
 import { tmpdir } from "node:os";
 import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
@@ -495,7 +497,7 @@ const TOOLS = [
   {
     name: "list_peers",
     description:
-      "List other Claude Code instances connected to the same broker, in your current group. Returns peer_id, host, working directory, git repo, role, and summary.",
+      "List other Claude Code instances connected to the same broker, in your current group. Returns peer_id, host, working directory, git repo, role, and summary. Remote peers reached through the central broker carry a Via: line and, when their name differs there, Federated as:.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -977,30 +979,6 @@ log(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: FILTERED_TOOLS,
 }));
-
-function formatElapsed(iso: string | null): string {
-  if (!iso) return "never";
-  const elapsed = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(elapsed / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h${mins % 60}m ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function formatPeer(p: PublicPeer): string {
-  const statusLabel = { active: "🟢 active", sleep: "🟡 sleep", closed: "🔴 closed" }[p.activity_status];
-  const idLine = p.host ? `peer_id: ${p.peer_id}  (${p.host})` : `peer_id: ${p.peer_id}`;
-  const parts = [`${statusLabel}  ${idLine}`, `CWD: ${p.cwd}`];
-  if (p.role) parts.push(`Role: ${p.role}`);
-  if (p.git_root) parts.push(`Repo: ${p.git_root}`);
-  if (p.project_key) parts.push(`Project: ${p.project_key}`);
-  if (p.tty) parts.push(`TTY: ${p.tty}`);
-  if (p.summary) parts.push(`Summary: ${p.summary}`);
-  parts.push(`Last exchange: ${formatElapsed(p.last_activity_at)}`);
-  return parts.join("\n  ");
-}
 
 /**
  * The roadmap scope for this session: the normalized git remote when there is
@@ -1585,7 +1563,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           };
         }
 
-        const lines = peers.map(formatPeer);
+        const lines = peers.map((p) => formatPeer(p));
         return {
           content: [
             {
@@ -1630,7 +1608,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         };
       }
       try {
-        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
+        const result = await brokerFetch<SendMessageResponse>("/send-message", {
           from_token: myInstanceToken,
           to_peer_id: target,
           // `target` is passed so the operator inbox is never framed: this tool
@@ -1646,7 +1624,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           };
         }
         return {
-          content: [{ type: "text" as const, text: `Message sent to peer '${target}'` }],
+          content: [{ type: "text" as const, text: renderSendAck(target, result) }],
         };
       } catch (e) {
         return {
