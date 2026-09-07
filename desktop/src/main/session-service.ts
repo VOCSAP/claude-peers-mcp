@@ -10,7 +10,7 @@ import type {
   SessionStatus
 } from '@shared/types'
 import { PtyManager } from './pty-manager'
-import { resolvePeerId } from './peer-state'
+import { resolvePeerIdAmong } from './peer-state'
 import { saveSessions } from './store'
 import {
   buildSessionCommandLine,
@@ -89,6 +89,23 @@ const PEER_POLL_MS = 4000
 /** Discovery: poll cadence + deadline to capture Claude's real (minted) session id. */
 const DISCOVERY_POLL_MS = 800
 const DISCOVERY_DEADLINE_MS = 30_000
+
+/**
+ * Every poll tick stats one file per id in a tile's sessionIdHistory, so an
+ * unbounded list costs unbounded work for a benefit that stays flat: no known
+ * path ever rewrites a cache file under anything but the earliest id a tile
+ * registered under, and even a path that did would only add one more entry
+ * worth checking, not invalidate the earliest one -- so entry 0 is kept
+ * forever and only the remainder is capped.
+ */
+const MAX_SESSION_ID_HISTORY = 10
+
+/** Append `realId`, keeping entry 0 forever and dropping the next-oldest once over the cap. */
+function pushSessionIdHistory(history: string[] | undefined, realId: string): string[] {
+  const next = history ? [...history, realId] : [realId]
+  if (next.length <= MAX_SESSION_ID_HISTORY) return next
+  return [next[0]!, ...next.slice(next.length - (MAX_SESSION_ID_HISTORY - 1))]
+}
 
 /**
  * Directive injection (CT3): a command is only typed into a tile that is idle,
@@ -1112,6 +1129,7 @@ export class SessionService extends EventEmitter {
   /** Swap a session's placeholder id for the discovered real one + persist/notify. */
   private adoptRealId(def: SessionDef, placeholder: string, realId: string): void {
     this.registry.release(placeholder)
+    def.sessionIdHistory = pushSessionIdHistory(def.sessionIdHistory, realId)
     def.sessionId = realId
     this.registry.add(realId)
     this.persist()
@@ -1138,6 +1156,12 @@ export class SessionService extends EventEmitter {
     // never inject one, matching "prompt lives in the transcript, never
     // re-played".
     this.pendingPrompt.delete(def.id)
+
+    // startPty has one caller (spawnSession) and every call starts a
+    // genuinely new claude process, in either branch below (a resume with no
+    // transcript degrades to fresh and mints an id too) -- the dead
+    // process's history owes the new one nothing.
+    def.sessionIdHistory = []
 
     let command: string
     if (effective === 'resume') {
@@ -1534,8 +1558,9 @@ export class SessionService extends EventEmitter {
     for (const def of this.defs) {
       const r = this.runtime.get(def.id)
       if (!r) continue
+      const knownIds = def.sessionIdHistory && def.sessionIdHistory.length ? def.sessionIdHistory : [def.sessionId]
       const next = this.pty.isAlive(def.id)
-        ? resolvePeerId(def.cwd, def.sessionId, this.peersDirFor(def))
+        ? resolvePeerIdAmong(def.cwd, knownIds, this.peersDirFor(def))
         : null
       if (next !== r.peerId) {
         // Fires for any transition to a live id, carrying the previous one,

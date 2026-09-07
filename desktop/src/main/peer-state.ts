@@ -46,6 +46,9 @@ function readPeerIdFile(full: string): string | null {
  * aa8d6b5f: that neighbour-borrowing fail-open let a /clear'd tile silently
  * adopt another tile's identity). The newest-file-by-mtime fallback applies
  * only when no `sessionId` is known at all (legacy layout).
+ * No production caller today: resolvePeerIdAmong (below) resolves every live
+ * tile instead. Kept as a single-id resolver for a future caller, and because
+ * its own test is the living record of the aa8d6b5f arbitration.
  */
 export function resolvePeerId(
   cwd: string,
@@ -80,6 +83,56 @@ export function resolvePeerId(
 
     const newest = matches[0]
     return newest ? readPeerIdFile(newest.full) : null
+  } catch {
+    return null
+  }
+}
+
+function peerIdCacheFileName(cwd: string, sessionId: string): string {
+  return `peer-id-${computeCwdKey(cwd)}-${sessionId}.txt`
+}
+
+/**
+ * Rejects only what a torn or truncated read can produce (whitespace, a
+ * control character), not what the broker's own peer_id policy would --
+ * this module does not own that policy and must not need to agree with it
+ * to accept a value the broker legitimately minted.
+ */
+const PLAUSIBLE_CACHE_VALUE_RE = /^[\x21-\x7e]{1,64}$/
+
+/**
+ * Resolve the peer_id among every real session id one tile has itself
+ * adopted (SessionDef.sessionIdHistory), taking whichever of THEIR cache
+ * files was written most recently.
+ * The mtime comparison, forbidden in resolvePeerId (card aa8d6b5f) between
+ * different tiles' files, is safe here for the opposite reason: every id
+ * compared is proven to belong to THIS one tile, so there is no sibling
+ * left to borrow from. No known path ever rewrites a cache file under
+ * anything but the earliest id a tile registered under, but even if one
+ * did, the mtime comparison would already prefer it -- the design does not
+ * depend on that premise holding.
+ * A read value that fails the plausibility check is treated as absent, so a
+ * torn or truncated-but-non-empty file is never surfaced as an identity.
+ */
+export function resolvePeerIdAmong(
+  cwd: string,
+  sessionIds: readonly string[],
+  peersDir: string = PEERS_DIR
+): string | null {
+  try {
+    if (!existsSync(peersDir)) return null
+    let best: { value: string; mtime: number } | null = null
+    for (const id of sessionIds) {
+      const suffix = sanitizeSessionId(id)
+      if (!suffix) continue
+      const full = join(peersDir, peerIdCacheFileName(cwd, suffix))
+      if (!existsSync(full)) continue
+      const value = readFileSync(full, 'utf8').trim()
+      if (!value || !PLAUSIBLE_CACHE_VALUE_RE.test(value)) continue
+      const mtime = statSync(full).mtimeMs
+      if (!best || mtime > best.mtime) best = { value, mtime }
+    }
+    return best ? best.value : null
   } catch {
     return null
   }

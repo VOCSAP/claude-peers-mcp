@@ -6,7 +6,8 @@ import { join } from "node:path";
 import {
   computeCwdKey,
   sanitizeSessionId,
-  resolvePeerId
+  resolvePeerId,
+  resolvePeerIdAmong
 } from "../desktop/src/main/peer-state.ts";
 import { ThinkingDetector, type ThinkingEvent } from "../desktop/src/main/thinking.ts";
 
@@ -85,6 +86,85 @@ test("returns null (not a sibling tile's peer_id) when a sessionId IS given but 
 test("returns null when nothing matches", () => {
   const dir = tmpPeersDir();
   expect(resolvePeerId("/home/u/empty", "sid", dir)).toBeNull();
+});
+
+// ----- resolvePeerIdAmong -----
+
+test("takes the freshest file among the tile's own known ids", () => {
+  const dir = tmpPeersDir();
+  const cwd = "/home/u/proj";
+  const key = computeCwdKey(cwd);
+  const idA = "session-a";
+  const idB = "session-b";
+  const fileA = join(dir, `peer-id-${key}-${idA}.txt`);
+  const fileB = join(dir, `peer-id-${key}-${idB}.txt`);
+  writeFileSync(fileA, "dev-pc-proj-2", "utf-8");
+  writeFileSync(fileB, "dev-pc-proj-2-renamed", "utf-8");
+  const now = Date.now() / 1000;
+  utimesSync(fileA, now - 100, now - 100);
+  utimesSync(fileB, now, now);
+
+  expect(resolvePeerIdAmong(cwd, [idA, idB], dir)).toBe("dev-pc-proj-2-renamed");
+});
+
+test("peremption: a set_id/switch_group rewrite of the ORIGINAL id's file (never a fresh file under the new id) still resolves to the new value", () => {
+  const dir = tmpPeersDir();
+  const cwd = "/home/u/proj";
+  const key = computeCwdKey(cwd);
+  const idA = "session-a"; // the id this tile first registered under
+  const idB = "session-b"; // adopted after a /clear; never gets its own file
+  const fileA = join(dir, `peer-id-${key}-${idA}.txt`);
+  writeFileSync(fileA, "dev-pc-proj-2", "utf-8");
+  const now = Date.now() / 1000;
+  utimesSync(fileA, now - 100, now - 100);
+
+  // The core rewrites idA's file in place (its own env is frozen to idA),
+  // not a new file under idB -- this is the exact mechanism, not a stand-in.
+  writeFileSync(fileA, "dev-pc-proj-2-renamed", "utf-8");
+  utimesSync(fileA, now, now);
+
+  expect(resolvePeerIdAmong(cwd, [idA, idB], dir)).toBe("dev-pc-proj-2-renamed");
+});
+
+test("never borrows a sibling tile's file or the shared legacy file, even when both exist (card aa8d6b5f)", () => {
+  const dir = tmpPeersDir();
+  const cwd = "/home/u/proj";
+  const key = computeCwdKey(cwd);
+  // A neighbour tile's own per-session file for the same cwd.
+  writeFileSync(join(dir, `peer-id-${key}-neighbour-session.txt`), "neighbour-peer", "utf-8");
+  // The legacy layout file shared by every tile at this cwd.
+  writeFileSync(join(dir, `peer-id-${key}.txt`), "legacy-peer", "utf-8");
+
+  // Neither of this tile's own known ids has a file of its own.
+  expect(resolvePeerIdAmong(cwd, ["this-tile-id-1", "this-tile-id-2"], dir)).toBeNull();
+});
+
+test("rejects a truncated-but-non-empty value that is not a plausible peer_id", () => {
+  const dir = tmpPeersDir();
+  const cwd = "/home/u/proj";
+  const key = computeCwdKey(cwd);
+  const id = "session-a";
+  writeFileSync(join(dir, `peer-id-${key}-${id}.txt`), "dev pc proj\x00", "utf-8");
+
+  expect(resolvePeerIdAmong(cwd, [id], dir)).toBeNull();
+});
+
+test("returns null when the list of known ids is empty", () => {
+  const dir = tmpPeersDir();
+  expect(resolvePeerIdAmong("/home/u/proj", [], dir)).toBeNull();
+});
+
+test("accepts a legitimately-minted peer_id longer than 32 chars, ending in a hyphen after truncation", () => {
+  const dir = tmpPeersDir();
+  const cwd = "/home/u/proj";
+  const key = computeCwdKey(cwd);
+  const id = "session-a";
+  // The broker's own derivation can exceed its 32-char policy cap and can
+  // truncate onto a trailing hyphen; this module must not reject either.
+  const minted = "a-very-long-hostname-and-project-name-4a-";
+  writeFileSync(join(dir, `peer-id-${key}-${id}.txt`), minted, "utf-8");
+
+  expect(resolvePeerIdAmong(cwd, [id], dir)).toBe(minted);
 });
 
 // ----- ThinkingDetector -----

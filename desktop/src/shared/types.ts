@@ -27,6 +27,16 @@ export interface SessionDef {
   args: string
   /** Current claude --session-id. Changes on every fork-resume. Empty until first spawn. */
   sessionId: string
+  /**
+   * Every real (discovered, non-placeholder) session id this tile has ever
+   * adopted, oldest first. Reset on a fresh PTY spawn/fork-resume (a genuinely
+   * new claude process gets its own fresh registration and owes nothing to
+   * the previous one); grown by one on each in-process rotation (a /clear)
+   * that this tile picks up. Never leaves the process: templates and
+   * workspaces copy SessionDef through an explicit field list, so this is
+   * absent from both without either needing to know it exists.
+   */
+  sessionIdHistory?: string[]
   /** Display colour (hex) framing the tile + sidebar swatch. Auto-assigned, overridable. */
   color: string
   /**
