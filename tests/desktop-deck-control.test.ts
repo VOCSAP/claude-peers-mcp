@@ -29,6 +29,16 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractBracedBody } from "./_braced-body";
+import {
+  arbitrateSpawnApproval,
+  arbitrateSpawnGrant,
+  consumeSpawnGrant,
+  countInFlightSpawnGrants,
+  decideSpawnGrant,
+  spawnPlanFootprint,
+  type SpawnGrantStore
+} from "../desktop/src/main/approval-service.ts";
+import type { Approval } from "../desktop/src/main/approval-auth.ts";
 
 const servers: DeckControlServer[] = [];
 const procs: Subprocess[] = [];
@@ -159,10 +169,10 @@ function makeDeps(state: { sessions: SessionRuntime[] }): DeckControlDeps & {
     },
     saveTemplate: (name) => `/templates/${name}.json`,
     announce: async () => 3,
-    // Team-spawn deps (TS2-TS4): hands-free defaults, overridable per test.
+    // Team-spawn deps (TS2-TS4/02e1c07c): hands-free defaults, overridable per test.
     approveSpawn: async (entries) => {
       approvals.push(entries);
-      return entries.map(() => true);
+      return { pending: false, decisions: entries.map(() => true) };
     },
     waitForPeer: async (id) => `peer-${id}`,
     armSpawnAck: (id) => {
@@ -825,7 +835,7 @@ test("deck_spawn_session acks: sync peer_id by default, async when wait_for_peer
 
 test("deck_spawn_session: an operator refusal spawns nothing", async () => {
   const deps = makeDeps({ sessions: [] });
-  deps.approveSpawn = async (entries) => entries.map(() => false);
+  deps.approveSpawn = async (entries) => ({ pending: false, decisions: entries.map(() => false) });
   const srv = await startDeckControl(deps);
   servers.push(srv);
 
@@ -858,7 +868,7 @@ test("deck_spawn_team: one approval for the plan, async acks, per-entry decision
   expect(deps.acked).toEqual(["spawned-1", "spawned-2"]);
 
   // Per-entry decisions (full-control): only the approved entry spawns.
-  deps.approveSpawn = async (entries) => entries.map((_, i) => i === 1);
+  deps.approveSpawn = async (entries) => ({ pending: false, decisions: entries.map((_, i) => i === 1) });
   const partial = await call(srv, "deck_spawn_team", {
     team: [{ name: "no" }, { name: "yes" }]
   });
@@ -1009,7 +1019,7 @@ test("deck_apply_template: an operator refusal on one entry skips that tile, its
   const state = { sessions: [] as SessionRuntime[] };
   const deps = makeDeps(state);
   deps.resolveTemplate = () => ({ ok: true, inputs: [{ name: "no" }, { name: "yes" }] });
-  deps.approveSpawn = async (entries) => entries.map((_, i) => i === 1);
+  deps.approveSpawn = async (entries) => ({ pending: false, decisions: entries.map((_, i) => i === 1) });
   const srv = await startDeckControl(deps);
   servers.push(srv);
 
@@ -1557,15 +1567,580 @@ test("the checker REJECTS a second argument replaced by a constant (always/never
   expect(unattendedRefusesBeforeDialog(constantSecondArg)).toBe(false);
 });
 
-// Card ecaf736b: confirmShellFieldApproval has five dialog-opening sinks in
-// index.ts (confirmSpawnShellFields, resolveTemplateInputs,
-// confirmWorkspaceShellFields, confirmWorkspaceUntrustedCwd, approveSpawn).
-// Only confirmSpawnShellFields gets the full argument-pinned source scan
-// above; this count is the cheaper guard for the other four -- it does not
-// name which site regressed, only that one stopped calling the shared
-// predicate and reverted to its own inline copy.
-test("refusesUnattendedApproval is called at exactly 5 sites in index.ts (one per dialog-opening sink)", () => {
+// Card ecaf736b: confirmShellFieldApproval has four dialog-opening sinks in
+// index.ts: confirmSpawnShellFields, resolveTemplateInputs,
+// confirmWorkspaceShellFields, confirmWorkspaceUntrustedCwd. Only
+// confirmSpawnShellFields gets the full argument-pinned source scan above;
+// this count is the cheaper guard for the other three -- it does not name
+// which site regressed, only that one stopped calling the shared predicate
+// and reverted to its own inline copy.
+// approveSpawn raises an asynchronous broker approval instead (card
+// 02e1c07c) and is not one of these four -- see the spawnDialog-unreachable
+// guard further down for its own proof.
+test("refusesUnattendedApproval is called at exactly 4 sites in index.ts (one per dialog-opening sink)", () => {
   const src = readFileSync(INDEX_TS_PATH, "utf-8");
   const calls = src.match(/refusesUnattendedApproval\(/g) ?? [];
-  expect(calls.length).toBe(5);
+  expect(calls.length).toBe(4);
+});
+
+// ----- Card 02e1c07c: non-blocking supervisor spawn approval -----
+// arbitrateSpawnGrant/decideSpawnGrant (approval-service.ts) carry the WHOLE
+// arbitration and have no import of 'electron' at all, so a caller literally
+// cannot reach dialog.showMessageBoxSync through this path -- proved directly
+// below rather than by a source scan of dead code, since index.ts's own
+// approveSpawn is not bun-test-importable (electron: dialog, app, ...).
+
+function fakeApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "appr-1",
+    operator_id: "op-1",
+    origin: {
+      host: "test-host",
+      os_user_hash: "hash",
+      project_key: "pk",
+      group_id: "g",
+      from_peer: "caller-1",
+      session_ref: "deck-spawn-caller-1",
+      tile_ref: "deck-spawn-caller-1"
+    },
+    kind: "permission",
+    title: "Agent \"caller-1\" wants to spawn 1 agent session(s)",
+    question: "• dev",
+    options: [],
+    status: "pending",
+    reply_route: "pty",
+    answered_via: null,
+    answer_kind: null,
+    answer_text: null,
+    created_at: new Date().toISOString(),
+    notif_expires_at: new Date().toISOString(),
+    answered_at: null,
+    delivered_at: null,
+    ...overrides
+  };
+}
+
+const APPROVAL_SERVICE_PATH = join(import.meta.dir, "..", "desktop", "src", "main", "approval-service.ts");
+
+test("approval-service.ts (the whole spawn-grant arbiter) never imports electron -- structurally cannot reach dialog.showMessageBoxSync", () => {
+  const src = readFileSync(APPROVAL_SERVICE_PATH, "utf-8");
+  expect(src).not.toMatch(/from ['"]electron['"]/);
+  expect(src).not.toContain("showMessageBoxSync");
+});
+
+test("decideSpawnGrant grants ONLY a fresh, unexpired 'allow' -- everything else refuses", () => {
+  const now = 1_000_000;
+  const maxAge = 10 * 60_000;
+  expect(decideSpawnGrant(fakeApproval({ status: "pending" }), now, maxAge)).toBe("refuse");
+  expect(
+    decideSpawnGrant(
+      fakeApproval({ status: "answered", answer_kind: "deny", answered_at: new Date(now).toISOString() }),
+      now,
+      maxAge
+    )
+  ).toBe("refuse");
+  expect(
+    decideSpawnGrant(
+      fakeApproval({ status: "answered", answer_kind: "allow", answered_at: "not-a-date" }),
+      now,
+      maxAge
+    )
+  ).toBe("refuse");
+  expect(
+    decideSpawnGrant(
+      fakeApproval({
+        status: "answered",
+        answer_kind: "allow",
+        answered_at: new Date(now - maxAge - 1).toISOString()
+      }),
+      now,
+      maxAge
+    ),
+    "a verdict older than the grant's max age must refuse even though it reads 'allow'"
+  ).toBe("refuse");
+  expect(
+    decideSpawnGrant(
+      fakeApproval({
+        status: "answered",
+        answer_kind: "allow",
+        // A NEGATIVE age: answered_at sits in the future (broker/Deck clock
+        // skew, or a Deck clock rollback). `now - answeredAt > maxAgeMs` alone
+        // never catches this -- a negative number is never greater than a
+        // positive maxAgeMs -- so it must be refused on its own condition.
+        answered_at: new Date(now + 24 * 3600_000).toISOString()
+      }),
+      now,
+      maxAge
+    ),
+    "an answered_at in the future must refuse -- a negative age is not evidence of freshness"
+  ).toBe("refuse");
+  expect(
+    decideSpawnGrant(
+      fakeApproval({ status: "answered", answer_kind: "allow", answered_at: new Date(now - 1000).toISOString() }),
+      now,
+      maxAge
+    )
+  ).toBe("grant");
+});
+
+test("arbitrateSpawnGrant: team-review AND full-control both reach an EFFECTIVE grant with zero dialog reference in the call graph", async () => {
+  for (const mode of ["team-review", "full-control"] as const) {
+    const store: SpawnGrantStore = new Map();
+    let raiseCalls = 0;
+    const events: string[] = [];
+    const result = await arbitrateSpawnGrant(
+      `caller-1::${spawnPlanFootprint(mode, [{ name: "dev" }])}`,
+      store,
+      {
+        raise: async () => {
+          raiseCalls++;
+          return { id: "appr-1" };
+        },
+        wait: async () => ({
+          pending: false,
+          approval: fakeApproval({ status: "answered", answer_kind: "allow", answered_at: new Date().toISOString() })
+        }),
+        now: () => Date.now(),
+        onEvent: (v) => events.push(v)
+      },
+      10 * 60_000
+    );
+    expect(result, `${mode}: an agent's plan must obtain an EFFECTIVE approval, not merely a notification`).toEqual({
+      pending: false,
+      granted: true
+    });
+    expect(raiseCalls).toBe(1);
+    expect(events).toEqual(["granted"]);
+  }
+});
+
+test("arbitrateSpawnGrant: a retry while pending re-attaches to the SAME approval id -- no second notification", async () => {
+  const store: SpawnGrantStore = new Map();
+  const raisedIds: string[] = [];
+  let waitCalls = 0;
+  const io = {
+    raise: async () => {
+      raisedIds.push("appr-1");
+      return { id: "appr-1" };
+    },
+    wait: async (id: string) => {
+      waitCalls++;
+      if (waitCalls === 1) return { pending: true } as const;
+      return {
+        pending: false,
+        approval: fakeApproval({
+          id,
+          status: "answered",
+          answer_kind: "allow",
+          answered_at: new Date().toISOString()
+        })
+      } as const;
+    },
+    now: () => Date.now()
+  };
+  const key = `caller-1::${spawnPlanFootprint("team-review", [{ name: "dev" }])}`;
+
+  const first = await arbitrateSpawnGrant(key, store, io, 10 * 60_000);
+  expect(first).toEqual({ pending: true });
+  expect(raisedIds.length, "a pending retry must not raise a second approval for the same plan").toBe(1);
+
+  const second = await arbitrateSpawnGrant(key, store, io, 10 * 60_000);
+  expect(second).toEqual({ pending: false, granted: true });
+  expect(raisedIds.length, "the SAME approval id is reused across the retry -- still exactly one raise").toBe(1);
+});
+
+test("arbitrateSpawnGrant: a CACHE-HIT re-verifies freshness at the moment it is READ, not only when first observed (bloquant, card 02e1c07c review round 3)", async () => {
+  const store: SpawnGrantStore = new Map();
+  let nowMs = 0;
+  let waitCalls = 0;
+  const io = {
+    raise: async () => ({ id: "appr-1" }),
+    wait: async () => {
+      waitCalls++;
+      // Answered at t=0, observed once at t=0 -- fresh at the time of the
+      // FIRST read.
+      return {
+        pending: false,
+        approval: fakeApproval({ status: "answered", answer_kind: "allow", answered_at: new Date(0).toISOString() })
+      } as const;
+    },
+    now: () => nowMs
+  };
+  const key = `caller-1::${spawnPlanFootprint("full-control", [{ name: "dev" }])}`;
+
+  const first = await arbitrateSpawnGrant(key, store, io, 10 * 60_000);
+  expect(first, "fresh at t=0: granted").toEqual({ pending: false, granted: true });
+  expect(waitCalls).toBe(1);
+
+  // 9 hours later, a SECOND read of the SAME key (a sibling in the same
+  // batch was still pending, so this grant was never consumed) -- a
+  // cache-hit, io.wait must NOT be called again.
+  nowMs = 9 * 3600_000;
+  const second = await arbitrateSpawnGrant(key, store, io, 10 * 60_000);
+  expect(
+    second,
+    "a cache-hit read 9 hours after the verdict was observed must refuse -- 'approved at 9am, consumed at 6pm' is exactly what this must never allow"
+  ).toEqual({ pending: false, granted: false });
+  expect(waitCalls, "the cache hit must not hit the network again -- staleness is caught locally").toBe(1);
+});
+
+test("arbitrateSpawnGrant refuses -- never authorises -- when the only thing left to trust is a STALE answered row (simulates a Deck restart wiping the in-memory grant)", async () => {
+  // An EMPTY store simulates the in-memory cache lost across a Deck restart:
+  // nothing here remembers a prior grant, so the only source of truth is
+  // whatever the broker row says when re-read.
+  const store: SpawnGrantStore = new Map();
+  const longAgo = new Date(Date.now() - 24 * 3600_000).toISOString();
+  const result = await arbitrateSpawnGrant(
+    "caller-1::orphaned-plan",
+    store,
+    {
+      raise: async () => ({ id: "appr-orphan" }),
+      wait: async () => ({
+        pending: false,
+        approval: fakeApproval({ status: "answered", answer_kind: "allow", answered_at: longAgo })
+      }),
+      now: () => Date.now()
+    },
+    10 * 60_000
+  );
+  expect(
+    result,
+    "a grant lost across a restart must degrade to 'ask again' -- a stale answered row is never treated as authorisation"
+  ).toEqual({ pending: false, granted: false });
+});
+
+test("arbitrateSpawnApproval (team-review): decisions come from requester.request's own verdict, never fabricated by the mode alone", async () => {
+  let requestCalls = 0;
+  const requester = {
+    request: async () => {
+      requestCalls++;
+      return { pending: false as const, granted: false };
+    },
+    consume: () => {}
+  };
+  const result = await arbitrateSpawnApproval("team-review", [{ name: "a" }, { name: "b" }], requester);
+  expect(
+    requestCalls,
+    "team-review must call requester.request exactly once for the whole batch, never decide on its own"
+  ).toBe(1);
+  expect(
+    result,
+    "team-review's decisions must mirror requester's own verdict (refused here), not an unconditional grant"
+  ).toEqual({ pending: false, decisions: [false, false] });
+});
+
+test("arbitrateSpawnApproval (full-control): decisions[i] tracks entry i's OWN verdict, never the other entries' -- an operator refusal on one entry must not spawn it", async () => {
+  const verdicts = [true, false];
+  let requestCalls = 0;
+  const requester = {
+    request: async (plan: { name: string }[]) => {
+      requestCalls++;
+      const i = plan[0]!.name === "a" ? 0 : 1;
+      return { pending: false as const, granted: verdicts[i]! };
+    },
+    consume: () => {}
+  };
+  const result = await arbitrateSpawnApproval("full-control", [{ name: "a" }, { name: "b" }], requester);
+  expect(requestCalls, "full-control must call requester.request once PER entry").toBe(2);
+  expect(
+    result,
+    "each decision must equal its OWN entry's verdict -- entry b (refused) must never spawn just because entry a was granted"
+  ).toEqual({ pending: false, decisions: [true, false] });
+});
+
+test("arbitrateSpawnApproval (full-control): a settled sibling's grant survives while another entry is still pending -- no double-raise on retry (bloquant, card 02e1c07c review)", async () => {
+  const store: SpawnGrantStore = new Map();
+  const raiseCounts: Record<string, number> = { a: 0, b: 0 };
+  const waitQueues: Record<string, Array<{ pending: true } | { pending: false; approval: Approval }>> = {
+    a: [
+      {
+        pending: false,
+        approval: fakeApproval({ id: "appr-a", status: "answered", answer_kind: "allow", answered_at: new Date().toISOString() })
+      }
+    ],
+    b: [
+      { pending: true },
+      {
+        pending: false,
+        approval: fakeApproval({ id: "appr-b", status: "answered", answer_kind: "allow", answered_at: new Date().toISOString() })
+      }
+    ]
+  };
+  function keyFor(plan: { name: string }[]): string {
+    return `caller-1::${spawnPlanFootprint("full-control", plan)}`;
+  }
+  const requester = {
+    request: (plan: { name: string }[]) => {
+      const label = plan[0]!.name;
+      return arbitrateSpawnGrant(
+        keyFor(plan),
+        store,
+        {
+          raise: async () => {
+            raiseCounts[label]!++;
+            return { id: `appr-${label}` };
+          },
+          wait: async () => waitQueues[label]!.shift()!,
+          now: () => Date.now()
+        },
+        10 * 60_000
+      );
+    },
+    consume: (plan: { name: string }[]) => consumeSpawnGrant(keyFor(plan), store)
+  };
+
+  const entries = [{ name: "a" }, { name: "b" }];
+  const round1 = await arbitrateSpawnApproval("full-control", entries, requester);
+  expect(round1, "one entry (b) is still pending -- the whole batch reports pending").toEqual({ pending: true });
+
+  const round2 = await arbitrateSpawnApproval("full-control", entries, requester);
+  expect(round2).toEqual({ pending: false, decisions: [true, true] });
+
+  expect(
+    raiseCounts,
+    "each entry is raised EXACTLY once across both rounds -- a settled sibling must not be re-raised while another entry is still pending"
+  ).toEqual({ a: 1, b: 1 });
+});
+
+// ----- Card 02e1c07c review round 3: footprint must cover the RESOLVED -----
+// plan, not the truncated display summary, and full-control entries must be
+// disambiguated by their position in the batch.
+
+test("spawnPlanFootprint differs when the RAW plan differs past the summary's 160-char preview or in a field the summary omits entirely", () => {
+  const base = spawnPlanFootprint("full-control", { indices: [0], raw: [{ name: "dev", prompt: "x".repeat(160) + "A" }] });
+  const differsAfter160 = spawnPlanFootprint("full-control", {
+    indices: [0],
+    raw: [{ name: "dev", prompt: "x".repeat(160) + "B" }]
+  });
+  expect(
+    differsAfter160,
+    "two prompts identical for their first 160 chars (all a 160-char SUMMARY preview would ever show) must still hash differently"
+  ).not.toBe(base);
+
+  const withAnnounce = spawnPlanFootprint("full-control", {
+    indices: [0],
+    raw: [{ name: "dev", prompt: "x".repeat(160) + "A", announce: "tell the operator" }]
+  });
+  expect(
+    withAnnounce,
+    "'announce' is absent from SpawnSummary entirely -- the footprint must still change when it is present"
+  ).not.toBe(base);
+});
+
+test("spawnGrantKey (real file) folds each entry's INDEX into the footprint, not just its raw content", () => {
+  const src = readFileSync(INDEX_TS_PATH, "utf-8");
+  const anchor =
+    /const spawnGrantKey = \(\s*callerId: string,\s*mode: 'team-review' \| 'full-control',\s*plan: SpawnGrantPlanItem\[\]\s*\): string =>\s*\n\s*`\$\{callerId\}::\$\{spawnPlanFootprint\(mode, (\{[^}]*\})\)\}`/g;
+  const matches = [...src.matchAll(anchor)];
+  expect(matches.length, "spawnGrantKey not found with its expected signature -- has it been renamed?").toBe(1);
+  const footprintInput = matches[0]![1]!;
+  expect(
+    footprintInput,
+    "the footprint input must include each entry's index, or two identical entries at different positions collide on one store slot"
+  ).toContain("p.index");
+});
+
+test("spawnPlanFootprint differs for two TEXTUALLY IDENTICAL full-control entries at different positions in the batch", () => {
+  const raw = [{ name: "dev", args: "--same" }];
+  const first = spawnPlanFootprint("full-control", { indices: [0], raw });
+  const second = spawnPlanFootprint("full-control", { indices: [1], raw });
+  expect(
+    second,
+    "two identical entries must land in two independent store slots -- full-control is N independent approvals, one per entry, never one shared between look-alikes"
+  ).not.toBe(first);
+});
+
+test("countInFlightSpawnGrants counts only THIS callerId's UNSETTLED entries", () => {
+  const store: SpawnGrantStore = new Map();
+  store.set("caller-1::plan-a", { approvalId: "appr-a" });
+  store.set("caller-1::plan-b", { approvalId: "appr-b" });
+  // An entry with an observed `approval` is SETTLED, whatever its verdict:
+  // it holds no live notification against the operator's queue, so it is
+  // excluded from the in-flight count.
+  store.set("caller-1::plan-c", {
+    approvalId: "appr-c",
+    approval: fakeApproval({ status: "answered", answer_kind: "allow" })
+  });
+  store.set("caller-2::plan-d", { approvalId: "appr-d" });
+
+  expect(countInFlightSpawnGrants(store, "caller-1")).toBe(2);
+  expect(countInFlightSpawnGrants(store, "caller-2")).toBe(1);
+  expect(countInFlightSpawnGrants(store, "caller-3"), "a caller with no entries at all counts zero").toBe(0);
+});
+
+test("arbitrateSpawnGrant: a wait() failure right after a FRESH raise rolls back the store entry it just created -- it must not leak an in-flight cap slot forever", async () => {
+  const store: SpawnGrantStore = new Map();
+  for (const key of ["caller-1::plan-a", "caller-1::plan-b", "caller-1::plan-c"]) {
+    await expect(
+      arbitrateSpawnGrant(
+        key,
+        store,
+        {
+          raise: async () => ({ id: `appr-${key}` }),
+          wait: async () => {
+            throw new Error("network drop");
+          },
+          now: () => Date.now()
+        },
+        10 * 60_000
+      )
+    ).rejects.toThrow("network drop");
+  }
+  expect(
+    countInFlightSpawnGrants(store, "caller-1"),
+    "three distinct plans that each failed to observe their own fresh raise must not occupy the in-flight cap forever"
+  ).toBe(0);
+});
+
+test("arbitrateSpawnGrant: a wait() failure against an ALREADY-RAISED approval keeps the entry -- a retry must re-attach, never raise a duplicate", async () => {
+  const store: SpawnGrantStore = new Map();
+  store.set("caller-1::plan-a", { approvalId: "appr-preexisting" });
+  let raiseCalls = 0;
+  await expect(
+    arbitrateSpawnGrant(
+      "caller-1::plan-a",
+      store,
+      {
+        raise: async () => {
+          raiseCalls++;
+          return { id: "appr-new" };
+        },
+        wait: async () => {
+          throw new Error("network drop");
+        },
+        now: () => Date.now()
+      },
+      10 * 60_000
+    )
+  ).rejects.toThrow("network drop");
+  expect(raiseCalls, "an already-raised approval must never be re-raised on a mere observation failure").toBe(0);
+  expect(
+    store.get("caller-1::plan-a")?.approvalId,
+    "the pre-existing approval id must survive a failed observation, so the next retry re-attaches to it"
+  ).toBe("appr-preexisting");
+});
+
+test("approveSpawn (real file) never references dialog.showMessageBoxSync or spawnDialog -- team-review/full-control grant asynchronously (card 02e1c07c)", () => {
+  const src = readFileSync(INDEX_TS_PATH, "utf-8");
+  expect(src, "spawnDialog must not exist: it has zero callers left once approveSpawn stops using it").not.toContain(
+    "const spawnDialog ="
+  );
+  const anchor =
+    /const approveSpawn = async \(\s*entries: SpawnSummary\[\],\s*plan: unknown\[\],\s*callerId: string\s*\): Promise<SpawnApprovalResult> => \{/g;
+  const matches = [...src.matchAll(anchor)];
+  expect(matches.length, "approveSpawn not found with its expected signature -- has it been renamed?").toBe(1);
+  const m = matches[0]!;
+  const body = extractBracedBody(src, m.index + m[0].length - 1);
+  expect(body, "approveSpawn must never open a dialog directly").not.toContain("dialog.showMessageBoxSync");
+  expect(body, "approveSpawn must never call the deleted spawnDialog").not.toContain("spawnDialog(");
+  expect(body, "team-review/full-control must go through the async grant, not a local decision").toContain(
+    "requestSpawnGrant("
+  );
+  expect(body, "the mode split must be delegated to the pure composition, not re-implemented inline").toContain(
+    "arbitrateSpawnApproval("
+  );
+  const lengthCheckIdx = body.search(/plan\.length !== entries\.length/);
+  const modeIdx = body.search(/getConfig\(\)\.supervisorSpawnMode/);
+  expect(lengthCheckIdx, "a length-alignment check between `entries` and `plan` must be present").toBeGreaterThan(-1);
+  expect(
+    lengthCheckIdx < modeIdx,
+    "the length check must run BEFORE anything else (even the hands-free short-circuit) -- a misaligned pair must never reach a footprint computation"
+  ).toBe(true);
+});
+
+test("requestSpawnGrant (real file) raises with merge:'never', never 'tile' -- a guarded spawn request must never merge with an unrelated attention notification on the same tile", () => {
+  const src = readFileSync(INDEX_TS_PATH, "utf-8");
+  // Anchored on the FULL signature through its body-opening brace: the
+  // return type itself contains `{ pending: true }` object-type literals,
+  // so a shallow "first `{` after the function name" search would grab the
+  // return-type annotation instead of the function body.
+  const anchor =
+    /function requestSpawnGrant\(\s*mode: 'team-review' \| 'full-control',\s*callerId: string,\s*deps: ApprovalDeps\s*\): \(plan: SpawnGrantPlanItem\[\]\) => Promise<\{ pending: true \} \| \{ pending: false; granted: boolean \}> \{/g;
+  const matches = [...src.matchAll(anchor)];
+  expect(matches.length, "requestSpawnGrant not found with its expected signature -- has it been renamed?").toBe(1);
+  const m = matches[0]!;
+  const body = extractBracedBody(src, m.index + m[0].length - 1);
+  expect(body, "merge:'never' must be present -- an omission would default broker-side to 'tile'").toMatch(
+    /merge:\s*'never'/
+  );
+  expect(body, "merge:'tile' would let N per-entry approvals sharing one tile_ref collapse into one, so a single allow authorises all N").not.toMatch(
+    /merge:\s*'tile'/
+  );
+});
+
+test("requestSpawnGrant (real file) checks countInFlightSpawnGrants BEFORE ever calling arbitrateSpawnGrant -- a NEW plan cannot bypass the cap", () => {
+  const src = readFileSync(INDEX_TS_PATH, "utf-8");
+  const anchor =
+    /function requestSpawnGrant\(\s*mode: 'team-review' \| 'full-control',\s*callerId: string,\s*deps: ApprovalDeps\s*\): \(plan: SpawnGrantPlanItem\[\]\) => Promise<\{ pending: true \} \| \{ pending: false; granted: boolean \}> \{/g;
+  const matches = [...src.matchAll(anchor)];
+  expect(matches.length, "requestSpawnGrant not found with its expected signature -- has it been renamed?").toBe(1);
+  const m = matches[0]!;
+  const body = extractBracedBody(src, m.index + m[0].length - 1);
+  const capIdx = body.search(/countInFlightSpawnGrants\(/);
+  const arbitrateIdx = body.search(/arbitrateSpawnGrant\(/);
+  expect(capIdx, "the cap check must be present in requestSpawnGrant's body").toBeGreaterThan(-1);
+  expect(arbitrateIdx, "arbitrateSpawnGrant must be present in requestSpawnGrant's body").toBeGreaterThan(-1);
+  expect(
+    capIdx < arbitrateIdx,
+    "the cap check must run BEFORE arbitrateSpawnGrant (and therefore before any addApproval), or a NEW plan could raise past the cap and only refuse afterwards"
+  ).toBe(true);
+});
+
+test("deck_spawn_session/deck_spawn_team/deck_apply_template surface a pending approval as a tool result, not a thrown error, and spawn NOTHING while pending", async () => {
+  const pendingDeps = (state: { sessions: SessionRuntime[] }) => {
+    const deps = makeDeps(state);
+    deps.approveSpawn = async () => ({ pending: true });
+    return deps;
+  };
+
+  const state1 = { sessions: [] as SessionRuntime[] };
+  const deps1 = pendingDeps(state1);
+  const s1 = await startDeckControl(deps1);
+  servers.push(s1);
+  const solo = await call(s1, "deck_spawn_session", { name: "waits" });
+  expect(solo.status).toBe(200);
+  expect((solo.body.result as { pending: boolean }).pending).toBe(true);
+  expect(deps1.spawnInputs, "a pending approval must not have spawned any session").toEqual([]);
+
+  const state2 = { sessions: [] as SessionRuntime[] };
+  const deps2 = pendingDeps(state2);
+  const s2 = await startDeckControl(deps2);
+  servers.push(s2);
+  const team = await call(s2, "deck_spawn_team", { team: [{ name: "a" }, { name: "b" }] });
+  expect(team.status).toBe(200);
+  expect((team.body.result as { pending: boolean }).pending).toBe(true);
+  expect(deps2.spawnInputs, "a pending approval must not have spawned any session").toEqual([]);
+
+  const state3 = { sessions: [] as SessionRuntime[] };
+  const deps3 = pendingDeps(state3);
+  const s3 = await startDeckControl(deps3);
+  servers.push(s3);
+  const tpl = await call(s3, "deck_apply_template", { path: "/t.json" });
+  expect(tpl.status).toBe(200);
+  expect((tpl.body.result as { pending: boolean }).pending).toBe(true);
+  expect(deps3.spawnInputs, "a pending approval must not have spawned any session").toEqual([]);
+});
+
+test("deck_spawn_session passes the RAW resolved entry as approveSpawn's `plan` argument -- the full prompt and `announce` (both absent/truncated in the display summary) must reach it (card 02e1c07c review round 3)", async () => {
+  const state = { sessions: [] as SessionRuntime[] };
+  const deps = makeDeps(state);
+  const capturedPlans: unknown[][] = [];
+  deps.approveSpawn = async (entries, plan) => {
+    capturedPlans.push(plan);
+    return { pending: false, decisions: entries.map(() => true) };
+  };
+  const srv = await startDeckControl(deps);
+  servers.push(srv);
+
+  const longPrompt = "x".repeat(160) + "-the part past 160 chars that a truncated summary would drop";
+  await call(srv, "deck_spawn_session", { name: "dev-1", prompt: longPrompt, announce: "tell the operator" });
+
+  expect(capturedPlans.length).toBe(1);
+  const plan = capturedPlans[0]! as { prompt?: string; announce?: string }[];
+  expect(plan.length).toBe(1);
+  expect(plan[0]!.prompt, "the FULL prompt, not a 160-char preview, must reach approveSpawn's plan").toBe(longPrompt);
+  expect(
+    plan[0]!.announce,
+    "'announce' has no field on SpawnSummary at all -- it must still reach approveSpawn via `plan`"
+  ).toBe("tell the operator");
 });

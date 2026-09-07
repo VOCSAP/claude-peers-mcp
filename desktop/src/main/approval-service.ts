@@ -9,6 +9,7 @@
 import { buildAuthProof, sanitizeAnswerForPty, type Approval, type ApprovalAddResponse } from './approval-auth'
 import type { OperatorIdentity } from './operator-identity'
 import type { BrokerEndpoint } from './broker-client'
+import { commandHash } from './launch-approval'
 
 export interface ApprovalDeps {
   endpoint: BrokerEndpoint
@@ -152,6 +153,25 @@ export async function claimApproval(
     if (e instanceof Error && /: 409$/.test(e.message)) return null
     throw e
   }
+}
+
+/**
+ * Long-poll a raised approval for its verdict (card 02e1c07c). The broker
+ * bounds the wait itself and answers `pending: true` on timeout rather than
+ * blocking the HTTP call indefinitely -- this wrapper never invents its own
+ * timeout on top.
+ */
+export async function waitApproval(
+  deps: ApprovalDeps,
+  args: { id: string; timeoutSec?: number }
+): Promise<{ pending: true } | { pending: false; approval: Approval }> {
+  const res = await signedPost<{ approval?: Approval; pending?: boolean }>(deps, '/approval/wait', {
+    id: args.id,
+    timeout_sec: args.timeoutSec
+  })
+  if (res.pending) return { pending: true }
+  if (!res.approval) throw new Error('/approval/wait returned neither an approval nor pending')
+  return { pending: false, approval: res.approval }
 }
 
 export interface ChannelStatus {
@@ -357,4 +377,175 @@ export function canApplyVerdict(
   session: { exists: boolean; waiting: boolean } | null
 ): boolean {
   return classifyVerdict(approval, session) === 'apply'
+}
+
+/**
+ * Deterministic identity for a resolved plan (card 02e1c07c): the same mode
+ * and the same RESOLVED plan, in the same order, hash to the same key, so a
+ * retry re-attaches to the same in-flight or already-settled approval
+ * instead of raising a second one for an identical request.
+ */
+export function spawnPlanFootprint(mode: string, plan: unknown): string {
+  return commandHash(JSON.stringify({ mode, plan }))
+}
+
+/**
+ * Whether a settled approval authorises a grant right now (card 02e1c07c).
+ * Refuses on anything but a fresh 'allow' -- a denial, a still-pending row,
+ * an unparseable timestamp, an answered_at in the FUTURE (clock skew between
+ * broker and Deck, or a Deck clock rollback -- a negative age is not
+ * "younger than maxAgeMs", it is untrustworthy), or one answered longer ago
+ * than `maxAgeMs` -- checked at every OBSERVATION, not only once at grant
+ * time: a grant lost across a Deck restart (its in-memory cache gone) has
+ * nothing left to trust but a re-read of this same broker row, and this
+ * function is what makes that re-read degrade to 'refuse' rather than a
+ * silently reused stale (or bogusly future-dated) authorisation.
+ */
+export function decideSpawnGrant(approval: Approval, now: number, maxAgeMs: number): 'grant' | 'refuse' {
+  if (approval.status !== 'answered' || approval.answer_kind !== 'allow') return 'refuse'
+  const answeredAt = Date.parse(approval.answered_at ?? '')
+  if (!Number.isFinite(answeredAt)) return 'refuse'
+  const age = now - answeredAt
+  if (age < 0 || age > maxAgeMs) return 'refuse'
+  return 'grant'
+}
+
+/** Dependency-injected I/O for arbitrateSpawnGrant -- no electron/dialog reference. */
+export interface SpawnGrantIO {
+  raise: () => Promise<{ id: string }>
+  wait: (id: string) => Promise<{ pending: true } | { pending: false; approval: Approval }>
+  now: () => number
+  onEvent?: (verdict: 'granted' | 'refused') => void
+}
+
+/**
+ * One in-flight or settled grant. `approval` is the raw observed row, not a
+ * pre-digested verdict (review fix round 3, card 02e1c07c): a coarse
+ * 'grant'/'refuse' cached string threw away `answered_at`, so a cache-hit had
+ * no way to re-check freshness and returned a 9-hour-stale grant as if it
+ * had just been observed. Caching the row itself and running decideSpawnGrant
+ * on EVERY read -- fresh or cached -- means there is exactly one place that
+ * decides freshness, and it never gets bypassed by a second code path.
+ */
+export type SpawnGrantEntry = { approvalId: string; approval?: Approval }
+export type SpawnGrantStore = Map<string, SpawnGrantEntry>
+
+/**
+ * The async arbiter behind card 02e1c07c: raises (or re-attaches to) one
+ * guarded approval and returns its disposition, without ever opening a
+ * synchronous dialog -- this module has no import of `electron` at all, so a
+ * caller cannot reach a blocking message box through this path even by
+ * accident.
+ * NEVER deletes `store` on its own (review fix, card 02e1c07c): the observed
+ * row is WRITTEN into the cache the moment it settles, and a later call for
+ * the SAME key re-evaluates decideSpawnGrant against that SAME row with the
+ * CURRENT clock, zero network round trip -- consumption (forgetting the key
+ * so a future request re-asks the operator) is the CALLER's job, done
+ * exactly once via consumeSpawnGrant below, once the whole composite request
+ * this key belongs to has settled. Without this split, a batch of N>=1
+ * sibling grants would lose an already-decided sibling's verdict the moment
+ * any OTHER sibling is still pending, and a retry would re-raise a duplicate
+ * approval for it.
+ */
+export async function arbitrateSpawnGrant(
+  key: string,
+  store: SpawnGrantStore,
+  io: SpawnGrantIO,
+  maxAgeMs: number
+): Promise<{ pending: true } | { pending: false; granted: boolean }> {
+  const cached = store.get(key)
+  if (cached?.approval) {
+    return { pending: false, granted: decideSpawnGrant(cached.approval, io.now(), maxAgeMs) === 'grant' }
+  }
+  let approvalId = cached?.approvalId
+  // Tracks whether THIS call is the one that minted approvalId: only then is
+  // it safe to roll the store entry back on a wait() failure. A wait()
+  // failure against an approvalId that already existed (a retry re-attaching
+  // to an approval already raised at the broker) must NOT delete the entry
+  // -- the next retry would otherwise raise a brand new, duplicate approval
+  // for a request the broker already has pending, which is worse than the
+  // cap staying occupied.
+  const justRaised = !approvalId
+  if (!approvalId) {
+    const raised = await io.raise()
+    approvalId = raised.id
+    store.set(key, { approvalId })
+  }
+  let waited: Awaited<ReturnType<SpawnGrantIO['wait']>>
+  try {
+    waited = await io.wait(approvalId)
+  } catch (e) {
+    if (justRaised) store.delete(key)
+    throw e
+  }
+  if (waited.pending) return { pending: true }
+  store.set(key, { approvalId, approval: waited.approval })
+  const verdict = decideSpawnGrant(waited.approval, io.now(), maxAgeMs)
+  io.onEvent?.(verdict === 'grant' ? 'granted' : 'refused')
+  return { pending: false, granted: verdict === 'grant' }
+}
+
+/** Forget a settled grant (review fix, card 02e1c07c): the ONLY place a key is ever deleted. */
+export function consumeSpawnGrant(key: string, store: SpawnGrantStore): void {
+  store.delete(key)
+}
+
+/**
+ * In-flight grants (raised, not yet observed as settled) under one callerId
+ * (review fix round 3, card 02e1c07c): every raised approval is merge:'never'
+ * and therefore durable and never coalesced, so nothing else bounds how many
+ * DISTINCT plans one caller can have outstanding against the operator's
+ * shared approval-credential quota. Keys are namespaced `${callerId}::...`
+ * by the caller of arbitrateSpawnGrant, which is what lets this scan by
+ * prefix rather than needing its own index.
+ */
+export function countInFlightSpawnGrants(store: SpawnGrantStore, callerId: string): number {
+  const prefix = `${callerId}::`
+  let n = 0
+  for (const [key, entry] of store) {
+    if (key.startsWith(prefix) && !entry.approval) n++
+  }
+  return n
+}
+
+/** What arbitrateSpawnApproval asks for and settles one plan (a whole batch, or a single entry) through. */
+export interface SpawnGrantRequester<Plan> {
+  request: (plan: Plan) => Promise<{ pending: true } | { pending: false; granted: boolean }>
+  consume: (plan: Plan) => void
+}
+
+/**
+ * PURE composition (review fix, card 02e1c07c): for a given mode and a
+ * resolved list of entries, decides how many grants to request and how to
+ * aggregate them into decisions -- injected `requester`, no network, no
+ * store, no electron, so "team-review authorises without going through
+ * requester.request" is a directly assertable, red-able mutation rather
+ * than a source-scan of dead code.
+ * team-review: ONE request for the whole batch, every decision mirrors that
+ * single verdict. full-control: one request PER ENTRY, run concurrently;
+ * `consume` is called for every entry, but ONLY once none of them is still
+ * pending -- an already-decided sibling is never re-requested while another
+ * one is still waiting, and is forgotten (so a later, genuinely NEW
+ * submission of the same plan re-asks) only once the whole batch lands.
+ */
+export async function arbitrateSpawnApproval<Entry>(
+  mode: 'team-review' | 'full-control',
+  entries: Entry[],
+  requester: SpawnGrantRequester<Entry[]>
+): Promise<{ pending: true } | { pending: false; decisions: boolean[] }> {
+  if (entries.length === 0) return { pending: false, decisions: [] }
+  if (mode === 'team-review') {
+    const result = await requester.request(entries)
+    if (result.pending) return { pending: true }
+    requester.consume(entries)
+    return { pending: false, decisions: entries.map(() => result.granted) }
+  }
+  const plans = entries.map((e) => [e])
+  const results = await Promise.all(plans.map((plan) => requester.request(plan)))
+  if (results.some((r) => r.pending)) return { pending: true }
+  for (const plan of plans) requester.consume(plan)
+  return {
+    pending: false,
+    decisions: results.map((r) => !r.pending && r.granted)
+  }
 }

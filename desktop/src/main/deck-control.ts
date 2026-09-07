@@ -68,6 +68,17 @@ export interface SpawnSummary {
   args: string
 }
 
+/**
+ * approveSpawn's result (card 02e1c07c): `pending` means the async grant is
+ * still awaiting a verdict -- the caller retries the exact same tool call
+ * with the exact same arguments, which re-attaches to the SAME in-flight
+ * approval rather than raising a second one.
+ */
+export type SpawnApprovalResult = { pending: true } | { pending: false; decisions: boolean[] }
+
+/** Tool-result note for a `pending` SpawnApprovalResult, shared by every dispatch case below. */
+const SPAWN_APPROVAL_PENDING_NOTE = 'awaiting operator approval -- retry this exact call to check the verdict'
+
 export interface DeckControlDeps {
   listAgents(): string[]
   listModels(): ModelOption[]
@@ -107,11 +118,23 @@ export interface DeckControlDeps {
   saveTemplate(name: string, local: boolean): string | null
   announce(text: string): Promise<number>
   /**
-   * Trust-mode gate (TS4): one decision per entry. hands-free approves all
-   * without UI; team-review shows ONE recap dialog (all-or-nothing);
-   * full-control asks per entry. Implemented by index.ts.
+   * Trust-mode gate (TS4/card 02e1c07c): hands-free approves all without any
+   * round trip; team-review raises ONE guarded approval for the whole batch
+   * (all-or-nothing); full-control raises one per entry, and a batch's
+   * decisions[i] is true only for the entry whose OWN approval was granted.
+   * `callerId` is the server-known requester (never an agent-declared
+   * tile_ref) -- it is what the operator sees as the author of the request.
+   * `plan` is the RAW resolved entry per index in `entries` (a
+   * SpawnPlanEntry, or a TemplateInput for deck_apply_template) -- what a
+   * retry's footprint is computed over, kept separate from `entries` (the
+   * truncated display summary) so a field the summary omits or truncates
+   * (`announce`, the full `prompt`) cannot change without changing what the
+   * caller is asking the operator to approve.
+   * Never blocks on a dialog: a `pending` result means the caller must retry
+   * this exact call to observe the verdict once it settles. Implemented by
+   * index.ts.
    */
-  approveSpawn(entries: SpawnSummary[]): Promise<boolean[]>
+  approveSpawn(entries: SpawnSummary[], plan: unknown[], callerId: string): Promise<SpawnApprovalResult>
   /** Resolve a spawned session's peer_id, or null on timeout/exit (TS3). */
   waitForPeer(id: string, timeoutMs: number): Promise<string | null>
   /** Arm the async connection ack targeted at the supervisor (TS3). */
@@ -524,8 +547,11 @@ export function startDeckControl(
           throw new Error('refused: this launch carries unapproved shell arguments')
         }
         capCheck(1)
-        const [approved] = await deps.approveSpawn([summarizeEntry(entry, embedded)])
-        if (!approved) throw new Error('spawn refused by the operator')
+        const approval = await deps.approveSpawn([summarizeEntry(entry, embedded)], [entry], callerId)
+        if (approval.pending) {
+          return { pending: true, note: SPAWN_APPROVAL_PENDING_NOTE }
+        }
+        if (!approval.decisions[0]) throw new Error('spawn refused by the operator')
         const created = await spawnEntry(entry, embedded, callerId)
         // Sync ack by default (single-agent contract, TS3): the result carries
         // the peer_id. wait_for_peer:false switches to the async targeted ack.
@@ -572,9 +598,15 @@ export function startDeckControl(
           }
         }
         capCheck(entries.length)
-        const decisions = await deps.approveSpawn(
-          entries.map((entry, i) => summarizeEntry(entry, embeddeds[i] ?? null))
+        const approval = await deps.approveSpawn(
+          entries.map((entry, i) => summarizeEntry(entry, embeddeds[i] ?? null)),
+          entries,
+          callerId
         )
+        if (approval.pending) {
+          return { pending: true, note: SPAWN_APPROVAL_PENDING_NOTE }
+        }
+        const decisions = approval.decisions
         const spawned: Record<string, unknown>[] = []
         let refused = 0
         for (let i = 0; i < entries.length; i++) {
@@ -748,7 +780,11 @@ export function startDeckControl(
             : { spawned: 0, refused: 0, resolution: resolved.reason }
         }
         capCheck(inputs.length)
-        const decisions = await deps.approveSpawn(inputs.map(summarizeTemplateInput))
+        const approval = await deps.approveSpawn(inputs.map(summarizeTemplateInput), inputs, callerId)
+        if (approval.pending) {
+          return { pending: true, note: SPAWN_APPROVAL_PENDING_NOTE }
+        }
+        const decisions = approval.decisions
         // Crown rule (PLAN C18): decided ONCE for the whole batch, same as
         // the pre-existing applyTemplate behaviour -- a later tile in this
         // same batch never re-checks against tiles this batch just spawned.

@@ -63,10 +63,8 @@ export type WorkspaceApprovalGateResult = 'approved' | 'declined' | 'unattended'
  * every index.ts site that guards confirmShellFieldApproval's dialog --
  * confirmSpawnShellFields, resolveTemplateInputs, confirmWorkspaceShellFields,
  * confirmWorkspaceUntrustedCwd (each passes its own isShellFieldPreApproved
- * check as `alreadyApproved`) -- plus approveSpawn's spawnDialog, which has no
- * pre-approval concept for a whole spawn plan and always calls with
- * alreadyApproved=false. One definition of 'unattended' for all five sinks,
- * rather than one copy per site that could drift.
+ * check as `alreadyApproved`). One definition of 'unattended' for all four
+ * sinks, rather than one copy per site that could drift.
  */
 export function refusesUnattendedApproval(attendance: CallerAttendance, alreadyApproved: boolean): boolean {
   return attendance === 'unattended' && !alreadyApproved

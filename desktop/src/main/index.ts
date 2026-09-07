@@ -148,6 +148,7 @@ import {
   startDeckControl,
   type DeckControlDeps,
   type DeckControlServer,
+  type SpawnApprovalResult,
   type SpawnSummary
 } from './deck-control'
 import {
@@ -160,15 +161,23 @@ import { ApprovalRuntime, armApprovalsAtStartup } from './approval-runtime'
 import { remoteApprovalsEnabled } from './approval-store'
 import {
   addApproval,
+  arbitrateSpawnApproval,
+  arbitrateSpawnGrant,
   buildKeystrokes,
   claimApproval,
   classifyVerdict,
   connectChannel,
+  consumeSpawnGrant,
+  countInFlightSpawnGrants,
   disconnectChannel,
   fetchPendingApprovals,
   fetchUndeliveredVerdicts,
   listChannels,
-  markVerdictsDelivered
+  markVerdictsDelivered,
+  spawnPlanFootprint,
+  waitApproval,
+  type ApprovalDeps,
+  type SpawnGrantStore
 } from './approval-service'
 import {
   applyEnrolment,
@@ -2399,13 +2408,13 @@ const confirmWorkspaceUntrustedCwd = (
   return confirmShellFieldApproval(approvalOpts) ? 'approved' : 'declined'
 }
 
-// ----- Supervisor spawn approval (PLAN TS4) -----
-// The trust-mode gate behind deck_spawn_session / deck_spawn_team. hands-free:
-// no UI (the consent rule lives in the supervisor's system prompt); team-review
-// would show ONE recap dialog, full-control one dialog per entry -- but every
-// caller of this gate is a deck-control (agent) caller, CallerAttendance is
-// always 'unattended' here (card ffafeea6), so those two modes refuse instead
-// of opening a dialog nobody at the desktop could answer.
+// ----- Supervisor spawn approval (PLAN TS4 / card 02e1c07c) -----
+// The trust-mode gate behind deck_spawn_session / deck_spawn_team /
+// deck_apply_template. hands-free: no round trip (the consent rule lives in
+// the supervisor's system prompt). team-review/full-control raise a GUARDED,
+// asynchronous broker approval (merge:'never') instead of a synchronous
+// dialog -- every caller of this gate is a deck-control (agent) caller, which
+// could never answer a local dialog anyway.
 const summaryLine = (s: SpawnSummary): string => {
   const parts = [
     `• ${s.name}`,
@@ -2423,56 +2432,141 @@ const summaryLine = (s: SpawnSummary): string => {
   return lines.join('\n')
 }
 
-const spawnDialog = (title: string, detail: string): boolean => {
-  const isFr = isFrLocale()
-  return (
-    dialog.showMessageBoxSync({
-      type: 'question',
-      buttons: isFr ? ['Lancer', 'Refuser'] : ['Spawn', 'Refuse'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Koryphaios',
-      message: title,
-      detail
-    }) === 0
-  )
+/**
+ * In-flight and settled grants for a supervisor spawn, keyed by
+ * `${callerId}::${spawnPlanFootprint}` -- a cache of what has been asked or
+ * observed, never an authority of its own. A key is forgotten in exactly one
+ * place (consumeSpawnGrant), called by arbitrateSpawnApproval once every
+ * request of a composite batch has settled -- never while a sibling request
+ * is still pending. Lost on every Deck restart by construction (plain
+ * in-memory Map): nothing here survives to be trusted without a fresh read
+ * of the broker row.
+ */
+const spawnGrants: SpawnGrantStore = new Map()
+
+/** A verdict older than this, when finally observed, is treated as expired -- see decideSpawnGrant's own doc. */
+const SPAWN_GRANT_MAX_AGE_MS = 10 * 60_000
+/** Bounded long-poll per approval-wait round trip; a timeout answers `pending`, never blocks the caller. */
+const SPAWN_GRANT_WAIT_SEC = 60
+/** Caps one callerId's DISTINCT outstanding spawn-grant requests (review fix, card 02e1c07c): merge:'never' means none of them ever coalesce, so nothing else stood between an agent submitting N different plans and filling the operator's shared approval-credential quota. */
+const SPAWN_GRANT_INFLIGHT_CAP = 20
+
+/**
+ * One entry as submitted to approveSpawn, carrying both what the operator
+ * READS (`summary`, truncated for display) and what IDENTIFIES the request
+ * (`raw`, the actual resolved plan object that gets spawned) as two separate
+ * fields on purpose (review fix, card 02e1c07c): hashing the summary alone
+ * let a full untruncated prompt, or an `announce` field the summary omits
+ * entirely, change without changing the footprint a retry re-attaches to.
+ * `index` is this item's position in the ORIGINAL submitted batch, folded
+ * into the full-control key so two textually identical entries never
+ * collide on one store slot (full-control is N independent approvals, never
+ * one shared between look-alike siblings).
+ */
+type SpawnGrantPlanItem = { summary: SpawnSummary; raw: unknown; index: number }
+
+const spawnGrantKey = (
+  callerId: string,
+  mode: 'team-review' | 'full-control',
+  plan: SpawnGrantPlanItem[]
+): string =>
+  `${callerId}::${spawnPlanFootprint(mode, { indices: plan.map((p) => p.index), raw: plan.map((p) => p.raw) })}`
+
+/** requester.request for arbitrateSpawnApproval: raise-or-reattach-and-wait for ONE guarded approval covering `plan`. */
+function requestSpawnGrant(
+  mode: 'team-review' | 'full-control',
+  callerId: string,
+  deps: ApprovalDeps
+): (plan: SpawnGrantPlanItem[]) => Promise<{ pending: true } | { pending: false; granted: boolean }> {
+  return (plan) => {
+    const key = spawnGrantKey(callerId, mode, plan)
+    // A retry against an already-tracked key is always let through -- only a
+    // genuinely NEW plan can be refused by the cap, never a re-poll of one
+    // already in flight.
+    if (!spawnGrants.has(key) && countInFlightSpawnGrants(spawnGrants, callerId) >= SPAWN_GRANT_INFLIGHT_CAP) {
+      journal.add(
+        'session',
+        `supervisor spawn plan refused: caller "${callerId}" already has ${SPAWN_GRANT_INFLIGHT_CAP} approval(s) awaiting the operator`
+      )
+      return Promise.resolve({ pending: false, granted: false })
+    }
+    const summaries = plan.map((p) => p.summary)
+    const label = summaries.length === 1 ? `"${summaries[0]!.name}"` : `${summaries.length} agent session(s)`
+    return arbitrateSpawnGrant(
+      key,
+      spawnGrants,
+      {
+        raise: () =>
+          addApproval(deps, {
+            kind: 'permission',
+            // The author shown to the operator is the server-known callerId,
+            // never an agent-declared tile_ref (card 02e1c07c).
+            title: `Agent "${callerId}" wants to spawn ${label}`,
+            question: summaries.map(summaryLine).join('\n'),
+            sessionRef: `deck-spawn-${callerId}`,
+            tileRef: `deck-spawn-${callerId}`,
+            projectKey: computeDeckProjectKey(cliContext.projectDir),
+            host: hostname(),
+            fromPeer: callerId,
+            groupId: activeScope.groupId,
+            // A GUARDED request re-read by the caller gating a spawn: it must
+            // never be satisfied by an unrelated "needs you" notification on
+            // the same tile.
+            merge: 'never'
+          }),
+        wait: (id) => waitApproval(deps, { id, timeoutSec: SPAWN_GRANT_WAIT_SEC }),
+        now: () => Date.now(),
+        onEvent: (verdict) =>
+          journal.add('session', `supervisor spawn plan (${label}) ${verdict === 'granted' ? 'approved' : 'refused'}`)
+      },
+      SPAWN_GRANT_MAX_AGE_MS
+    )
+  }
 }
 
-const approveSpawn = async (entries: SpawnSummary[], attendance: CallerAttendance): Promise<boolean[]> => {
+/**
+ * `plan` is the RAW resolved entry per index in `entries` (a SpawnPlanEntry
+ * for deck_spawn_session/deck_spawn_team, a TemplateInput for
+ * deck_apply_template) -- used only to compute the footprint, never shown to
+ * the operator (see SpawnGrantPlanItem's own doc).
+ */
+const approveSpawn = async (
+  entries: SpawnSummary[],
+  plan: unknown[],
+  callerId: string
+): Promise<SpawnApprovalResult> => {
+  // `entries` (display) and `plan` (footprint identity) must stay index-
+  // aligned -- every current caller derives both from the same .map() so
+  // this never fires today, but a misaligned pair would silently hash a
+  // shorter/undefined raw entry, so it degrades to refusal rather than
+  // trusting a footprint that might not cover what the operator is shown.
+  if (plan.length !== entries.length) {
+    reportError(
+      'approvals',
+      `supervisor spawn plan refused: ${entries.length} display entr${entries.length === 1 ? 'y' : 'ies'} vs ${plan.length} raw plan entr${plan.length === 1 ? 'y' : 'ies'} -- misaligned, refusing rather than trusting an unreliable footprint`
+    )
+    return { pending: false, decisions: entries.map(() => false) }
+  }
   const mode = getConfig().supervisorSpawnMode
-  if (mode === 'hands-free' || entries.length === 0) return entries.map(() => true)
-  // alreadyApproved is always false here: unlike confirmSpawnShellFields's
-  // per-payload cache, a whole spawn PLAN has no pre-approval concept to
-  // fall back on -- an unattended caller refuses unconditionally rather than
-  // opening spawnDialog on nobody.
-  if (refusesUnattendedApproval(attendance, false)) {
-    journal.add('session', `supervisor spawn plan (${entries.length}) refused (no attended operator to review)`)
-    return entries.map(() => false)
+  if (mode === 'hands-free' || entries.length === 0) {
+    return { pending: false, decisions: entries.map(() => true) }
   }
-  const isFr = isFrLocale()
-  if (mode === 'team-review') {
-    const ok = spawnDialog(
-      isFr
-        ? `Le superviseur veut lancer ${entries.length} session(s) d'agent`
-        : `The supervisor wants to spawn ${entries.length} agent session(s)`,
-      entries.map(summaryLine).join('\n')
-    )
-    journal.add('session', `supervisor spawn plan (${entries.length}) ${ok ? 'approved' : 'refused'}`)
-    return entries.map(() => ok)
+  const deps = approvals.deps()
+  if (!deps) {
+    // No operator-signed channel to ask through: refuse, never authorise.
+    journal.add('session', `supervisor spawn plan (${entries.length}) refused: approval channel unavailable`)
+    return { pending: false, decisions: entries.map(() => false) }
   }
-  // full-control: one decision per entry.
-  const decisions: boolean[] = []
-  for (const entry of entries) {
-    const ok = spawnDialog(
-      isFr
-        ? `Le superviseur veut lancer la session "${entry.name}"`
-        : `The supervisor wants to spawn the session "${entry.name}"`,
-      summaryLine(entry)
-    )
-    if (!ok) journal.add('session', `supervisor spawn refused: "${entry.name}"`)
-    decisions.push(ok)
+  const items: SpawnGrantPlanItem[] = entries.map((summary, i) => ({ summary, raw: plan[i], index: i }))
+  try {
+    return await arbitrateSpawnApproval(mode, items, {
+      request: requestSpawnGrant(mode, callerId, deps),
+      consume: (p) => consumeSpawnGrant(spawnGrantKey(callerId, mode, p), spawnGrants)
+    })
+  } catch (e) {
+    reportError('approvals', 'supervisor spawn approval failed', e)
+    return { pending: false, decisions: entries.map(() => false) }
   }
-  return decisions
 }
 
 // ----- Supervisor deck-control (PLAN C5) -----
@@ -2610,11 +2704,11 @@ const controlDeps: DeckControlDeps = {
     return writeTemplate(dir, name || tpl.name || 'template', tpl)
   },
   announce: (text) => broadcastAnnounce(text),
-  // Team spawn (TS2-TS4): trust-mode gate, sync/async connection acks, and the
-  // embedded profile prompt regenerated from the code constant at every spawn.
-  // Card ffafeea6: 'unattended' unconditionally, same reasoning as
-  // resolveTemplate above -- this route's caller is never the operator.
-  approveSpawn: (entries) => approveSpawn(entries, 'unattended'),
+  // Team spawn (TS2-TS4/02e1c07c): trust-mode gate, sync/async connection
+  // acks, and the embedded profile prompt regenerated from the code constant
+  // at every spawn. `callerId` is the server-known requester threaded
+  // through to name the approval's author.
+  approveSpawn: (entries, plan, callerId) => approveSpawn(entries, plan, callerId),
   waitForPeer,
   armSpawnAck,
   writeEmbeddedPrompt: (id) =>
