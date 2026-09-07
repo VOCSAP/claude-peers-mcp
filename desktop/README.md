@@ -401,8 +401,10 @@ npm install          # also runs electron-rebuild for node-pty
 npm run dev          # launch in dev mode (renderer HMR)
 ```
 
-If the post-install rebuild was skipped (no toolchain at install time), run it
-once tools are available:
+If the post-install rebuild failed (no toolchain at install time) it says so on
+stderr, starting with `NATIVE REBUILD FAILED`, and puts back the binaries the
+attempt deleted so the terminal engine keeps working. The install itself is not
+blocked. Run the rebuild once the tools are available:
 
 ```bash
 npm run rebuild      # electron-rebuild -f -w node-pty

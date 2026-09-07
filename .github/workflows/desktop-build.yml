@@ -127,8 +127,9 @@ jobs:
 
       - name: Install desktop deps
         working-directory: desktop
-        # postinstall runs electron-rebuild but is tolerant (|| echo skipped);
-        # the strict rebuild below is the real ABI gate.
+        # postinstall attempts electron-rebuild but stays non-blocking: it
+        # reports a failure on stderr and restores the binaries the attempt
+        # deleted. The strict rebuild below is the real ABI gate.
         run: npm install
 
       # tsconfig.node.json / tsconfig.web.json (main + preload + renderer)
