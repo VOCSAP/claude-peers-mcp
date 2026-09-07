@@ -83,13 +83,56 @@ export function BrokerSettings(): React.JSX.Element {
         <ul className="settings-broker-modes">
           {BROKER_MODES.map((m) => (
             <li key={m.id} className={`settings-broker-mode${peers.mode === m.id ? ' is-active' : ''}`}>
-              <span className="settings-broker-mode-name">{t(m.label)}</span>
+              <span className="settings-broker-mode-name">
+                {t(m.label)}
+                {peers.mode === m.id ? (
+                  <span className="settings-broker-mode-tag">{t('settings.brokerModeCurrent')}</span>
+                ) : null}
+              </span>
               <span className="settings-broker-mode-help">{t(m.help)}</span>
             </li>
           ))}
         </ul>
         <small>{t('settings.brokerModeHelp')}</small>
       </div>
+
+      {/* Directly under the ladder it governs: the shape above is DERIVED, this
+          opt-in is the only lever this page owns, and an operator who read the
+          three shapes as an option group looked for a click there instead. */}
+      <label
+        className="field field-check"
+        aria-disabled={
+          peers.forcedByEnv.offlineReplica || peers.brokerUrl === null ? 'true' : undefined
+        }
+      >
+        <input
+          type="checkbox"
+          checked={peers.offlineReplica}
+          disabled={peers.forcedByEnv.offlineReplica || peers.brokerUrl === null}
+          onChange={(e) => void setOfflineReplica(e.target.checked)}
+        />
+        <span>{t('settings.offlineReplica')}</span>
+      </label>
+      <small className="field-check-help">{t('settings.offlineReplicaHelp')}</small>
+      {/* A warning, not a disable: the operator can add the token to the same
+          file right after ticking this. */}
+      {!peers.hasToken ? (
+        <small className="field-check-help settings-broker-note">
+          {t('settings.brokerTokenMissing')}
+        </small>
+      ) : null}
+      {/* A disabled control with no reason reads as a bug: say which of the two
+          conditions is holding it, env first (it outranks the file whatever
+          the URL says). */}
+      {peers.forcedByEnv.offlineReplica ? (
+        <small className="field-check-help settings-broker-note">
+          {t('settings.offlineReplicaEnv')}
+        </small>
+      ) : peers.brokerUrl === null ? (
+        <small className="field-check-help settings-broker-note">
+          {t('settings.offlineReplicaNoUrl')}
+        </small>
+      ) : null}
 
       <div className="field">
         <span>{t('settings.brokerUrl')}</span>
@@ -131,41 +174,6 @@ export function BrokerSettings(): React.JSX.Element {
         </div>
         <small>{t('settings.brokerServeReplicasHelp')}</small>
       </div>
-
-      <label
-        className="field field-check"
-        aria-disabled={
-          peers.forcedByEnv.offlineReplica || peers.brokerUrl === null ? 'true' : undefined
-        }
-      >
-        <input
-          type="checkbox"
-          checked={peers.offlineReplica}
-          disabled={peers.forcedByEnv.offlineReplica || peers.brokerUrl === null}
-          onChange={(e) => void setOfflineReplica(e.target.checked)}
-        />
-        <span>{t('settings.offlineReplica')}</span>
-      </label>
-      <small className="field-check-help">{t('settings.offlineReplicaHelp')}</small>
-      {/* A warning, not a disable: the operator can add the token to the same
-          file right after ticking this. */}
-      {!peers.hasToken ? (
-        <small className="field-check-help settings-broker-note">
-          {t('settings.brokerTokenMissing')}
-        </small>
-      ) : null}
-      {/* A disabled control with no reason reads as a bug: say which of the two
-          conditions is holding it, env first (it outranks the file whatever
-          the URL says). */}
-      {peers.forcedByEnv.offlineReplica ? (
-        <small className="field-check-help settings-broker-note">
-          {t('settings.offlineReplicaEnv')}
-        </small>
-      ) : peers.brokerUrl === null ? (
-        <small className="field-check-help settings-broker-note">
-          {t('settings.offlineReplicaNoUrl')}
-        </small>
-      ) : null}
     </>
   )
 }

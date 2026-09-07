@@ -1574,18 +1574,22 @@ textarea:disabled {
 /* Selects are deliberately absent: the element-level rule above already gives
    them the same box, and re-declaring `background`/`padding` here would erase
    the chevron and its reserved lane. */
-/* `.rm-tag-search-input` joins this group rather than restating the six
-   declarations: it is a text input that must draw exactly this box, but it
-   sits in a bare flex row, not under a `.field` wrapper, so none of the
-   selectors above reach it. There is still no ELEMENT-level rule for text
-   inputs (unlike `select`, `textarea` and the radios), which is why a bare
-   `<input>` written outside `.field` is native today -- card 634f9882,
-   too wide a blast radius to fix from here. */
+/* Inputs that must draw exactly this box while sitting in a bare flex row
+   rather than under a `.field` wrapper join the group by class, rather than
+   restating the six declarations. There is still no ELEMENT-level rule for
+   text inputs (unlike `select`, `textarea` and the radios), which is why a
+   bare `<input>` written outside `.field` is native today -- card 634f9882,
+   too wide a blast radius to fix from here.
+   `type='password'` is listed on its own line because the attribute selectors
+   above do not cover it: visually it is a text input, and leaving it out makes
+   the entry field of a secret the one native box on its page. */
 .field input[type='text'],
 .field input:not([type]),
 .field input[type='number'],
+.field input[type='password'],
 .field textarea,
-.rm-tag-search-input {
+.rm-tag-search-input,
+.notif-link-row input {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
@@ -6975,10 +6979,12 @@ svg.glyph {
 
 /* ----- Broker category: read-only report of the claude-peers core config ----- */
 
-/* The three deployment shapes as a ladder, the active one lifted out of the
-   list. Not a <select>: nothing here is chosen, the mode is DERIVED from the
-   file and from the env, and a dropdown would promise an edit that does not
-   exist. */
+/* The three deployment shapes as a ladder the operator READS. Nothing here is
+   chosen: the mode is DERIVED from the file and from the env, and the only
+   lever this page owns is the replica checkbox right under the ladder. So no
+   per-mode box and no selection fill -- boxed rows with a filled active one
+   are the shape of a radio group, and the operator clicked them. The current
+   shape is named by a badge and by an accent rule at the start of its row. */
 .settings-broker-modes {
   list-style: none;
   margin: 4px 0 0;
@@ -6992,21 +6998,32 @@ svg.glyph {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 10px;
   color: var(--fg-dim);
 }
 
 .settings-broker-mode.is-active {
-  border-color: var(--accent);
-  background: var(--selected);
+  border-left-color: var(--accent);
   color: var(--fg);
 }
 
 .settings-broker-mode-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 500;
+}
+
+/* The .ws-badge-current recipe: accent border and accent text, never a fill.
+   It NAMES the shape in force; a filled pill would read as a pressed state. */
+.settings-broker-mode-tag {
+  font-size: 10px;
+  font-weight: 400;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
 }
 
 .settings-broker-mode-help {
