@@ -5,8 +5,9 @@
 // be unscoped.
 
 import { test, expect, describe } from "bun:test";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -81,14 +82,25 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   // it covers, never a bare SQL fragment that could match elsewhere.
 };
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    if (["node_modules", ".git", "dist", "out", "release", ".aidex"].includes(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) walk(p, out);
-    else if (name.endsWith(".ts") || name.endsWith(".tsx")) out.push(p);
-  }
-  return out;
+/**
+ * Domain is every TRACKED .ts/.tsx file, from `git ls-files --cached` rather
+ * than a filesystem walk: a walk descends into whatever directory happens to
+ * exist on disk, including a git worktree checked out under .worktrees/ (the
+ * Deck creates one itself via deck_spawn_session's worktree_branch option),
+ * and re-collects that worktree's own copies of files ALREADY in
+ * ALLOWED_FILES under a path the allowlist does not recognise. `--cached`
+ * only, never `--others`: in a shared checkout, `--others` would also pull in
+ * another session's unrelated untracked file, turning this test red for
+ * everyone for a reason CI can never reproduce.
+ */
+function gitTrackedTsFiles(): string[] {
+  const result = spawnSync("git", ["ls-files", "--cached"], { cwd: REPO_ROOT, encoding: "utf-8" });
+  if (result.status !== 0) throw new Error(`git ls-files failed: ${result.stderr}`);
+  return result.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
 }
 
 /**
@@ -213,14 +225,16 @@ function offendersIn(source: string, label: string): string[] {
 describe("no unscoped SQL reaches pending_approvals", () => {
   test("only the sanctioned files name the table at all", () => {
     const offenders: string[] = [];
-    for (const file of walk(REPO_ROOT)) {
-      const rel = relative(REPO_ROOT, file);
-      if (ALLOWED_FILES.has(rel) || ALLOWED_FILES.has(rel.split("/").join(sep))) continue;
-      if (fileNamesTable(readFileSync(file, "utf-8"))) offenders.push(rel);
+    for (const rel of gitTrackedTsFiles()) {
+      const relOs = rel.split("/").join(sep);
+      if (ALLOWED_FILES.has(rel) || ALLOWED_FILES.has(relOs)) continue;
+      if (fileNamesTable(readFileSync(join(REPO_ROOT, relOs), "utf-8"))) offenders.push(rel);
     }
     expect(
       offenders,
       `These files reach the approvals table without going through shared/approval-scope.ts. ` +
+        `Domain is every file \`git ls-files --cached\` tracks (not a filesystem walk), so an ` +
+        `untracked directory like a .worktrees/ checkout cannot inflate it. ` +
         `If that is deliberate, add the file to ALLOWED_FILES here AND say why in its own comment; ` +
         `if it is not, route the query through approvalWhere(scope).`
     ).toEqual([]);
