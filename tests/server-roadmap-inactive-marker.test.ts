@@ -4,7 +4,7 @@
 // one.
 
 import { test, expect, afterAll } from "bun:test";
-import { startBroker, stopBroker, post, deckAuthored, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, post, deckAuthored, scrubEnv, type TestBroker } from "./_helper.ts";
 import type { RoadmapItem } from "../shared/types.ts";
 
 const brokers: TestBroker[] = [];
@@ -67,12 +67,10 @@ async function boot(): Promise<Harness> {
   const b = await startBroker();
   brokers.push(b);
 
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+  const env = scrubEnv(b.tmpDir, {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
-  };
-  delete env.CLAUDE_PEERS_APPROVAL_FILE;
+  });
 
   const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);

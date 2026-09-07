@@ -4,6 +4,10 @@
 // callable by name, which would make the allow-list decorative here too.
 
 import { test, expect, describe, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scrubEnv } from "./_scrub-env.ts";
 
 interface JsonRpcResponse {
   id?: number;
@@ -11,6 +15,7 @@ interface JsonRpcResponse {
 }
 
 const procs: ReturnType<typeof Bun.spawn>[] = [];
+const dirs: string[] = [];
 
 afterAll(async () => {
   for (const p of procs) {
@@ -21,6 +26,7 @@ afterAll(async () => {
       /* already gone */
     }
   }
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
 async function readUntil(
@@ -53,10 +59,9 @@ async function readUntil(
 /** Boot server-deck.ts with CLAUDE_PEERS_TOOLS restricting the surface to
  * graph_draft_prepare only, excluding both ask_operator tools. */
 async function bootRestricted() {
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    CLAUDE_PEERS_TOOLS: "graph_draft_prepare",
-  };
+  const dir = mkdtempSync(join(tmpdir(), "cp-deck-tools-allowlist-"));
+  dirs.push(dir);
+  const env = scrubEnv(dir, { CLAUDE_PEERS_TOOLS: "graph_draft_prepare" });
   const proc = Bun.spawn(["bun", "server-deck.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);
   const reader = proc.stdout.getReader();

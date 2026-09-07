@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
 import { Database } from "bun:sqlite";
 
 const brokers: TestBroker[] = [];
@@ -10,11 +10,10 @@ test("server.ts exits when stdin closes and marks peer dormant", async () => {
   brokers.push(b);
 
   const proc = Bun.spawn(["bun", "server.ts"], {
-    env: {
-      ...process.env,
+    env: scrubEnv(b.tmpDir, {
       CLAUDE_PEERS_BROKER_URL: b.url,
       CLAUDE_PEERS_PORT: String(b.port),
-    },
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
 

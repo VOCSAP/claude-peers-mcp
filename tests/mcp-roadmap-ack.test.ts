@@ -7,7 +7,7 @@
 // raw-args ack lies on all five.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
 import {
   ROADMAP_ADD_ACK_FIELDS,
   ROADMAP_UPDATE_ACK_FIELDS,
@@ -108,13 +108,11 @@ let nextRpcId = 1;
 // host+cwd+tty, so two harnesses booted this way are genuinely distinct,
 // independently proven identities.
 async function bootOnBroker(b: TestBroker, extraEnv: Record<string, string> = {}): Promise<Harness> {
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+  const env = scrubEnv(b.tmpDir, {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
     ...extraEnv,
-  };
-  delete env.CLAUDE_PEERS_APPROVAL_FILE;
+  });
 
   const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);

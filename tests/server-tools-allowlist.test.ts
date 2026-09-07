@@ -10,7 +10,7 @@
 // test broker and drive it over real MCP stdio JSON-RPC.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
 
 const brokers: TestBroker[] = [];
 const procs: ReturnType<typeof Bun.spawn>[] = [];
@@ -74,16 +74,12 @@ async function boot(toolsEnv: string | undefined): Promise<Harness> {
   const b = await startBroker();
   brokers.push(b);
 
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+  const extra: Record<string, string> = {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
   };
-  if (toolsEnv === undefined) {
-    delete env.CLAUDE_PEERS_TOOLS;
-  } else {
-    env.CLAUDE_PEERS_TOOLS = toolsEnv;
-  }
+  if (toolsEnv !== undefined) extra.CLAUDE_PEERS_TOOLS = toolsEnv;
+  const env = scrubEnv(b.tmpDir, extra);
 
   const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);

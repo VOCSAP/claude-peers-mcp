@@ -6,7 +6,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startBroker, stopBroker, post, approvalListBody, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, post, approvalListBody, scrubEnv, type TestBroker } from "./_helper.ts";
 import {
   buildAuthProof,
   deriveOperatorId,
@@ -134,8 +134,7 @@ async function boot(withCredential: boolean): Promise<Harness> {
   });
   expect((await post(`${b.url}/approval/token-mint`, { ...mintBody, auth })).status).toBe(200);
 
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+  const extra: Record<string, string> = {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
   };
@@ -154,10 +153,9 @@ async function boot(withCredential: boolean): Promise<Harness> {
       }),
       { mode: 0o600 }
     );
-    env.CLAUDE_PEERS_APPROVAL_FILE = credFile;
-  } else {
-    delete env.CLAUDE_PEERS_APPROVAL_FILE;
+    extra.CLAUDE_PEERS_APPROVAL_FILE = credFile;
   }
+  const env = scrubEnv(dir, extra);
 
   const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);

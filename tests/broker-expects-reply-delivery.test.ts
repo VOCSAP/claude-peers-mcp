@@ -1,6 +1,6 @@
 import { test, expect, describe, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
 import { OPERATOR_INSTANCE_TOKEN, OPERATOR_PEER_ID } from "../shared/types.ts";
 import { PEER_NO_REPLY_NOTE } from "../shared/message-framing.ts";
 
@@ -71,13 +71,11 @@ async function readUntil(
 
 /** Spawn one `bun server.ts` MCP peer against an already-running broker. */
 async function spawnPeer(b: TestBroker): Promise<Peer> {
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+  const env = scrubEnv(b.tmpDir, {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
     CLAUDE_PEERS_FORCE_GROUP: FORCED_GROUP,
-  };
-  delete env.CLAUDE_PEERS_APPROVAL_FILE;
+  });
 
   const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);
