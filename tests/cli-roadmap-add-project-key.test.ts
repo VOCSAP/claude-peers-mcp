@@ -12,6 +12,7 @@ import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scrubEnv } from "./_scrub-env.ts";
 
 // Fixed, fake remote. Only `git remote get-url origin` is ever invoked
 // against it (never fetched/cloned), so no network reaches github.com. Its
@@ -71,18 +72,7 @@ beforeEach(() => {
 });
 
 function scrubbedEnv(extra: Record<string, string>): Record<string, string> {
-  // Own the broker config entirely through explicit overrides, never
-  // inherit a developer's real CLAUDE_PEERS_BROKER_URL/TOKEN from the
-  // ambient shell. Scrubbing CLAUDE_PEERS_* owns only half of it: shared/
-  // config.ts resolves env THEN a user settings file, so a machine whose file
-  // sets offline_replica (or port, or broker_token) still redirects the CLI
-  // away from the stub -- offline_replica demotes the injected broker_url to a
-  // replication upstream and sends /roadmap/upsert to loopback instead. Point
-  // that file's directory at an empty temp dir so the file half is owned too.
-  const scrubbed = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
-  ) as Record<string, string>;
-  return { ...scrubbed, APPDATA: configDir, XDG_CONFIG_HOME: configDir, ...extra };
+  return scrubEnv(configDir, extra);
 }
 
 async function runRoadmapAdd(

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { test, expect, afterAll } from "bun:test";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
 
 interface JsonRpcResponse {
   id?: number;
@@ -87,15 +87,11 @@ function spawnServer(
   role: string | undefined,
   extraEnv: Record<string, string> = {}
 ): ReturnType<typeof Bun.spawn> {
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
-  ) as Record<string, string>;
-  const env: Record<string, string> = {
-    ...cleanEnv,
+  const env: Record<string, string> = scrubEnv(b.tmpDir, {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
     ...extraEnv,
-  };
+  });
   if (role !== undefined) env.CLAUDE_PEERS_ROLE = role;
   const proc = Bun.spawn(["bun", SERVER_PATH], {
     cwd,

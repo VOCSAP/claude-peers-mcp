@@ -2,6 +2,10 @@
 // exactly the five Kory-only tools, and no `instructions` block.
 
 import { test, expect, describe, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { scrubEnv } from "./_scrub-env.ts";
 
 interface JsonRpcResponse {
   id?: number;
@@ -12,6 +16,10 @@ interface JsonRpcResponse {
 }
 
 const procs: ReturnType<typeof Bun.spawn>[] = [];
+// server-deck.ts imports named exports from server.ts, whose module-level
+// `const config = await loadConfig()` runs on import regardless: this file
+// reaches the settings-file sink just as surely as a broker/server spawn.
+const settingsDir = mkdtempSync(join(tmpdir(), "deck-mcp-surface-"));
 
 afterAll(async () => {
   for (const p of procs) {
@@ -22,6 +30,7 @@ afterAll(async () => {
       /* already gone */
     }
   }
+  rmSync(settingsDir, { recursive: true, force: true });
 });
 
 async function readUntil(
@@ -52,7 +61,7 @@ async function readUntil(
 }
 
 async function boot() {
-  const proc = Bun.spawn(["bun", "server-deck.ts"], { stdio: ["pipe", "pipe", "pipe"] });
+  const proc = Bun.spawn(["bun", "server-deck.ts"], { env: scrubEnv(settingsDir), stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);
   const reader = proc.stdout.getReader();
   const buffer = { text: "" };

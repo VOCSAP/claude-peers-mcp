@@ -4,7 +4,7 @@
 // recipient actually reads.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { startBroker, stopBroker, post, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, post, scrubEnv, type TestBroker } from "./_helper.ts";
 import { computeGroupId, computeGroupSecretHash } from "../shared/config.ts";
 import { DECK_PEER_ID } from "../shared/types.ts";
 import { DECK_NO_REPLY_NOTE, LEAD_DIRECTIVE_NOTE } from "../shared/inbound-framing.ts";
@@ -152,17 +152,13 @@ async function killAndRestartBroker(b: TestBroker): Promise<void> {
   } catch {
     /* already gone */
   }
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
-  ) as Record<string, string>;
   const proc = Bun.spawn(["bun", "broker.ts"], {
-    env: {
-      ...cleanEnv,
+    env: scrubEnv(b.tmpDir, {
       CLAUDE_PEERS_PORT: String(b.port),
       CLAUDE_PEERS_DB: b.dbPath,
       CLAUDE_PEERS_LOG_DIR: `${b.tmpDir}/logs`,
       CLAUDE_PEERS_DORMANT_TTL_HOURS: "24",
-    },
+    }),
     stdio: ["ignore", "ignore", "ignore"],
   });
   const deadline = Date.now() + 15_000;

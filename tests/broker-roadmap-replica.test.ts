@@ -11,6 +11,7 @@ import {
   stopBroker,
   livePid,
   deckAuthored,
+  scrubEnv,
   type TestBroker,
 } from "./_helper.ts";
 import type {
@@ -164,18 +165,14 @@ test("a broker asked to replicate ITSELF refuses to start, loudly", async () => 
   const probe = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 404 }) });
   const port = probe.port;
   probe.stop(true);
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
-  ) as Record<string, string>;
   const proc = Bun.spawn(["bun", "broker.ts"], {
-    env: {
-      ...cleanEnv,
+    env: scrubEnv(replica.tmpDir, {
       CLAUDE_PEERS_PORT: String(port),
       CLAUDE_PEERS_DB: `${replica.tmpDir}/self-replica.db`,
       CLAUDE_PEERS_LOG_DIR: `${replica.tmpDir}/self-replica-logs`,
       CLAUDE_PEERS_BROKER_URL: `http://127.0.0.1:${port}`,
       CLAUDE_PEERS_OFFLINE_REPLICA: "1",
-    },
+    }),
     stdio: ["ignore", "ignore", "pipe"],
   });
   const stderr = await new Response(proc.stderr).text();

@@ -2,6 +2,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { buildAuthProof, deriveOperatorId, generateCredential } from "../shared/approval.ts";
+export { scrubEnv } from "./_scrub-env.ts";
+import { scrubEnv } from "./_scrub-env.ts";
 
 export interface TestBroker {
   url: string;
@@ -10,6 +12,8 @@ export interface TestBroker {
   proc: ReturnType<typeof Bun.spawn>;
   dbPath: string;
   tmpDir: string;
+  /** The exact env this broker's process was spawned with (not reconstructed). */
+  env: Record<string, string>;
 }
 
 // Ask the OS for a free ephemeral port instead of guessing inside a fixed
@@ -36,14 +40,6 @@ export async function startBroker(
   const tmpDir = mkdtempSync(join(tmpdir(), "cp-test-"));
   const dbPath = join(tmpDir, "peers.db");
 
-  // Scrub any CLAUDE_PEERS_* vars inherited from the developer's shell
-  // (BROKER_TOKEN, BROKER_URL, ...). Tests must own their broker config
-  // entirely through envOverrides; otherwise a token set in the user
-  // environment turns every unauthenticated test POST into a 401.
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CLAUDE_PEERS_"))
-  ) as Record<string, string>;
-
   // 20 attempts existed to burn through the random window's collisions.
   // With an OS-reserved port the systematic collision is gone, so this now
   // only needs to cover the residual TOCTOU race (rare) and genuine spawn
@@ -51,16 +47,16 @@ export async function startBroker(
   // that, without reintroducing multi-minute dead loops under contention.
   for (let attempt = 0; attempt < 3; attempt++) {
     const port = await reserveEphemeralPort();
+    const env = scrubEnv(tmpDir, {
+      CLAUDE_PEERS_PORT: String(port),
+      CLAUDE_PEERS_DB: dbPath,
+      // Keep the rolling log inside the test sandbox (cleaned with it).
+      CLAUDE_PEERS_LOG_DIR: join(tmpDir, "logs"),
+      CLAUDE_PEERS_DORMANT_TTL_HOURS: "24",
+      ...envOverrides,
+    });
     const proc = Bun.spawn(["bun", "broker.ts"], {
-      env: {
-        ...cleanEnv,
-        CLAUDE_PEERS_PORT: String(port),
-        CLAUDE_PEERS_DB: dbPath,
-        // Keep the rolling log inside the test sandbox (cleaned with it).
-        CLAUDE_PEERS_LOG_DIR: join(tmpDir, "logs"),
-        CLAUDE_PEERS_DORMANT_TTL_HOURS: "24",
-        ...envOverrides,
-      },
+      env,
       stdio: ["ignore", "ignore", "ignore"],
     });
 
@@ -100,6 +96,7 @@ export async function startBroker(
         proc,
         dbPath,
         tmpDir,
+        env,
       };
     }
     try { proc.kill(); await proc.exited; } catch { /* */ }
