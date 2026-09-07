@@ -99,7 +99,12 @@ beforeEach(() => {
     delete process.env[k];
   }
   tmpDir = mkdtempSync(join(tmpdir(), "cp-broker-mode-"));
+  // Both vars point at the fixture dir: settingsFilePath() reads APPDATA on
+  // win32 and XDG_CONFIG_HOME on every other platform, never both, so this
+  // is the only way to keep the test off the operator's real config file
+  // regardless of which OS runs it.
   process.env.XDG_CONFIG_HOME = tmpDir;
+  process.env.APPDATA = tmpDir;
 });
 
 afterEach(() => {
