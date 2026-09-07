@@ -7,7 +7,7 @@
 // No React, no electron, no @shared alias: importable by a relative path from
 // bun test.
 
-import type { RoadmapSyncStatus } from './types'
+import type { RoadmapSyncOfflineReason, RoadmapSyncStatus } from './types'
 
 export type StatusBannerKind = 'broker-down' | 'conflicts' | 'refused' | 'replica-offline'
 
@@ -48,4 +48,18 @@ export function bannerKind(input: StatusBannerInput): StatusBannerKind | null {
   if (input.status.online === true && (input.status.refused ?? 0) > 0) return 'refused'
   if (input.status.mode === 'replica' && input.status.online === false) return 'replica-offline'
   return null
+}
+
+/**
+ * The i18n key for the replica-offline banner (card 7974fb83): none of the
+ * three reasons changes retry/backoff or federation dormancy, only which
+ * sentence is true. 'stale_upstream' and 'refused' are not network outages --
+ * naming them 'unreachable' sends the operator hunting for a problem that is
+ * not there. Falls back to the original wording for 'transport', null, and
+ * undefined (an older broker that has never sent the field) alike.
+ */
+export function replicaOfflineTextKey(reason: RoadmapSyncOfflineReason | null | undefined): string {
+  if (reason === 'stale_upstream') return 'banner.replicaStale'
+  if (reason === 'refused') return 'banner.replicaRefused'
+  return 'banner.replicaOffline'
 }

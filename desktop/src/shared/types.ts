@@ -625,6 +625,13 @@ export type RoadmapSyncRow = RoadmapItem & {
 export type RoadmapSyncMode = 'local' | 'upstream' | 'replica'
 
 /**
+ * Why a replica pass reports offline: 'transport' (no HTTP response, or an
+ * unclassified one -- just retry), 'stale_upstream' (404, an upstream that
+ * predates replication), 'refused' (403 -- an upstream-side config gap).
+ */
+export type RoadmapSyncOfflineReason = 'transport' | 'stale_upstream' | 'refused'
+
+/**
  * Replication health, polled on the inbox tick. Every field beyond `mode` is
  * replica-only and optional: a non-replica broker answers `{ mode }` alone.
  */
@@ -640,6 +647,8 @@ export interface RoadmapSyncStatus {
   online?: boolean
   /** ISO timestamp of the last online/offline transition. */
   since?: string
+  /** Set only when online === false. */
+  offline_reason?: RoadmapSyncOfflineReason | null
   last_error?: string | null
   last_sync_at?: string | null
   cursor?: number

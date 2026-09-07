@@ -96,6 +96,10 @@ test("a well-formed replica status survives field for field", () => {
     mode: "replica",
     online: false,
     since: "2026-09-05T10:00:00.000Z",
+    // Absent from the raw input above: sanitizeSyncStatus's enum pick-list
+    // defaults an absent/invalid offline_reason to null, distinct from
+    // undefined, so it must be named here rather than left out (card 7974fb83).
+    offline_reason: null,
     last_error: "fetch failed",
     last_sync_at: "2026-09-05T09:58:00.000Z",
     cursor: 42,
@@ -104,6 +108,16 @@ test("a well-formed replica status survives field for field", () => {
     queue_replaced: 5,
     locks: { local: 1, global: 2, contested: 0, remote: 4 },
   });
+});
+
+test("offline_reason survives a genuine value and is dropped to null for a garbage one", () => {
+  expect(sanitizeSyncStatus({ mode: "replica", offline_reason: "refused" }).offline_reason).toBe(
+    "refused"
+  );
+  expect(
+    sanitizeSyncStatus({ mode: "replica", offline_reason: "some_future_value_this_client_predates" })
+      .offline_reason
+  ).toBeNull();
 });
 
 test("the upstream broker's ADDRESS is dropped, not merely unused: it never enters the payload", () => {

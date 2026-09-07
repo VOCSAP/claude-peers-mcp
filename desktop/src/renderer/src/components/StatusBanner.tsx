@@ -1,4 +1,4 @@
-import { bannerKind } from '@shared/status-banner'
+import { bannerKind, replicaOfflineTextKey } from '@shared/status-banner'
 import { roadmapConflictCount, useDeck } from '../store'
 import { useT } from '../i18n'
 import { GLYPH_BADGES } from './icons'
@@ -103,11 +103,18 @@ export function StatusBanner(): React.JSX.Element | null {
   // The local broker answers; only its upstream does not. No Retry: the
   // replication loop re-arms itself, and a button that cannot shorten the
   // outage would only invite the operator to press it.
+  //
+  // Same tone and layout for all three offline_reason values on purpose: none
+  // of them changes what the Deck does (retry backoff and federation dormancy
+  // run identically regardless of cause), only which sentence names the cause
+  // truthfully -- 'stale_upstream' and 'refused' are not network outages, and
+  // calling them one sends the operator looking for a problem that is not there.
   if (kind === 'replica-offline') {
+    const textKey = replicaOfflineTextKey(sync.offline_reason)
     return (
       <div className="status-banner status-banner-info" role="status">
         <span className="status-banner-text">
-          {GLYPH_BADGES.beacon} {t('banner.replicaOffline', { count: sync.pending_push ?? 0 })}
+          {GLYPH_BADGES.beacon} {t(textKey, { count: sync.pending_push ?? 0 })}
           {sync.last_error ? (
             <span className="status-banner-detail"> — {sync.last_error}</span>
           ) : null}

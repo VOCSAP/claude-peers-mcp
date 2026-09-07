@@ -21,6 +21,7 @@ import type {
   RoadmapSearchResult,
   RoadmapSyncConflict,
   RoadmapSyncContent,
+  RoadmapSyncOfflineReason,
   RoadmapSyncResolution,
   RoadmapSyncRow,
   RoadmapSyncStatus,
@@ -161,6 +162,7 @@ const DIRECTIVES = ['clear', 'compact', 'magic_compact'] as const
 const SYNC_STATES = ['clean', 'conflict'] as const
 const LOCK_SCOPES = ['local', 'global', 'contested', 'remote', 'release_pending'] as const
 const SYNC_MODES = ['local', 'upstream', 'replica'] as const
+const SYNC_OFFLINE_REASONS = ['transport', 'stale_upstream', 'refused'] as const
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
@@ -178,6 +180,11 @@ function strList(v: unknown): string[] {
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : fallback
+}
+
+/** Same as `oneOf`, but the field is absent-by-default rather than always a concrete value. */
+function enumOrNull<T extends string>(v: unknown, allowed: readonly T[]): T | null {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : null
 }
 
 /**
@@ -571,6 +578,7 @@ export function sanitizeSyncStatus(raw: unknown, route = '/roadmap/sync/status')
     // new sink would have to remember.
     online: boolOrUndefined(r.online),
     since: strOrUndefined(r.since),
+    offline_reason: enumOrNull<RoadmapSyncOfflineReason>(r.offline_reason, SYNC_OFFLINE_REASONS),
     last_error: nullableStr(r.last_error),
     last_sync_at: nullableStr(r.last_sync_at),
     cursor: counter(r.cursor),

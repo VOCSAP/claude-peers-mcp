@@ -5,7 +5,7 @@
 // reconnection read as "everything is fine" exactly when arbitration was due.
 
 import { expect, test } from "bun:test";
-import { bannerKind } from "../desktop/src/shared/status-banner.ts";
+import { bannerKind, replicaOfflineTextKey } from "../desktop/src/shared/status-banner.ts";
 import type { RoadmapSyncStatus } from "../desktop/src/shared/types.ts";
 
 const LOCAL: RoadmapSyncStatus = { mode: "local" };
@@ -123,4 +123,23 @@ test("an offline non-replica broker cannot raise the replica banner", () => {
   // `online` is a replica-only field: a local broker reporting it must not
   // make the Deck claim an upstream it has none of.
   expect(bannerKind(input({ status: { mode: "local", online: false } }))).toBeNull();
+});
+
+// ----- which sentence a replica-offline banner shows (card 7974fb83) -----
+
+test("a transport failure keeps the original 'unreachable' wording", () => {
+  expect(replicaOfflineTextKey("transport")).toBe("banner.replicaOffline");
+});
+
+test("a stale upstream (404, predates replication) gets its own wording", () => {
+  expect(replicaOfflineTextKey("stale_upstream")).toBe("banner.replicaStale");
+});
+
+test("an upstream refusing to serve replicas (403) gets its own wording", () => {
+  expect(replicaOfflineTextKey("refused")).toBe("banner.replicaRefused");
+});
+
+test("an absent or null reason (an older broker, or a status never yet published) falls back to 'unreachable'", () => {
+  expect(replicaOfflineTextKey(null)).toBe("banner.replicaOffline");
+  expect(replicaOfflineTextKey(undefined)).toBe("banner.replicaOffline");
 });

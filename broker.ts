@@ -187,6 +187,7 @@ import type {
   RoadmapSyncPushResponse,
   RoadmapSyncResolveRequest,
   RoadmapSyncResolveResponse,
+  RoadmapSyncOfflineReason,
   RoadmapSyncRow,
   RoadmapSyncState,
   RoadmapSyncStatus,
@@ -5621,6 +5622,7 @@ function handleRoadmapSyncStatus(): RoadmapSyncStatus {
     upstream_url: UPSTREAM_URL ?? "",
     online: syncPublished.online,
     since: syncPublished.since,
+    offline_reason: syncPublished.offline_reason,
     last_error: syncPublished.last_error,
     last_sync_at: syncPublished.last_sync_at,
     cursor: parseInt(syncMetaGet("upstream_cursor") ?? "0", 10),
@@ -5848,6 +5850,8 @@ let syncOnlineState: SyncOnlineState = "unknown";
 let syncStateSince = new Date().toISOString();
 let syncLastError: string | null = null;
 let syncLastSyncAt: string | null = null;
+/** Published offline_reason of the pass currently in the 'offline' state; see RoadmapSyncOfflineError. */
+let syncOfflineReason: RoadmapSyncOfflineReason | null = null;
 
 /**
  * What a status read is answered with, replaced as ONE object at the very end
@@ -5861,6 +5865,7 @@ let syncLastSyncAt: string | null = null;
 interface SyncPublishedState {
   online: boolean;
   since: string;
+  offline_reason: RoadmapSyncOfflineReason | null;
   last_error: string | null;
   last_sync_at: string | null;
   refused: number;
@@ -5871,6 +5876,7 @@ interface SyncPublishedState {
 let syncPublished: SyncPublishedState = {
   online: false,
   since: syncStateSince,
+  offline_reason: null,
   last_error: null,
   last_sync_at: null,
   refused: 0,
@@ -5947,6 +5953,27 @@ function hintIfNotAnUpstream(status: number, body: unknown): void {
   );
 }
 
+/**
+ * Carries the discriminant a caller would otherwise reparse out of the
+ * message (card 7974fb83) ON THE EXCEPTION ITSELF, not a module variable: a
+ * pass that never classifies (a genuine transport failure) throws a plain
+ * Error, and runSyncPass's catch falls back to 'transport' for anything that
+ * is not this class -- there is no leftover state a later, differently-caused
+ * failure could misread, because none is kept between passes.
+ */
+class RoadmapSyncOfflineError extends Error {
+  constructor(message: string, readonly offlineReason: RoadmapSyncOfflineReason) {
+    super(message);
+  }
+}
+
+/** 404/403 classify the same way whether or not the upstream's body happens to be JSON. */
+function classifyUpstreamStatus(status: number): RoadmapSyncOfflineReason | null {
+  if (status === 404) return "stale_upstream";
+  if (status === 403) return "refused";
+  return null;
+}
+
 async function upstreamPost<T>(path: string, body: unknown): Promise<{ status: number; body: T }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   // Same Bearer the other clients of this upstream present; absent when the
@@ -5964,9 +5991,13 @@ async function upstreamPost<T>(path: string, body: unknown): Promise<{ status: n
   try {
     parsed = JSON.parse(text) as T;
   } catch (e) {
-    throw new Error(
-      `${path} answered ${res.status} with a body that is not JSON: ${e instanceof Error ? e.message : String(e)}`
-    );
+    // A reverse proxy mid-restart answers HTML on the very same statuses a
+    // real upstream answers JSON on: classified the same way, or a stale
+    // upstream / a refused replica would show as a plain network outage.
+    const message = `${path} answered ${res.status} with a body that is not JSON: ${e instanceof Error ? e.message : String(e)}`;
+    const reason = classifyUpstreamStatus(res.status);
+    if (reason) throw new RoadmapSyncOfflineError(message, reason);
+    throw new Error(message);
   }
   hintIfNotAnUpstream(res.status, parsed);
   return { status: res.status, body: parsed };
@@ -6155,7 +6186,10 @@ async function syncPullPass(): Promise<void> {
       limit: SYNC_PULL_LIMIT_MAX,
     });
     if (res.status !== 200 || !res.body || !Array.isArray(res.body.items)) {
-      throw new Error(`pull refused (${res.status}): ${upstreamErrorText(res.body)}`);
+      const message = `pull refused (${res.status}): ${upstreamErrorText(res.body)}`;
+      const reason = classifyUpstreamStatus(res.status);
+      if (reason) throw new RoadmapSyncOfflineError(message, reason);
+      throw new Error(message);
     }
     const nextRev = typeof res.body.next_rev === "number" ? res.body.next_rev : since;
     applyPulledPage(res.body.items, nextRev);
@@ -7033,6 +7067,9 @@ async function runSyncPass(): Promise<void> {
     }
   } catch (e) {
     syncLastError = e instanceof Error ? e.message : String(e);
+    // Read straight off THIS pass's own exception -- nothing to fall out of
+    // sync with a later, differently-caused failure.
+    syncOfflineReason = e instanceof RoadmapSyncOfflineError ? e.offlineReason : "transport";
     syncFailures += 1;
     syncBackoffMs = Math.min(SYNC_BACKOFF_MAX_MS, syncBackoffMs * 2);
     // Hysteresis: one lost round-trip is not a disconnection, and the
@@ -7056,6 +7093,11 @@ async function runSyncPass(): Promise<void> {
     syncPublished = {
       online: syncOnlineState === "online",
       since: syncStateSince,
+      // Gated on the SAME state online is, not reset separately on success:
+      // syncOfflineReason is overwritten unconditionally by every failed
+      // pass's catch, so a stale value behind this gate is never reachable
+      // regardless of what the last successful pass left in the variable.
+      offline_reason: syncOnlineState === "offline" ? syncOfflineReason : null,
       last_error: syncLastError,
       last_sync_at: syncLastSyncAt,
       refused: syncRefusedPushes.size,

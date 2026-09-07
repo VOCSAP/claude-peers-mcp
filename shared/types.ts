@@ -638,6 +638,18 @@ export interface RoadmapSyncLockReleaseResponse {
 
 export type RoadmapSyncMode = "local" | "upstream" | "replica";
 
+/**
+ * Why a replica pass reports offline, instead of collapsing every cause into
+ * one opaque `last_error` string. 'transport' also covers a 5xx or anything
+ * unclassified (no specific remedy, just retry); 'stale_upstream' is a 404 on
+ * a sync route (upstream predates replication); 'refused' is a 403 -- kept as
+ * one value since its three server-side causes (serve_replicas off, no
+ * broker_token, or the peer is itself a replica) share the same remedy
+ * category (an upstream config change) and the upstream's own log names
+ * which one fired.
+ */
+export type RoadmapSyncOfflineReason = "transport" | "stale_upstream" | "refused";
+
 export interface RoadmapSyncStatus {
   mode: RoadmapSyncMode;
   /** Set only when mode === 'replica'. */
@@ -645,6 +657,8 @@ export interface RoadmapSyncStatus {
   online?: boolean;
   /** ISO timestamp of the last online/offline transition. */
   since?: string;
+  /** Set only when mode === 'replica' && online === false. */
+  offline_reason?: RoadmapSyncOfflineReason | null;
   last_error?: string | null;
   last_sync_at?: string | null;
   cursor?: number;
