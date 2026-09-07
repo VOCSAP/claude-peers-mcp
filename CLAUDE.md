@@ -96,6 +96,15 @@ Read only the file/skill matching the area you touch:
   | 4 | SPAWNED-AGENT string (MCP args crossing deck-control/demo-control) → `executeJavaScript`, a page, a terminal, a command line | encode/validate at the boundary, never string-glue | `browser-drive-scripts.ts` JSON-encodes every selector; directive commands re-validated as enums |
   | 5 | Anything MOUNTED INTO a sandbox = a capability granted to code assumed compromised | host `~/.claude` COPIED in, never mounted; secrets excluded by a deny-list outranking any operator glob; container name/command from renderer/agent re-validated main-side before the engine CLI (`sandbox-command.ts`/`sandbox-projection.ts`/`sandbox-copy.ts`) | a mounted `settings.json` would let a sandboxed agent plant a hook that later executes on the HOST |
 
+- **Approvals and operator notifications are LOCAL by construction**
+  (operator decision, 2026-09-06): they live in the Deck and its own broker
+  for the lifetime of that Kory run, and nowhere else. The credential that
+  can settle an approval is revoked when the Deck quits, peer ids are minted
+  per session and may be lost or reassigned, so nothing about a pending
+  approval or a notification is worth persisting across a Deck restart or
+  federating to an upstream broker. Do not add a broker-side store, a sync
+  pass or a replay for them; in replica mode they stay on the local broker.
+
 - **Comparing two paths? Canonicalize both** through `canonicalPath`
   (`worktree-service.ts`) before `===`, `startsWith` or a `Map` key: macOS
   symlinks `/var` → `/private/var`, Windows returns 8.3 names, and Linux CI

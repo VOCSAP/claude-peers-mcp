@@ -22,6 +22,14 @@ import { registerIpc, resolveDocsDir } from './ipc'
 import { parseCliContext } from './cli-context'
 import { computeScope, buildScopeEnv, resolveAdoptedScope, type Scope, type ScopeEnv } from './scope'
 import {
+  createSessionDirAccessor,
+  removeSessionStateDir,
+  SESSION_STATE_TTL_DAYS_ENV,
+  sessionStateTtlMs,
+  sweepSessionStateDirs,
+  touchSessionStateDir
+} from './session-state'
+import {
   rememberScopeSecret,
   recallScopeSecret,
   type SecretCipher
@@ -61,7 +69,7 @@ import {
   resolveDispatchRequest,
   sendAnnounce
 } from './broker-client'
-import { appendInboxHistory, clearInboxHistory, deleteInboxHistoryEntries } from './inbox-store'
+import { appendInboxHistory, clearInboxHistory, deleteInboxHistoryEntries, discardUnscopedInboxFiles } from './inbox-store'
 import { spawn as spawnProcess } from 'node:child_process'
 import { deckBrokerMode } from './broker-client'
 import { ensureLoopbackBroker, locateBrokerScript, RespawnThrottle, withPathEntry } from './broker-spawn'
@@ -135,7 +143,7 @@ import {
   sandboxPromptRoot
 } from './sandbox-prompt'
 import { Journal } from './journal'
-import { flushJournalSnapshot, initDeckLog, logInfo, onDeckError, reportError } from './log'
+import { flushJournalSnapshot, initDeckLog, logInfo, logWarn, onDeckError, reportError } from './log'
 import {
   startDeckControl,
   type DeckControlDeps,
@@ -278,6 +286,60 @@ let config: AppConfig = { ...loadConfig(), projectDir: cliContext.projectDir }
 // relaunching (DESIGN 6.6).
 let activeScope: Scope = computeScope(cliContext.projectDir, cliContext.scopeId)
 let activeScopeEnv: ScopeEnv = buildScopeEnv(activeScope)
+
+const appStateDir = (): string => join(app.getPath('userData'), APP_STATE_SUBDIR)
+// SESSION-scoped state of THIS window (session-state.ts): sessions/<groupId>/
+// under the shared state dir. Every session-scoped file goes through here,
+// never through appStateDir() -- userData is shared by every Kory window.
+// Closed first thing on the quit path: any writer resuming after the
+// directory was removed throws into its own error sink instead of
+// recreating it.
+const sessionDir = createSessionDirAccessor({ stateDir: appStateDir, groupId: () => activeScope.groupId })
+const SESSION_STATE_KEEPALIVE_MS = 60 * 60_000
+let sessionStateKeepaliveTimer: NodeJS.Timeout | null = null
+
+const reportSessionState = (message: string, error: unknown): void => reportError('session-state', message, error)
+
+/**
+ * Startup housekeeping of the session-scoped state: discard the unkeyed
+ * inbox files of the earlier layout (their content is an unattributable mix
+ * of every window that ran here), sweep group directories older than the
+ * TTL (crashed windows), and stamp this window's own directory so a sibling
+ * window's sweep never takes it for an orphan.
+ */
+function initSessionState(): void {
+  try {
+    const discarded = discardUnscopedInboxFiles(appStateDir())
+    if (discarded) {
+      logInfo(
+        'session-state',
+        `discarded the unkeyed inbox files of the previous layout: ${discarded.historyEntries} history entries, ${discarded.ackKeys} ack keys`
+      )
+    }
+  } catch (e) {
+    reportSessionState('could not discard the unkeyed inbox files (retried at next start)', e)
+  }
+  const ttlMs = sessionStateTtlMs(process.env[SESSION_STATE_TTL_DAYS_ENV], (raw) =>
+    logWarn('session-state', `${SESSION_STATE_TTL_DAYS_ENV}=${JSON.stringify(raw)} is not a positive number of days, using the default`)
+  )
+  const sweep = sweepSessionStateDirs(appStateDir(), {
+    ownGroupId: activeScope.groupId,
+    ttlMs,
+    now: Date.now(),
+    report: reportSessionState
+  })
+  if (sweep.removed.length > 0 || sweep.foreign.length > 0) {
+    logInfo(
+      'session-state',
+      `sweep: removed ${sweep.removed.length} group dir(s) older than the TTL, kept ${sweep.kept.length}, left ${sweep.foreign.length} foreign entr(ies)`
+    )
+  }
+  try {
+    touchSessionStateDir(sessionDir(), Date.now())
+  } catch (e) {
+    reportSessionState('could not create this window session state dir', e)
+  }
+}
 
 // D8: remember a custom scope's secret on this machine (encrypted via the OS
 // credential store) so a custom-scope workspace can be restored without
@@ -480,6 +542,8 @@ const journal = new Journal()
 // Route every reportError() into the journal (PLAN O3): failures show up in
 // the Journal view next to the activity they interrupted.
 onDeckError((scope, text) => journal.add('error', `[${scope}] ${text}`))
+// After the journal hook, so a startup failure here reaches the Journal view.
+initSessionState()
 
 service.on('created', (r: SessionRuntime) => {
   const branch = r.worktree ? ` on ⎇ ${r.worktree.branch}` : ''
@@ -1211,7 +1275,7 @@ const pollOperatorInbox = async (): Promise<void> => {
     // tick (O6) -- these messages exist nowhere else on this Deck once read.
     const toPersist = [...pendingInboxWrites.splice(0), ...batch]
     let failed = false
-    appendInboxHistory(join(app.getPath('userData'), APP_STATE_SUBDIR), toPersist, undefined, (e) => {
+    appendInboxHistory(sessionDir(), toPersist, undefined, (e) => {
       failed = true
       reportError('inbox', `history write failed (${toPersist.length} message(s) queued for retry)`, e)
     })
@@ -1247,7 +1311,7 @@ async function purgeInboxSession(): Promise<void> {
       )
     },
     clearLocal: () =>
-      clearInboxHistory(join(app.getPath('userData'), APP_STATE_SUBDIR), (e) =>
+      clearInboxHistory(sessionDir(), (e) =>
         reportError('inbox', 'local history truncate failed after session purge', e)
       ),
     onPurgeError: (e) =>
@@ -1279,7 +1343,7 @@ async function inboxDelete(ids: number[]): Promise<number> {
   } catch (e) {
     reportError('inbox', `manual delete failed for ${ids.length} id(s)`, e)
   }
-  deleteInboxHistoryEntries(join(app.getPath('userData'), APP_STATE_SUBDIR), ids, (e) =>
+  deleteInboxHistoryEntries(sessionDir(), ids, (e) =>
     reportError('inbox', 'local history entry removal failed after manual delete', e)
   )
   broadcast('inbox:cleared')
@@ -2646,9 +2710,11 @@ const ensureSupervisor = async (): Promise<SessionRuntime> => {
     throw new Error('deck-control MCP script missing -- run `npm run build:mcp`')
   }
   const server = await ensureControlServer()
-  const stateDir = join(app.getPath('userData'), APP_STATE_SUBDIR)
+  const stateDir = appStateDir()
+  // The control URL and token are THIS window's: a per-group file, never the
+  // shared root where a second window would overwrite it.
   const mcpConfig = writeSupervisorMcpConfig({
-    dir: stateDir,
+    dir: sessionDir(),
     mcpScriptPath: mcpScript,
     execPath: process.execPath,
     controlUrl: server.url,
@@ -2682,8 +2748,16 @@ const adoptScope = (ws: { groupId: string; scopeKind: 'ephemeral' | 'custom' }):
   }
   if (next === activeScope) return
   activeScopeEnv.cleanup()
+  // The session-scoped state belongs to the group being left: an inbox kept
+  // across the switch would show the old group's messages under the new one.
+  removeSessionStateDir(appStateDir(), activeScope.groupId, reportSessionState)
   activeScope = next
   activeScopeEnv = buildScopeEnv(activeScope)
+  try {
+    touchSessionStateDir(sessionDir(), Date.now())
+  } catch (e) {
+    reportSessionState('could not create the adopted scope session state dir', e)
+  }
 }
 
 const workspaces = new WorkspaceService({
@@ -3002,6 +3076,7 @@ app.whenReady().then(async () => {
     // site (~2964) -- no TDZ concern here, unlike the SessionService
     // constructor much earlier in the file.
     ensureControlServer,
+    sessionStateDir: sessionDir,
     journal,
     dispatchNext,
     stopRoadmapItem,
@@ -3094,6 +3169,15 @@ app.whenReady().then(async () => {
   dispatchTimer = setInterval(() => void watchDispatched(), DISPATCH_WATCH_MS)
   // Idle-lock watcher (PLAN K2): releases locks held by silent local tiles.
   lockWatchTimer = setInterval(() => void watchIdleLocks(), LOCK_WATCH_MS)
+  // The startup sweep of a sibling window reads freshness off mtimes: an idle
+  // window with no inbox traffic keeps its directory alive by touching it.
+  sessionStateKeepaliveTimer = setInterval(() => {
+    try {
+      touchSessionStateDir(sessionDir(), Date.now())
+    } catch (e) {
+      reportSessionState('keepalive touch failed', e)
+    }
+  }, SESSION_STATE_KEEPALIVE_MS)
   createWindow()
 
   app.on('activate', () => {
@@ -3117,8 +3201,13 @@ app.on('before-quit', () => {
   if (inboxTimer) clearInterval(inboxTimer)
   if (dispatchTimer) clearInterval(dispatchTimer)
   if (lockWatchTimer) clearInterval(lockWatchTimer)
+  if (sessionStateKeepaliveTimer) clearInterval(sessionStateKeepaliveTimer)
   workspaces.releaseOnQuit()
   service.stop()
+  // Session-scoped state dies with the window, ephemeral and custom scopes
+  // alike: the group id may be stable, the peers behind it are not.
+  sessionDir.close()
+  removeSessionStateDir(appStateDir(), activeScope.groupId, reportSessionState)
   // Persistent by design (docs/sandbox.md): closing the app STOPS the project
   // container (detached, quit never waits on the engine) — it never removes it.
   sandbox.stopCurrentDetached()

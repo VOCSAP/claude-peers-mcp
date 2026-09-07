@@ -167,26 +167,61 @@ function relativeToDir(dir: string, absolutePath: string): string {
 }
 
 /**
- * Read + validate the persisted review at `file`. Missing file is the
- * NORMAL state (no review ever saved / cleared) and returns null silently,
- * no trace. Anything else that keeps this from returning a good review --
- * unreadable file, unparseable JSON, a body that fails validatePersistedReview
- * -- reports through `report` (the caller wires this to reportError) and
- * still returns null: never throws, so a corrupt/tampered state file can
- * never crash the renderer's load-on-mount.
+ * `review-pending.json` = { projects: { [project_key]: PersistedReview } }.
+ * PROJECT scope, keyed like approvals.json: a pending review belongs to the
+ * repository, not to the window, and is worth finding again after a restart.
+ * Two windows on distinct repos hold distinct entries in one file.
  */
-export async function readReviewState(
-  file: string,
-  opts: { annotationsDir: string; report: (msg: string, err: unknown) => void }
-): Promise<PersistedReview | null> {
-  if (!existsSync(file)) return null
+interface ReviewStore {
+  projects: Record<string, unknown>
+}
+
+type StoreRead = { kind: 'absent' } | { kind: 'unreadable' } | { kind: 'ok'; store: ReviewStore }
+
+/**
+ * Missing file is the NORMAL state. Anything else that is not the keyed
+ * layout -- unparseable JSON, a body that is not an object, or the earlier
+ * unkeyed layout (one review for the whole machine, unattributable to a
+ * project) -- reports and reads as unreadable, so a write replaces it and a
+ * read never surfaces another project's review.
+ */
+function readStore(file: string, report: (msg: string, err: unknown) => void): StoreRead {
+  if (!existsSync(file)) return { kind: 'absent' }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(file, 'utf8'))
   } catch (err) {
-    opts.report('review state file is unreadable or not valid JSON', err)
-    return null
+    report('review state file is unreadable or not valid JSON', err)
+    return { kind: 'unreadable' }
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    report('review state file is not an object', null)
+    return { kind: 'unreadable' }
+  }
+  const projects = (raw as { projects?: unknown }).projects
+  if (!projects || typeof projects !== 'object' || Array.isArray(projects)) {
+    report('review state file predates project keying (one review for the whole machine), ignored', null)
+    return { kind: 'unreadable' }
+  }
+  return { kind: 'ok', store: { projects: projects as Record<string, unknown> } }
+}
+
+/**
+ * Read + validate the review persisted for `projectKey`. No file, or no entry
+ * for this project, returns null silently. A body that fails
+ * validatePersistedReview reports through `report` (the caller wires this to
+ * reportError) and still returns null: never throws, so a corrupt/tampered
+ * state file can never crash the renderer's load-on-mount.
+ */
+export async function readReviewState(
+  file: string,
+  projectKey: string,
+  opts: { annotationsDir: string; report: (msg: string, err: unknown) => void }
+): Promise<PersistedReview | null> {
+  const read = readStore(file, opts.report)
+  if (read.kind !== 'ok') return null
+  const raw = read.store.projects[projectKey]
+  if (raw === undefined) return null
   try {
     const validated = await validatePersistedReview(raw, { annotationsDir: opts.annotationsDir })
     if (!validated) {
@@ -200,25 +235,58 @@ export async function readReviewState(
   }
 }
 
-/** Serialized-size cap (512 KiB) — well above any realistic review, far below IPC pain. */
+/** Serialized-size cap (512 KiB) per review — well above any realistic review, far below IPC pain. */
 export const REVIEW_STATE_MAX_BYTES = 512 * 1024
 
-/** Write `state` atomically (temp file + rename), creating the parent dir if needed. */
-export async function writeReviewState(file: string, state: PersistedReview): Promise<void> {
-  const json = JSON.stringify(state, null, 2)
+function writeStore(file: string, store: ReviewStore): void {
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileAtomic(file, JSON.stringify(store, null, 2))
+}
+
+/**
+ * Write `state` under `projectKey` atomically (temp file + rename), keeping
+ * the other projects' entries. An unreadable file (corrupt, or the unkeyed
+ * layout) is reported through `report` and replaced. Read-modify-write
+ * without a lock: two windows writing the same instant lose one entry, a
+ * loss never a leak.
+ */
+export async function writeReviewState(
+  file: string,
+  projectKey: string,
+  state: PersistedReview,
+  report: (msg: string, err: unknown) => void
+): Promise<void> {
+  const json = JSON.stringify(state)
   if (Buffer.byteLength(json, 'utf8') > REVIEW_STATE_MAX_BYTES) {
     throw new Error(`review state exceeds ${REVIEW_STATE_MAX_BYTES} bytes`)
   }
-  mkdirSync(dirname(file), { recursive: true })
-  writeFileAtomic(file, json)
+  const read = readStore(file, report)
+  const store: ReviewStore = read.kind === 'ok' ? read.store : { projects: {} }
+  store.projects[projectKey] = state
+  writeStore(file, store)
 }
 
-/** Delete the persisted review, if any; no error when the file is already absent. */
-export async function clearReviewState(file: string): Promise<void> {
-  try {
-    rmSync(file)
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code
-    if (code !== 'ENOENT') throw err
+/**
+ * Delete the review persisted for `projectKey`; the file goes with its last
+ * entry. No error when the file or the entry is already absent. An
+ * unreadable file is reported and removed: nothing in it can be read back.
+ */
+export async function clearReviewState(
+  file: string,
+  projectKey: string,
+  report: (msg: string, err: unknown) => void
+): Promise<void> {
+  const read = readStore(file, report)
+  if (read.kind === 'absent') return
+  if (read.kind === 'unreadable') {
+    rmSync(file, { force: true })
+    return
   }
+  if (!(projectKey in read.store.projects)) return
+  delete read.store.projects[projectKey]
+  if (Object.keys(read.store.projects).length === 0) {
+    rmSync(file, { force: true })
+    return
+  }
+  writeStore(file, read.store)
 }

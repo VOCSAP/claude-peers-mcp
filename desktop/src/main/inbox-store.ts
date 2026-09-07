@@ -4,8 +4,11 @@
 // is minted in-memory and never persisted, so a restart starts a brand new
 // session whose cursor seeds at the box's current max id, unable to replay
 // anything from the broker either.
+// SESSION scope: every function takes the WINDOW's directory
+// (session-state.ts's sessionStateDir), never the shared state root. Two Kory
+// windows share userData, and an inbox written at the root is read by both.
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { writeFileAtomic } from './atomic-write'
 import { join } from 'node:path'
 import { inboxEntryKey, type InboxAckStatus, type InboxMessage } from '../shared/types'
@@ -13,14 +16,14 @@ import { inboxEntryKey, type InboxAckStatus, type InboxMessage } from '../shared
 export const INBOX_HISTORY_CAP = 500
 const FILE = 'inbox-history.json'
 
-export function inboxHistoryFile(stateDir: string): string {
-  return join(stateDir, FILE)
+export function inboxHistoryFile(sessionDir: string): string {
+  return join(sessionDir, FILE)
 }
 
 /** Load the persisted history (oldest first). Corrupt/missing file -> []. */
-export function loadInboxHistory(stateDir: string): InboxMessage[] {
+export function loadInboxHistory(sessionDir: string): InboxMessage[] {
   try {
-    const raw = JSON.parse(readFileSync(inboxHistoryFile(stateDir), 'utf-8'))
+    const raw = JSON.parse(readFileSync(inboxHistoryFile(sessionDir), 'utf-8'))
     if (!Array.isArray(raw)) return []
     return raw.filter(
       (m): m is InboxMessage =>
@@ -43,19 +46,19 @@ export function loadInboxHistory(stateDir: string): InboxMessage[] {
  * past the cap. Returns the merged history (oldest first).
  */
 export function appendInboxHistory(
-  stateDir: string,
+  sessionDir: string,
   batch: InboxMessage[],
   cap = INBOX_HISTORY_CAP,
   onPersistError?: (e: unknown) => void
 ): InboxMessage[] {
-  const current = loadInboxHistory(stateDir)
+  const current = loadInboxHistory(sessionDir)
   const known = new Set(current.map((m) => m.id))
   const merged = [...current, ...batch.filter((m) => !known.has(m.id))].slice(-cap)
   try {
-    mkdirSync(stateDir, { recursive: true })
+    mkdirSync(sessionDir, { recursive: true })
     // Atomic (temp + rename): the inbox drain is destructive, so a torn write
     // would lose the only durable copy of the drained operator messages.
-    writeFileAtomic(inboxHistoryFile(stateDir), JSON.stringify(merged))
+    writeFileAtomic(inboxHistoryFile(sessionDir), JSON.stringify(merged))
   } catch (e) {
     // Persistence failure: the in-memory inbox still works this run, but the
     // broker drain was destructive -- the caller must know (O6) so it can
@@ -73,10 +76,10 @@ export function appendInboxHistory(
  * design doc names: deleting broker-side without truncating here leaves the
  * dead entries ON SCREEN, so the bug would read as unfixed.
  */
-export function clearInboxHistory(stateDir: string, onPersistError?: (e: unknown) => void): void {
+export function clearInboxHistory(sessionDir: string, onPersistError?: (e: unknown) => void): void {
   try {
-    mkdirSync(stateDir, { recursive: true })
-    writeFileAtomic(inboxHistoryFile(stateDir), JSON.stringify([]))
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileAtomic(inboxHistoryFile(sessionDir), JSON.stringify([]))
   } catch (e) {
     onPersistError?.(e)
   }
@@ -90,15 +93,15 @@ export function clearInboxHistory(stateDir: string, onPersistError?: (e: unknown
  * caller can re-broadcast it without a second disk read.
  */
 export function deleteInboxHistoryEntries(
-  stateDir: string,
+  sessionDir: string,
   ids: number[],
   onPersistError?: (e: unknown) => void
 ): InboxMessage[] {
   const idSet = new Set(ids)
-  const remaining = loadInboxHistory(stateDir).filter((m) => !idSet.has(m.id))
+  const remaining = loadInboxHistory(sessionDir).filter((m) => !idSet.has(m.id))
   try {
-    mkdirSync(stateDir, { recursive: true })
-    writeFileAtomic(inboxHistoryFile(stateDir), JSON.stringify(remaining))
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileAtomic(inboxHistoryFile(sessionDir), JSON.stringify(remaining))
   } catch (e) {
     onPersistError?.(e)
   }
@@ -120,13 +123,13 @@ interface AckFileShape {
   acked: string[]
 }
 
-export function inboxAckFile(stateDir: string): string {
-  return join(stateDir, ACK_FILE)
+export function inboxAckFile(sessionDir: string): string {
+  return join(sessionDir, ACK_FILE)
 }
 
-function loadAckFile(stateDir: string): AckFileShape {
+function loadAckFile(sessionDir: string): AckFileShape {
   try {
-    const raw = JSON.parse(readFileSync(inboxAckFile(stateDir), 'utf-8'))
+    const raw = JSON.parse(readFileSync(inboxAckFile(sessionDir), 'utf-8'))
     const seen = Array.isArray(raw?.seen)
       ? raw.seen.filter((k: unknown): k is string => typeof k === 'string')
       : []
@@ -140,21 +143,21 @@ function loadAckFile(stateDir: string): AckFileShape {
 }
 
 function saveAckFile(
-  stateDir: string,
+  sessionDir: string,
   state: AckFileShape,
   onPersistError?: (e: unknown) => void
 ): void {
   try {
-    mkdirSync(stateDir, { recursive: true })
-    writeFileAtomic(inboxAckFile(stateDir), JSON.stringify(state))
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileAtomic(inboxAckFile(sessionDir), JSON.stringify(state))
   } catch (e) {
     onPersistError?.(e)
   }
 }
 
 /** Merged read-state map for startup hydration: key -> 'seen' | 'acked'. */
-export function loadAckState(stateDir: string): Record<string, InboxAckStatus> {
-  const { seen, acked } = loadAckFile(stateDir)
+export function loadAckState(sessionDir: string): Record<string, InboxAckStatus> {
+  const { seen, acked } = loadAckFile(sessionDir)
   const out: Record<string, InboxAckStatus> = {}
   for (const k of seen) out[k] = 'seen'
   for (const k of acked) out[k] = 'acked' // acked always wins over a stale seen entry
@@ -170,16 +173,16 @@ export function loadAckState(stateDir: string): Record<string, InboxAckStatus> {
  * existence check alone makes this idempotent.
  */
 export function loadAckStateWithMigrationSeed(
-  stateDir: string,
+  sessionDir: string,
   onPersistError?: (e: unknown) => void
 ): Record<string, InboxAckStatus> {
-  if (!existsSync(inboxAckFile(stateDir))) {
-    const seedKeys = loadInboxHistory(stateDir).map((m) =>
+  if (!existsSync(inboxAckFile(sessionDir))) {
+    const seedKeys = loadInboxHistory(sessionDir).map((m) =>
       inboxEntryKey({ kind: 'message', message: m })
     )
-    saveAckFile(stateDir, { seen: [], acked: seedKeys }, onPersistError)
+    saveAckFile(sessionDir, { seen: [], acked: seedKeys }, onPersistError)
   }
-  return loadAckState(stateDir)
+  return loadAckState(sessionDir)
 }
 
 /**
@@ -187,15 +190,15 @@ export function loadAckStateWithMigrationSeed(
  * 'acked' — seen must never regress an ack.
  */
 export function appendSeenKey(
-  stateDir: string,
+  sessionDir: string,
   key: string,
   cap = INBOX_ACK_CAP,
   onPersistError?: (e: unknown) => void
 ): void {
-  const state = loadAckFile(stateDir)
+  const state = loadAckFile(sessionDir)
   if (state.acked.includes(key) || state.seen.includes(key)) return
   state.seen = [...state.seen, key].slice(-cap)
-  saveAckFile(stateDir, state, onPersistError)
+  saveAckFile(sessionDir, state, onPersistError)
 }
 
 /**
@@ -204,14 +207,47 @@ export function appendSeenKey(
  * override order is defense in depth, not the only guard.
  */
 export function appendAckedKey(
-  stateDir: string,
+  sessionDir: string,
   key: string,
   cap = INBOX_ACK_CAP,
   onPersistError?: (e: unknown) => void
 ): void {
-  const state = loadAckFile(stateDir)
+  const state = loadAckFile(sessionDir)
   if (state.acked.includes(key)) return
   state.seen = state.seen.filter((k) => k !== key)
   state.acked = [...state.acked, key].slice(-cap)
-  saveAckFile(stateDir, state, onPersistError)
+  saveAckFile(sessionDir, state, onPersistError)
+}
+
+export interface UnscopedInboxDiscard {
+  /** History entries thrown away with the unkeyed file. */
+  historyEntries: number
+  /** seen + acked keys thrown away with the unkeyed ack file. */
+  ackKeys: number
+}
+
+/**
+ * Remove the unkeyed inbox files an earlier layout wrote at the state ROOT
+ * (`<stateDir>/inbox-history.json`, `<stateDir>/inbox-ack.json`). Their
+ * content is an unattributable mix of every window that ever ran here, so it
+ * is discarded rather than split across groups by guesswork; the caller logs
+ * the returned counts. Returns null when neither file exists (the steady
+ * state after the first run). A removal failure propagates: the caller
+ * reports it and the next start retries.
+ */
+export function discardUnscopedInboxFiles(stateDir: string): UnscopedInboxDiscard | null {
+  const historyFile = join(stateDir, FILE)
+  const ackFile = join(stateDir, ACK_FILE)
+  const hadHistory = existsSync(historyFile)
+  const hadAck = existsSync(ackFile)
+  if (!hadHistory && !hadAck) return null
+  const historyEntries = hadHistory ? loadInboxHistory(stateDir).length : 0
+  let ackKeys = 0
+  if (hadAck) {
+    const { seen, acked } = loadAckFile(stateDir)
+    ackKeys = seen.length + acked.length
+  }
+  if (hadHistory) rmSync(historyFile)
+  if (hadAck) rmSync(ackFile)
+  return { historyEntries, ackKeys }
 }

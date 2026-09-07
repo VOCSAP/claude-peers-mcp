@@ -17,6 +17,10 @@ import {
 } from '../desktop/src/main/review-state-service.ts'
 import { PICK_BUDGET } from '../desktop/src/shared/pick-security.ts'
 
+/** project_key shapes as computeDeckProjectKey mints them (normalized remote or local:<hash>). */
+const KEY = 'git:github.com/vocsap/koryphaios'
+const OTHER_KEY = 'git:github.com/vocsap/aidex'
+
 // ----- fixtures -----
 
 function validPick(overrides: Record<string, unknown> = {}) {
@@ -90,10 +94,10 @@ test('write then read round-trips a valid review', () =>
     const review = validReview({
       annotations: [validAnnotation({ screenshotPath: shotPath })]
     })
-    await writeReviewState(file, review as never)
-
     const spy = neverCalled()
-    const read = await readReviewState(file, { annotationsDir, report: spy.report })
+    await writeReviewState(file, KEY, review as never, spy.report)
+
+    const read = await readReviewState(file, KEY, { annotationsDir, report: spy.report })
     expect(spy.wasCalled()).toBe(false)
     expect(read).not.toBeNull()
     expect(read!.version).toBe(REVIEW_STATE_VERSION)
@@ -105,7 +109,7 @@ test('write then read round-trips a valid review', () =>
 test('missing file returns null silently (report NOT called)', () =>
   withDir(async (dir) => {
     const spy = neverCalled()
-    const result = await readReviewState(join(dir, 'nope.json'), {
+    const result = await readReviewState(join(dir, 'nope.json'), KEY, {
       annotationsDir: join(dir, 'annotations'),
       report: spy.report
     })
@@ -118,7 +122,7 @@ test('corrupt JSON returns null and reports exactly once', () =>
     const file = join(dir, 'review-pending.json')
     writeFileSync(file, '{ not valid json')
     let calls = 0
-    const result = await readReviewState(file, {
+    const result = await readReviewState(file, KEY, {
       annotationsDir: join(dir, 'annotations'),
       report: () => {
         calls += 1
@@ -276,13 +280,74 @@ test('a valid pick is sanitized: an attribute outside the allowlist is stripped'
 
 // ----- clearReviewState -----
 
-test('clearReviewState removes the file and is a no-op when already absent', () =>
+test('clearReviewState removes the file with its last entry and is a no-op when already absent', () =>
   withDir(async (dir) => {
     const file = join(dir, 'review-pending.json')
-    await writeReviewState(file, validReview() as never)
+    const spy = neverCalled()
+    await writeReviewState(file, KEY, validReview() as never, spy.report)
     expect(existsSync(file)).toBe(true)
-    await clearReviewState(file)
+    await clearReviewState(file, KEY, spy.report)
     expect(existsSync(file)).toBe(false)
     // Second call: file already gone, must not throw.
-    await clearReviewState(file)
+    await clearReviewState(file, KEY, spy.report)
+    expect(spy.wasCalled()).toBe(false)
+  }))
+
+// ----- PROJECT scope: one entry per project_key -----
+
+test('two project keys hold two distinct reviews in one file: a window never reads another repo review', () =>
+  withDir(async (dir) => {
+    const file = join(dir, 'review-pending.json')
+    const annotationsDir = join(dir, 'annotations')
+    const spy = neverCalled()
+    await writeReviewState(file, KEY, validReview({ pageUrl: 'https://example.com/a' }) as never, spy.report)
+    await writeReviewState(file, OTHER_KEY, validReview({ pageUrl: 'https://example.com/b' }) as never, spy.report)
+    const a = await readReviewState(file, KEY, { annotationsDir, report: spy.report })
+    const b = await readReviewState(file, OTHER_KEY, { annotationsDir, report: spy.report })
+    expect(a?.pageUrl, 'the review read for a project is the one written for it').toBe('https://example.com/a')
+    expect(b?.pageUrl).toBe('https://example.com/b')
+    expect(
+      await readReviewState(file, 'git:example.com/nobody/never', { annotationsDir, report: spy.report }),
+      'a project with no review reads null silently, never another project entry'
+    ).toBeNull()
+    expect(spy.wasCalled()).toBe(false)
+  }))
+
+test('clearing one project keeps the other project entry', () =>
+  withDir(async (dir) => {
+    const file = join(dir, 'review-pending.json')
+    const annotationsDir = join(dir, 'annotations')
+    const spy = neverCalled()
+    await writeReviewState(file, KEY, validReview({ pageUrl: 'https://example.com/a' }) as never, spy.report)
+    await writeReviewState(file, OTHER_KEY, validReview({ pageUrl: 'https://example.com/b' }) as never, spy.report)
+    await clearReviewState(file, KEY, spy.report)
+    expect(existsSync(file), 'the file stays while another project still has an entry').toBe(true)
+    expect(await readReviewState(file, KEY, { annotationsDir, report: spy.report })).toBeNull()
+    expect((await readReviewState(file, OTHER_KEY, { annotationsDir, report: spy.report }))?.pageUrl).toBe('https://example.com/b')
+    expect(spy.wasCalled()).toBe(false)
+  }))
+
+test('the earlier unkeyed layout (one review for the whole machine) is reported and never read as any project review', () =>
+  withDir(async (dir) => {
+    const file = join(dir, 'review-pending.json')
+    writeFileSync(file, JSON.stringify(validReview()))
+    let calls = 0
+    const result = await readReviewState(file, KEY, {
+      annotationsDir: join(dir, 'annotations'),
+      report: () => {
+        calls += 1
+      }
+    })
+    expect(result, 'an unattributable review must not surface under a project key').toBeNull()
+    expect(calls).toBe(1)
+    // A write replaces the unkeyed file with the keyed layout, reporting once more.
+    await writeReviewState(file, KEY, validReview({ pageUrl: 'https://example.com/new' }) as never, () => {
+      calls += 1
+    })
+    expect(calls).toBe(2)
+    const spy = neverCalled()
+    expect((await readReviewState(file, KEY, { annotationsDir: join(dir, 'annotations'), report: spy.report }))?.pageUrl).toBe(
+      'https://example.com/new'
+    )
+    expect(spy.wasCalled()).toBe(false)
   }))

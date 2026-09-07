@@ -1054,10 +1054,20 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       en mémoire, la grâce repart de zéro après la seconde passe échouée ;
       les lignes en file survivent en base. Borné à deux grâces, jamais
       silencieux ; non traité.
-- [ ] **`CLAUDE_PEERS_ACTIVE_STALE_SEC` sous 60 s en mode replica** : les
-      miroirs ne sont rafraîchis que par les passes (échouées) espacées par
-      le backoff (jusqu'à 60 s) ; une valeur inférieure fauche les miroirs en
-      pleine grâce. Documenter un plancher ou rafraîchir sur un minuteur.
+- [x] **`CLAUDE_PEERS_ACTIVE_STALE_SEC` sous 60 s en mode replica** — livré :
+      `sweepInactivePeers` applique deux seuils (`shared/peer-staleness.ts`,
+      `mirrorStaleSec`) -- les lignes miroir (`via IS NOT NULL AND relay_id IS
+      NULL`) planchées à deux fois le plus long intervalle entre deux passes
+      (backoff 60 s ou `SYNC_TICK_MS`), tout le reste (peers locaux, lignes
+      relayées upstream, peer local aliasé) inchangé ; un avertissement unique
+      au démarrage en mode replica dès que le plancher relève la valeur ou que
+      la valeur est invalide. Résiduels : le prédicat « miroir » du balayage
+      (`via IS NOT NULL AND relay_id IS NULL`) diffère des six autres sites
+      qui testent `via IS NOT NULL` seul (équivalent tant qu'une replica ne
+      sert pas de replicas) ; la fixture du test de câblage recopie la forme
+      des INSERT d'`upsertMirror` et de `/federation/sync` au lieu de les
+      produire ; une valeur NaN de `CLAUDE_PEERS_ACTIVE_STALE_SEC` fait
+      toujours échouer le balayage entier avant les deux UPDATE (N-LOG-1).
 - [ ] **`via` n'est qu'une étiquette d'affichage** : les 8 premiers
       caractères d'un `replica_id`, jamais une clé -- deux replicas au même
       préfixe s'afficheraient à l'identique ; les clés restent
@@ -1083,10 +1093,12 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
 - [ ] **Provenance opérateur inter-brokers** : `operator_id` ne traverse
       jamais la frontière ; si un besoin apparaît, signature vérifiable
       upstream, jamais un champ déclaré par la replica.
-- [ ] **Tables hors roadmap pendant une coupure** : approbations, dispatch,
-      graph drafts, inbox restent locaux ; une approbation levée hors ligne
-      n'est pas répondable depuis un autre Deck ni via un canal de
-      notification tenu par l'upstream.
+- [x] **Tables hors roadmap pendant une coupure** : approbations, dispatch,
+      graph drafts, inbox restent locaux -- TRANCHÉ (opérateur, 2026-09-06),
+      par conception et non par manque : une approbation ou une notification
+      ne vit que le temps du Kory Deck qui l'a levée (credential révoquée à
+      la sortie, `peer_id` réattribuables), rien n'a de sens côté broker
+      centralisé. Règle inscrite dans `CLAUDE.md` ; ne pas rouvrir.
 - [ ] **Fusion automatique par champ** : REFUSÉE (une clôture d'un côté et un
       enrichissement de l'autre doivent rester un conflit dur) ; ne revenir
       dessus qu'avec un instantané de base et une règle explicite sur
@@ -1115,17 +1127,87 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       statut de replication côté renderer. Rationale : c'est une information
       de configuration DE L'HÔTE, l'écriture était déjà bloquée, et un
       téléphone n'a aucun usage de l'URL/état du broker.
-- [ ] **Autres écritures `.tmp` fixe hors `config.json`** (résiduel) :
-      `workspace-store.ts` portait le même motif (nom de fichier temporaire
-      fixe, sujet à collision entre deux écritures concurrentes) et bascule
-      sur `writeFileAtomic` dans ce lot -- auditer chaque écriture
-      `tmp`+`rename` restante en ligne dans `desktop/src/main` pour la même
-      classe de bug avant de la considérer close partout.
+- [x] **Autres écritures `.tmp` fixe hors `config.json`** (résiduel) --
+      clos, mesuré le 2026-09-06 : `grep -rn "renameSync\|\.tmp" desktop/src/main`
+      hors `atomic-write.ts` ne rend que la sauvegarde unique de
+      `operator-identity.ts` et la rotation de `log.ts`, aucun motif
+      `tmp`+`rename` en ligne ; toute écriture atomique passe par
+      `writeFileAtomic` (nom temporaire par pid et par appel).
 - [ ] **Le Deck n'a pas de verrou mono-instance** (résiduel) : deux fenêtres
       Kory partagent chaque store (config, workspaces, roadmap cache local,
       etc.) ; le verrou `config.json` livré ci-dessus ne couvre QUE ce fichier
       -- les autres stores écrits par plusieurs fenêtres restent exposés au
-      même dernier-écrivain-gagne silencieux.
+      même dernier-écrivain-gagne silencieux. Refusé pour l'instant par le
+      brief d'isolation (`docs/DESIGN-DECK-STATE-ISOLATION.md` §7) : un
+      verrou mono-instance fusionnerait deux `kory` lancés sur deux dépôts en
+      deux fenêtres d'un même processus ; à cadrer séparément.
+
+### 3.10 Isolation des états du Deck entre deux fenêtres Kory — résiduels
+
+Brief : `docs/DESIGN-DECK-STATE-ISOLATION.md`. Lots A à E livrés le
+2026-09-06 : inbox opérateur (`inbox-history.json`, `inbox-ack.json`) et
+configs MCP par lancement (`supervisor-mcp.json`, `demo-mcp.json`,
+`demo-scenario.md`) sous `sessions/<groupId>/` (`session-state.ts`), supprimés
+à la sortie et balayés au démarrage au-delà de `KORY_SESSION_STATE_TTL_DAYS` ;
+`review-pending.json` clé par `project_key` ; garde de discipline
+`tests/desktop-state-scope.test.ts`. Reste ouvert :
+
+- [ ] **Dernier-écrivain-gagne entre deux fenêtres** (§7, différé) : cléer
+      n'est pas verrouiller. Deux fenêtres sur le MÊME dépôt se perdent une
+      écriture sur `approvals.json`, `launch-approvals.json`, `sandbox.json`,
+      `graphs-<hash>.json` ; et `review-pending.json` étant une carte par
+      `project_key` dans UN fichier, deux fenêtres sur deux dépôts DISTINCTS
+      écrivant le même instant se perdent aussi une entrée (perte, jamais
+      fuite). Patron à généraliser : le verrou fichier de `peers-config-store.ts`.
+- [ ] **Deux fenêtres sur le MÊME scope custom** partagent `sessions/<groupId>/`
+      (même `group_id`) : la sortie propre de l'une supprime le journal
+      d'inbox de l'autre, qui le recrée vide à son prochain drain (perte,
+      jamais fuite ; le renderer garde sa liste en mémoire jusqu'au reload).
+      Le brief tolère les étrangetés « même dépôt » ; à traiter si l'usage
+      apparaît (un discriminant par fenêtre en plus du `group_id`).
+- [ ] **Q3 (§11)** : deux fenêtres ouvrant le companion (📱) se disputent le
+      port et `companion-cert.json` ; non audité.
+- [ ] **Q4 (§11)** : journal d'activité et logs (`main.log`,
+      `journal-<stamp>.log`) classés MACHINE par la garde, non audités pour une
+      fuite de contenu entre projets.
+- [ ] **Q5 (§11)** : `sessions.json` (écriture seule, plus rien ne le lit) --
+      à supprimer ou à laisser inerte ; classé MACHINE en attendant.
+- [ ] **Q6 (§11)** : TTL de balayage 7 jours par défaut ; un keepalive
+      horaire (`touchSessionStateDir`) protège une fenêtre vivante mais
+      silencieuse plus longue que le TTL. Un TTL plus court (24 h) reste
+      possible via `KORY_SESSION_STATE_TTL_DAYS`.
+- [ ] **Angles morts de la garde** (documentés en tête de
+      `tests/_state-scope-audit.ts`, mesurés verts en miroir par la revue
+      adverse du 2026-09-06) : le constructeur de répertoire est reconnu par
+      NOM et non par résolution d'import (une déclaration locale homonyme
+      rebranchée sur la racine passe) ; un `group_id` constant passé au
+      constructeur passe ; une constante de nom déclarée sous
+      `desktop/src/shared` et importée n'est pas balayée ; un export
+      d'`inbox-store.ts` en arrow-const ou à paramètre objet échappe au
+      contrôle des exports. Fermer chacun demande un vrai résolveur
+      d'imports, hors de proportion tant qu'aucun cas réel n'existe.
+- [ ] **Entrées étrangères sous `sessions/`** : un nom qui n'est pas un
+      `group_id` (32 hex minuscules) n'est jamais balayé (fail-safe, listé
+      `foreign` dans le log de balayage) ; §6.2 dit « tout dossier ».
+- [ ] **`review-pending.json` corrompu** : `clearReviewState` supprime alors
+      le fichier ENTIER (les entrées des autres projets avec, illisibles de
+      toute façon) ; le plafond de 512 KiB est par revue, pas par fichier ;
+      et `reviewProjectKey()` relance deux `git` à chaque `review-load/save/clear`.
+- [ ] **Veille longue** : les `setInterval` ne tirent pas pendant la veille ;
+      une fenêtre restée ouverte plus de `KORY_SESSION_STATE_TTL_DAYS` en
+      veille a un mtime périmé jusqu'au premier keepalive après réveil, et un
+      second Kory démarrant dans cette fenêtre balaierait son dossier vivant.
+- [ ] **Fichiers de contexte d'inférence** (`graph-context-<nodeId>-<cli>.md`,
+      `writeContextFile`) : nom sans discriminant de fenêtre ; deux fenêtres
+      lançant la même inférence utilitaire (help, wand, digest) au même
+      instant se recouvrent (perte de contexte, jamais fuite : le fichier est
+      lu par le CLI au lancement). Découvert par l'inventaire de la garde,
+      hors inventaire du brief §4.
+- [ ] **Migration du contenu d'inbox existant** : refusée (§5), le fichier
+      non clé est supprimé au premier démarrage avec une ligne de log
+      comptant les entrées jetées ; ne pas y revenir.
+- [ ] **Cloisonner la base du broker par groupe** : refusé (§12) ; ne pas y
+      revenir sans en parler à l'opérateur.
 
 ---
 
@@ -1139,6 +1221,15 @@ par le broker local) et arbitre les conflits dans le Deck. Reste ouvert :
       `config.ts` à rapatrier (env > fichier > défaut, validation centralisée).
 - [ ] **M-MNT-3** — fonctions surdimensionnées (`handleRegister` ~150 l,
       `handleRoadmapUpsert` ~170 l) à découper.
+- [ ] **Tests dépendants du temps ou de l'ordre** (mesuré le 2026-09-06) :
+      `desktop-templates-composer-draft-reset` rouge dans la suite complète et
+      vert en isolation (ordre d'exécution) ; `broker-roadmap-replica`
+      « queue_replaced counts the local positions… » compte +4 au lieu de +2
+      selon la charge (1 échec sur 7 runs sur une base propre, jusqu'à 5 sur
+      8 sous charge), sans lien avec le code du balayage qui ne tourne jamais
+      dans les 21 s du fichier. Deux passes de pull semblent appliquer la même
+      page après la reconnexion ; à reproduire avec `CLAUDE_PEERS_SYNC_TICK_MS`
+      bas avant de toucher l'assertion.
 - [ ] **Dérive documentaire** (N-MNT-11) : réaligner versions/docs
       (`package.json` vs mentions de version dans la doc).
 - [ ] **Duplication & perfs** (N-MNT-1..10) : TOFU secret de groupe ×3, DELETE

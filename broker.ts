@@ -13,6 +13,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { brokerMode, isLoopbackBrokerUrl, loadConfig, upstreamUrl } from "./shared/config.ts";
 import { createLogger, coreLogDir } from "./shared/logger.ts";
 import { validateProjectKey } from "./shared/project-key.ts";
+import { mirrorStaleSec, mirrorStaleWarning } from "./shared/peer-staleness.ts";
 import { loadOrCreateSecretKey, openSecret, sealSecret, secretHint } from "./shared/secret-box.ts";
 import { NotificationRegistry, type RegistryStore } from "./notify/registry.ts";
 import { TelegramChannel } from "./notify/telegram.ts";
@@ -310,11 +311,22 @@ const SYNC_PUSH_BATCH = 50;
 // the online state to offline (one success flips it back).
 const SYNC_BACKOFF_MAX_MS = 60_000;
 const SYNC_OFFLINE_AFTER_FAILURES = 2;
+// Mirror rows have no heartbeat of their own -- their freshness is the
+// federation link's -- so the sweep gives them a longer cutoff, derived from
+// the longest interval between two passes, than a heartbeating peer's
+// ACTIVE_STALE_SEC.
+const MIRROR_ACTIVE_STALE_SEC = mirrorStaleSec(ACTIVE_STALE_SEC, SYNC_BACKOFF_MAX_MS, SYNC_TICK_MS);
+/** A replica's copy of an upstream peer; an upstream's relay of a replica's peer sets relay_id too. */
+const MIRROR_ROW_SQL = "(via IS NOT NULL AND relay_id IS NULL)";
 
 // Rolling file log (PLAN-observabilite-erreurs O1/O2). The broker daemon often
 // outlives the stderr of whoever spawned it (server.ts spawns it detached), so
 // it must own its on-disk trail. Console mirroring keeps `bun broker.ts` usable.
 const log = createLogger({ dir: coreLogDir(), name: "broker" }).child("broker");
+{
+  const warning = mirrorStaleWarning(ACTIVE_STALE_SEC, SYNC_BACKOFF_MAX_MS, BROKER_MODE === "replica", SYNC_TICK_MS);
+  if (warning) log.warn(warning);
+}
 
 // Last-resort safety nets: an unhandled error is logged to the file before the
 // process dies (Bun would otherwise exit with a stack on a possibly-dead stderr).
@@ -1495,11 +1507,17 @@ guardedInterval("cleanStalePeers", cleanStalePeers, CLEAN_INTERVAL_MS);
 // --- Heartbeat-staleness sweep (active_stale_sec) ---
 
 function sweepInactivePeers(): void {
+  // Two cutoffs: a mirror has no heartbeat of its own and gets the longer,
+  // pass-interval-derived cutoff; every other row (local peers, and rows an
+  // upstream relays for a replica) gets the operator's ACTIVE_STALE_SEC.
   const cutoff = new Date(Date.now() - ACTIVE_STALE_SEC * 1000).toISOString();
-  db.run(
-    "UPDATE peers SET status = 'dormant' WHERE status = 'active' AND last_seen < ?",
-    [cutoff]
-  );
+  const mirrorCutoff = new Date(Date.now() - MIRROR_ACTIVE_STALE_SEC * 1000).toISOString();
+  db.run(`UPDATE peers SET status = 'dormant' WHERE status = 'active' AND last_seen < ? AND NOT ${MIRROR_ROW_SQL}`, [
+    cutoff,
+  ]);
+  db.run(`UPDATE peers SET status = 'dormant' WHERE status = 'active' AND last_seen < ? AND ${MIRROR_ROW_SQL}`, [
+    mirrorCutoff,
+  ]);
 }
 guardedInterval("sweepInactivePeers", sweepInactivePeers, SWEEP_INTERVAL_SEC * 1000);
 
