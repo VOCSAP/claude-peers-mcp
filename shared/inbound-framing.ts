@@ -68,6 +68,17 @@ export function renderPeerMessage(text: string): string {
 export const LEAD_DIRECTIVE_NOTE =
   "\n\n[claude-peers] If the peer that just replied has finished its task and its context is now stale, consider forcing a /clear on it.";
 
+// Card 75d38381: triggers the routing rule at the moment the decision is
+// actually made (message reception), rather than relying on a role
+// definition read once at session start and faded by turn 200. The rule
+// itself lives in the team-lead agent definition -- this note only points
+// at it, never restates it, so the two stay independently editable.
+// recipientRole-gated like LEAD_DIRECTIVE_NOTE above, and for the same
+// reason: a worker has no operator-facing routing decision to make, so
+// paying this per message for the whole team would buy nothing.
+export const ROUTING_REMINDER_NOTE =
+  "\n\n[claude-peers] Before moving on, decide where this belongs: on screen, or the operator's inbox.";
+
 /**
  * fromPeerId must be the sender identity, never a display fallback --
  * check_messages substitutes "<dormant peer>" only in its own prefix line,
@@ -83,5 +94,5 @@ export function renderInbound(fromPeerId: string, text: string, recipientRole?: 
   if (isDeckSender(fromPeerId)) return renderDeckAnnouncement(text);
   if (isOperatorSender(fromPeerId)) return renderOperatorAnswer(text);
   const base = renderPeerMessage(text);
-  return recipientRole === "team-lead" ? `${base}${LEAD_DIRECTIVE_NOTE}` : base;
+  return recipientRole === "team-lead" ? `${base}${ROUTING_REMINDER_NOTE}${LEAD_DIRECTIVE_NOTE}` : base;
 }

@@ -4,6 +4,7 @@ import {
   OPERATOR_ANSWER_NOTE,
   PEER_INBOUND_NOTE,
   LEAD_DIRECTIVE_NOTE,
+  ROUTING_REMINDER_NOTE,
   renderPeerMessage,
   isDeckSender,
   isOperatorSender,
@@ -174,7 +175,7 @@ describe("card 7defe381 lot B1: LEAD_DIRECTIVE_NOTE, gated on recipientRole === 
 
   test("recipientRole 'team-lead' appends LEAD_DIRECTIVE_NOTE after PEER_INBOUND_NOTE on an ordinary peer message", () => {
     const out = renderInbound("some-peer", BODY, "team-lead");
-    expect(out).toBe(`${BODY}${PEER_INBOUND_NOTE}${LEAD_DIRECTIVE_NOTE}`);
+    expect(out).toBe(`${BODY}${PEER_INBOUND_NOTE}${ROUTING_REMINDER_NOTE}${LEAD_DIRECTIVE_NOTE}`);
   });
 
   test("any other non-empty role does not receive the directive", () => {
@@ -195,6 +196,36 @@ describe("card 7defe381 lot B1: LEAD_DIRECTIVE_NOTE, gated on recipientRole === 
   test("a deck announcement or an operator answer to a team-lead recipient is untouched: the directive is scoped to the ordinary-peer branch only", () => {
     expect(renderInbound(DECK_PEER_ID, BODY, "team-lead")).toBe(renderDeckAnnouncement(BODY));
     expect(renderInbound(OPERATOR_PEER_ID, BODY, "team-lead")).toBe(renderOperatorAnswer(BODY));
+  });
+});
+
+describe("card 75d38381: ROUTING_REMINDER_NOTE, gated on recipientRole === 'team-lead' (case 1 only)", () => {
+  // Case 2 (supervisor) and case 3 (solo session) are out of scope: the
+  // broker carries no signal for either at the point renderInbound runs --
+  // see card 5c1cc754 for the supervisor gap, and the reception path itself
+  // (a message from a peer proves a peer exists) rules out "solo" by
+  // construction.
+  test("ROUTING_REMINDER_NOTE is its own constant, distinct from the other three, blank-line separated", () => {
+    expect(typeof ROUTING_REMINDER_NOTE).toBe("string");
+    expect(new Set([PEER_INBOUND_NOTE, LEAD_DIRECTIVE_NOTE, ROUTING_REMINDER_NOTE]).size).toBe(3);
+    expect(ROUTING_REMINDER_NOTE.startsWith("\n\n[claude-peers] ")).toBe(true);
+  });
+
+  test("a team-lead recipient gets the routing reminder on an ordinary peer message", () => {
+    const out = renderInbound("some-peer", BODY, "team-lead");
+    expect(out).toContain(ROUTING_REMINDER_NOTE);
+  });
+
+  test("no other role -- worker, empty, null, omitted -- receives it", () => {
+    for (const role of [undefined, null, "", "developer", "reviewer", "release-engineer"]) {
+      const out = role === undefined ? renderInbound("some-peer", BODY) : renderInbound("some-peer", BODY, role);
+      expect(out).not.toContain(ROUTING_REMINDER_NOTE);
+    }
+  });
+
+  test("a deck announcement or an operator answer to a team-lead recipient never carries it", () => {
+    expect(renderInbound(DECK_PEER_ID, BODY, "team-lead")).not.toContain(ROUTING_REMINDER_NOTE);
+    expect(renderInbound(OPERATOR_PEER_ID, BODY, "team-lead")).not.toContain(ROUTING_REMINDER_NOTE);
   });
 });
 
