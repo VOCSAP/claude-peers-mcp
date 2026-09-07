@@ -1,6 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
-import { startBroker, stopBroker, type TestBroker } from "./_helper.ts";
+import { startBroker, stopBroker, post, type TestBroker } from "./_helper.ts";
 import { Database } from "bun:sqlite";
+import type { RoadmapItem } from "../shared/types.ts";
 
 const brokers: TestBroker[] = [];
 afterAll(async () => { for (const b of brokers) await stopBroker(b); });
@@ -24,4 +25,65 @@ test("migration is idempotent on already-migrated db", async () => {
   brokers.push(b2);
   // If we got here, the second broker came up successfully.
   expect(b2.port).toBeGreaterThan(0);
+});
+
+test("first card in an empty roadmap survives a 2nd broker startup (card 5ce394ca)", async () => {
+  const b1 = await startBroker();
+  // Second startup against the same, still-empty db: the FTS triggers get
+  // dropped and recreated a second time, which is what exposes the trigger-
+  // ordering bug (roadmap_rev_ai firing before roadmap_fts_ai on an INSERT).
+  const b2 = await startBroker({ CLAUDE_PEERS_DB: b1.dbPath });
+  // b2 pushed before b1: both hold the SAME db file open (b1.dbPath via the
+  // env override above), and afterAll stops brokers in array order. Stopping
+  // b1 first would delete the shared tmpDir while b2 still has the file open,
+  // leaking the directory on Windows (which cannot remove an open file).
+  brokers.push(b2, b1);
+
+  const res = await post<{ item: RoadmapItem; error?: string }>(`${b2.url}/roadmap/upsert`, {
+    project_key: "github.com/vocsap/broker-migration-test",
+    title: "first card in an empty roadmap",
+    by: "broker-migration-fixture",
+  });
+  expect(res.status, `first card insert into an empty roadmap failed: ${res.status} ${JSON.stringify(res.body)}`).toBe(
+    200
+  );
+  expect(res.body.item?.id, "upsert response is missing the created item's id").toBeTruthy();
+});
+
+test("roadmap_fts_au's AFTER UPDATE OF columns match the fts5 DDL columns (card 5ce394ca)", async () => {
+  const b = await startBroker();
+  brokers.push(b);
+  const db = new Database(b.dbPath, { readonly: true });
+  const tableSql = (
+    db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roadmap_fts'").get() as {
+      sql: string;
+    }
+  ).sql;
+  const triggerSql = (
+    db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'roadmap_fts_au'").get() as {
+      sql: string;
+    }
+  ).sql;
+  db.close();
+
+  // fts5 column args sit between the opening paren and `content=`. SQLite
+  // strips "IF NOT EXISTS" from the sql it stores, so this parse never
+  // depends on that fragment surviving -- it only ever sees the column list.
+  const tableCols = tableSql
+    .slice(tableSql.indexOf("(") + 1, tableSql.indexOf("content="))
+    .split(",")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+
+  const ofMatch = triggerSql.match(/UPDATE OF (.+?) ON roadmap_items/);
+  expect(
+    ofMatch,
+    `roadmap_fts_au trigger sql did not match the expected "UPDATE OF ... ON roadmap_items" shape: ${triggerSql}`
+  ).toBeTruthy();
+  const triggerCols = (ofMatch as RegExpMatchArray)[1].split(",").map((c) => c.trim());
+
+  expect(
+    triggerCols,
+    `roadmap_fts_au's AFTER UPDATE OF columns (${triggerCols.join(", ")}) must match the fts5 DDL columns (${tableCols.join(", ")}) -- a mismatch silently stops reindexing whichever column is missing from the OF clause`
+  ).toEqual(tableCols);
 });

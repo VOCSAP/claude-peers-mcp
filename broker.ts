@@ -999,6 +999,9 @@ for (const name of [
   "roadmap_lock_scope_ai",
   "roadmap_lock_scope_au",
   "roadmap_lock_release_au",
+  "roadmap_fts_ai",
+  "roadmap_fts_ad",
+  "roadmap_fts_au",
 ]) {
   db.run(`DROP TRIGGER IF EXISTS ${name}`);
 }
@@ -1077,6 +1080,18 @@ db.run(`
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_roadmap_project ON roadmap_items(project_key, status)`);
 
+/**
+ * Single source of truth for the fts5 shadow columns: the virtual table DDL
+ * and all three sync triggers below -- including the OF clause that decides
+ * which writes even fire roadmap_fts_au -- derive from this one array, the
+ * same pattern as revTrackedColumns/syncContentColumns above. A hand-copied
+ * OF clause can drift from the DDL with every test still green (card
+ * 5ce394ca: dropping `context` from a hand-copied OF list left 18 tests
+ * passing while the context-append route, which writes only that column,
+ * silently stopped being reindexed).
+ */
+const ROADMAP_FTS_COLUMNS = ["title", "description", "tags", "rationale", "context"];
+
 // Free-text search index (card 15952e09). External-content table: FTS5 owns
 // no data of its own, it indexes roadmap_items by its rowid (written
 // EXPLICITLY below even though it is the default, so a reader sees at a
@@ -1087,7 +1102,7 @@ db.run(`CREATE INDEX IF NOT EXISTS idx_roadmap_project ON roadmap_items(project_
 // gives case/accent-insensitive, non-contiguous-term matching for free.
 db.run(`
   CREATE VIRTUAL TABLE IF NOT EXISTS roadmap_fts USING fts5(
-    title, description, tags, rationale, context,
+    ${ROADMAP_FTS_COLUMNS.join(", ")},
     content='roadmap_items', content_rowid='rowid',
     tokenize='unicode61 remove_diacritics 2'
   )
@@ -1106,23 +1121,31 @@ db.run(`
 // terms from the pre-update text, a silent desync that only shows up as
 // stale search hits much later.
 db.run(`
-  CREATE TRIGGER IF NOT EXISTS roadmap_fts_ai AFTER INSERT ON roadmap_items BEGIN
-    INSERT INTO roadmap_fts(rowid, title, description, tags, rationale, context)
-    VALUES (new.rowid, new.title, new.description, new.tags, new.rationale, new.context);
+  CREATE TRIGGER roadmap_fts_ai AFTER INSERT ON roadmap_items BEGIN
+    INSERT INTO roadmap_fts(rowid, ${ROADMAP_FTS_COLUMNS.join(", ")})
+    VALUES (new.rowid, ${ROADMAP_FTS_COLUMNS.map((c) => `new.${c}`).join(", ")});
   END
 `);
 db.run(`
-  CREATE TRIGGER IF NOT EXISTS roadmap_fts_ad AFTER DELETE ON roadmap_items BEGIN
-    INSERT INTO roadmap_fts(roadmap_fts, rowid, title, description, tags, rationale, context)
-    VALUES ('delete', old.rowid, old.title, old.description, old.tags, old.rationale, old.context);
+  CREATE TRIGGER roadmap_fts_ad AFTER DELETE ON roadmap_items BEGIN
+    INSERT INTO roadmap_fts(roadmap_fts, rowid, ${ROADMAP_FTS_COLUMNS.join(", ")})
+    VALUES ('delete', old.rowid, ${ROADMAP_FTS_COLUMNS.map((c) => `old.${c}`).join(", ")});
   END
 `);
+// Scoped to the searched columns, not a bare AFTER UPDATE: roadmap_rev_ai's
+// internal UPDATE (rev bump on insert) also fires an UPDATE event on this
+// table, and on any startup past the first it fires before roadmap_fts_ai
+// has indexed the new rowid (SQLite runs same-event triggers in reverse
+// creation order, and both are dropped/recreated every startup). A bare
+// AFTER UPDATE would issue an FTS5 delete for that unindexed rowid, which
+// fts5 refuses with SQLITE_CORRUPT_VTAB ("database disk image is
+// malformed") whenever the index has zero segments.
 db.run(`
-  CREATE TRIGGER IF NOT EXISTS roadmap_fts_au AFTER UPDATE ON roadmap_items BEGIN
-    INSERT INTO roadmap_fts(roadmap_fts, rowid, title, description, tags, rationale, context)
-    VALUES ('delete', old.rowid, old.title, old.description, old.tags, old.rationale, old.context);
-    INSERT INTO roadmap_fts(rowid, title, description, tags, rationale, context)
-    VALUES (new.rowid, new.title, new.description, new.tags, new.rationale, new.context);
+  CREATE TRIGGER roadmap_fts_au AFTER UPDATE OF ${ROADMAP_FTS_COLUMNS.join(", ")} ON roadmap_items BEGIN
+    INSERT INTO roadmap_fts(roadmap_fts, rowid, ${ROADMAP_FTS_COLUMNS.join(", ")})
+    VALUES ('delete', old.rowid, ${ROADMAP_FTS_COLUMNS.map((c) => `old.${c}`).join(", ")});
+    INSERT INTO roadmap_fts(rowid, ${ROADMAP_FTS_COLUMNS.join(", ")})
+    VALUES (new.rowid, ${ROADMAP_FTS_COLUMNS.map((c) => `new.${c}`).join(", ")});
   END
 `);
 
