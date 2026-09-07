@@ -251,6 +251,7 @@ const NOT_APP_STATE: Record<string, NotAppStateRule> = {
   availableLocales: { reason: "<code>.json locale bundles shipped with the app, read-only" },
   readDictFile: { reason: "<lang>.json locale bundle read from the app's locales dir, read-only" },
   transcriptPath: { reason: "~/.claude/projects/<cwd>/<id>.jsonl, Claude Code's own transcript, read for the resume digest" },
+  "patch-state.json": { reason: "clodex's own manifest under its home (CLODEX_HOME or ~/.clodex), written by `clodex patch`; the Deck only reads it for patch freshness" },
 };
 
 /** index.ts hands the per-group dir builder to ipc.ts through the deps object. */
