@@ -3,14 +3,14 @@
 // deck-control-mcp.ts's DECK_CONTROL_TOOLS (Card ff091064), and coverage at
 // tools/call, not just tools/list.
 //
-// server.ts has zero exports and runs main() unconditionally at module scope
-// (it registers with a real broker and connects stdio), so resolveToolAllowlist/
-// filterTools cannot be imported and unit-tested directly -- this mirrors
-// server-ask-operator.test.ts's harness: spawn `bun server.ts` against a real
-// test broker and drive it over real MCP stdio JSON-RPC.
+// The allow-list is resolved at module scope from the environment, so it
+// cannot be driven in-process: the harness spawns `bun server.ts` against a
+// real test broker and speaks real MCP stdio JSON-RPC. TOOLS is imported
+// only as the source of truth the served surface is compared against.
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { startBroker, stopBroker, scrubEnv, type TestBroker } from "./_helper.ts";
+import { TOOLS } from "../server.ts";
 
 const brokers: TestBroker[] = [];
 const procs: ReturnType<typeof Bun.spawn>[] = [];
@@ -115,7 +115,11 @@ describe("CLAUDE_PEERS_TOOLS: server.ts's tool allow-list", () => {
     expect(names).toContain("list_peers");
     expect(names).toContain("roadmap_get");
     expect(names).toContain("send_message");
-    expect(names.length).toBeGreaterThan(15);
+    // Set equality against the source of truth, not a count: a count stays
+    // green when the filter drops the WRONG tools, as long as the total
+    // lands right.
+    expect(new Set<string>(names)).toEqual(new Set(TOOLS.map((t) => t.name)));
+    expect(names.length).toBe(TOOLS.length);
   }, 60_000);
 
   test("set, non-empty: tools/list returns exactly the named subset, dropping an unlisted name and a typo'd one", async () => {

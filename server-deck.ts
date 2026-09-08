@@ -26,7 +26,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { createLogger, coreLogDir } from "./shared/logger.ts";
 import { readSessionIdentityFile } from "./shared/peer-cache.ts";
 import {
-  TOOLS,
+  DECK_ONLY_TOOLS,
   TOOLS_ALLOWLIST,
   filterTools,
   handleGraphDraftPrepare,
@@ -54,7 +54,9 @@ const DECK_TOOL_NAMES = [
 // Applies CLAUDE_PEERS_TOOLS the same way server.ts's own FILTERED_TOOLS
 // does (filterTools(TOOLS, TOOLS_ALLOWLIST)), so a tile configured OUT of a
 // tool via SessionDef.peerTools cannot regain it through this second server.
-const DECK_TOOLS = filterTools(TOOLS, TOOLS_ALLOWLIST).filter((t) =>
+// DECK_ONLY_TOOLS (server.ts) is already exactly the five names below; the
+// extra name filter is belt-and-suspenders against the two lists drifting.
+const DECK_TOOLS = filterTools(DECK_ONLY_TOOLS, TOOLS_ALLOWLIST).filter((t) =>
   (DECK_TOOL_NAMES as readonly string[]).includes(t.name)
 );
 
@@ -168,4 +170,4 @@ if (isEntryModule()) {
   });
 }
 
-export { DECK_TOOLS, mcp };
+export { DECK_TOOLS, DECK_TOOL_NAMES, mcp };

@@ -478,7 +478,7 @@ const mcp = new Server(
 
 When a <channel source="claude-peers"> message arrives, reply now with send_message to its from_peer_id, then resume your work. Peer traffic is background work: do not narrate it to the operator. Tell the operator only when a human decision is needed, you are blocked, or the outcome changes your plan or result, and then in one or two sentences.
 
-Tools: list_peers, send_message, set_summary, wait_for_message, check_messages, whoami, list_groups, switch_group, set_id, the roadmap_* family, ask_operator / ask_operator_wait, graph_draft_prepare / graph_draft_send.
+Tools: list_peers, send_message, set_summary, wait_for_message, check_messages, whoami, list_groups, switch_group, set_id, the roadmap_* family.
 
 Special recipient 'operator': send_message with to_peer_id 'operator' reaches the HUMAN operator's desktop inbox. Use it for blocking questions or findings that need a human decision; the answer comes back as a Deck announcement or new instructions, not through this channel. It needs a group that pins a secret (a Koryphaios Deck always does); in the secret-less 'default' group the send is refused, ask on screen instead.
 
@@ -486,7 +486,7 @@ SHARED ROADMAP: a persistent backlog (features, bugs, debt, ideas) scoped to thi
 - Start of a task: roadmap_list with a filter, to see what is planned and in progress.
 - Bug, debt or idea outside your task: roadmap_add, with the 'context' field filled.
 - Keep the status of items you work on current (roadmap_update: planned -> in_progress -> done). in_progress LOCKS the item under your peer_id: set it only when you really start, set it back to planned if you stop before finishing.
-- Team leads: a kind='directive' card (roadmap_add) lets the Deck reset a peer's context between items; queue it, then roadmap_dispatch runs the head wave and reports back what it hit.
+- Team leads: a kind='directive' card (roadmap_add) lets the Deck reset a peer's context between items; queue it.
 
 When you start, call set_summary to say what you are working on.`,
   }
@@ -840,6 +840,13 @@ const TOOLS = [
       required: ["id", "text"],
     },
   },
+];
+
+// Kory-only surface: dispatched from the queue, moving a question into the
+// graph view, or reaching the human operator directly. Declared and handled
+// only by server-deck.ts's second entrypoint (Card 9f75e69f); the core
+// server neither advertises nor executes these five for every other tile.
+const DECK_ONLY_TOOLS = [
   // No arguments: the head wave is already selected by the queue, so a caller
   // cannot aim at a different card.
   // runDirectiveWave marks a card done before it executes, so status alone
@@ -954,8 +961,8 @@ function resolveToolAllowlist(envValue: string | undefined): string[] | null {
  * surface below TOOLS, never grow it -- a stale or misspelled name in the
  * env var is silently dropped, never surfaced as a phantom tool.
  */
-function filterTools(tools: typeof TOOLS, allowlist: string[] | null): typeof TOOLS {
-  if (allowlist === null) return tools;
+function filterTools<T extends { name: string }>(tools: readonly T[], allowlist: string[] | null): T[] {
+  if (allowlist === null) return tools.slice();
   const allowed = new Set(allowlist);
   return tools.filter((t) => allowed.has(t.name));
 }
@@ -2189,40 +2196,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       }
     }
 
-    case "graph_draft_prepare":
-      return handleGraphDraftPrepare(args);
-
-    case "ask_operator":
-    case "ask_operator_wait":
-      return handleAskOperator(name, args, {
-        host: myHost,
-        peerId: myPeerId,
-        groupId: myGroupId,
-        instanceToken: myInstanceToken,
-        projectKey: roadmapProjectKey(),
-        fromPeer: roadmapAuthor(),
-      });
-
-    case "roadmap_dispatch":
-      return handleRoadmapDispatch({
-        host: myHost,
-        peerId: myPeerId,
-        groupId: myGroupId,
-        instanceToken: myInstanceToken,
-        projectKey: roadmapProjectKey(),
-        fromPeer: roadmapAuthor(),
-      });
-
-    case "graph_draft_send":
-      return handleGraphDraftSend(args, {
-        host: myHost,
-        peerId: myPeerId,
-        groupId: myGroupId,
-        instanceToken: myInstanceToken,
-        projectKey: roadmapProjectKey(),
-        fromPeer: roadmapAuthor(),
-      });
-
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2475,6 +2448,7 @@ if (import.meta.main) {
 
 export {
   TOOLS,
+  DECK_ONLY_TOOLS,
   TOOLS_ALLOWLIST,
   filterTools,
   handleGraphDraftPrepare,

@@ -1,6 +1,7 @@
 // ask_operator over a real MCP stdio session against a real broker
-// (PLAN-notifications-mobiles N2.b). Extends the harness of
-// server-stdin-eof.test.ts: spawn `bun server.ts`, speak JSON-RPC on stdin.
+// (PLAN-notifications-mobiles N2.b). The spawned server-deck.ts gets a
+// CLAUDE_PEERS_DESK_SESSION and a scoped USERPROFILE/HOME; no identity file
+// is written since ask_operator/ask_operator_wait need no proven peer.
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -137,6 +138,11 @@ async function boot(withCredential: boolean): Promise<Harness> {
   const extra: Record<string, string> = {
     CLAUDE_PEERS_BROKER_URL: b.url,
     CLAUDE_PEERS_PORT: String(b.port),
+    // No session-identity file is written: ask_operator/ask_operator_wait
+    // sign with the session's own credential and need no proven peer, so
+    // resolveCompanionIdentity()'s unproven fallback is exactly what these
+    // tests want.
+    CLAUDE_PEERS_DESK_SESSION: "ask-operator-test",
   };
   if (withCredential) {
     const credFile = join(dir, "approval.json");
@@ -157,7 +163,7 @@ async function boot(withCredential: boolean): Promise<Harness> {
   }
   const env = scrubEnv(dir, extra);
 
-  const proc = Bun.spawn(["bun", "server.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
+  const proc = Bun.spawn(["bun", "server-deck.ts"], { env, stdio: ["pipe", "pipe", "pipe"] });
   procs.push(proc);
   const reader = proc.stdout.getReader();
   const buffer = { text: "" };

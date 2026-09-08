@@ -13,6 +13,7 @@ import {
   ROADMAP_UPDATE_ACK_FIELDS,
   findUncoveredAckFields,
 } from "../shared/types.ts";
+import { DECK_ONLY_TOOLS } from "../server.ts";
 
 /**
  * Maps every roadmap_ tool to its ack field domain, or null when the ack is not
@@ -395,13 +396,21 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
     // entry left for a removed tool fails it too.
     // Two hand-written checks alone can silently miss a tool shipping with zero
     // coverage, since nothing unions or asks about the full set.
+    // The domain is BOTH servers: a roadmap_ tool absent from the core is
+    // still served to lead and supervisor tiles out of DECK_ONLY_TOOLS, so
+    // dropping its entry here would shrink the coverage instead of following
+    // the tool.
     const h = await boot();
     h.send({ jsonrpc: "2.0", id: nextRpcId, method: "tools/list", params: {} });
     const res = await readUntil(h.reader, nextRpcId, h.buffer);
     nextRpcId++;
     const tools = res.result?.tools ?? [];
-    const roadmapTools = tools.filter((t) => t.name.startsWith("roadmap_"));
-    expect(roadmapTools.length).toBeGreaterThan(0); // the probe must SEE tools before its silence means anything
+    const coreRoadmapTools = tools.filter((t) => t.name.startsWith("roadmap_"));
+    const deckOnlyRoadmapTools = DECK_ONLY_TOOLS.filter((t) => t.name.startsWith("roadmap_"));
+    // Each side must be SEEN before its silence means anything.
+    expect(coreRoadmapTools.length).toBeGreaterThan(0);
+    expect(deckOnlyRoadmapTools.length).toBeGreaterThan(0);
+    const roadmapTools = [...coreRoadmapTools, ...deckOnlyRoadmapTools];
 
     const roadmapToolNames = roadmapTools.map((t) => t.name);
     for (const name of roadmapToolNames) {
