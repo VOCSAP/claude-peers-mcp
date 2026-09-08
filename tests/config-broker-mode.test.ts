@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -125,6 +125,58 @@ function writeConfigFile(content: object): void {
   writeFileSync(join(dir, "config.json"), JSON.stringify(content), "utf-8");
 }
 
+/** Built from bytes: a literal BOM in this source would make git treat the
+ * file as binary. */
+function writeConfigFileWithBom(content: object): void {
+  const dir = join(tmpDir, "claude-peers");
+  mkdirSync(dir, { recursive: true });
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  const json = Buffer.from(JSON.stringify(content), "utf-8");
+  writeFileSync(join(dir, "config.json"), Buffer.concat([bom, json]));
+}
+
+/** PowerShell 5.1 `Out-File`/`>` write UTF-16LE with this BOM by default. */
+function writeConfigFileUtf16LEBom(content: object): void {
+  const dir = join(tmpDir, "claude-peers");
+  mkdirSync(dir, { recursive: true });
+  const bom = Buffer.from([0xff, 0xfe]);
+  const json = Buffer.from(JSON.stringify(content), "utf16le");
+  writeFileSync(join(dir, "config.json"), Buffer.concat([bom, json]));
+}
+
+function writeConfigFileUtf16BEBom(content: object): void {
+  const dir = join(tmpDir, "claude-peers");
+  mkdirSync(dir, { recursive: true });
+  const le = Buffer.from(JSON.stringify(content), "utf16le");
+  const be = Buffer.alloc(le.length);
+  for (let i = 0; i + 1 < le.length; i += 2) {
+    be[i] = le[i + 1];
+    be[i + 1] = le[i];
+  }
+  const bom = Buffer.from([0xfe, 0xff]);
+  writeFileSync(join(dir, "config.json"), Buffer.concat([bom, be]));
+}
+
+function writeConfigFileUtf16LENoBom(content: object): void {
+  const dir = join(tmpDir, "claude-peers");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "config.json"), Buffer.from(JSON.stringify(content), "utf16le"));
+}
+
+function writeConfigFileAsDirectory(): void {
+  const dir = join(tmpDir, "claude-peers");
+  mkdirSync(join(dir, "config.json"), { recursive: true });
+}
+
+/** Reads the trace `readFileConfig` writes on a load failure, "" if none. */
+function readConfigLogContent(): string {
+  try {
+    return readFileSync(join(tmpDir, "claude-peers", "logs", "config.log"), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 test("loadConfig: no offline_replica key in the file defaults to false (local/remote unaffected)", async () => {
   writeConfigFile({ broker_url: "http://broker-host:7899" });
   const cfg = await loadConfig();
@@ -211,4 +263,39 @@ test("serve_replicas is independent of the mode: replica and remote read it the 
   // The loader records the operator's answer verbatim; refusing to ACT on it
   // is the broker's decision, asserted in tests/broker-roadmap-sync-routes.
   expect(cfg.serve_replicas).toBe(true);
+});
+
+test("loadConfig: a config.json with a leading UTF-8 BOM still loads (F1), not a silent fallback to defaults", async () => {
+  writeConfigFileWithBom({ port: 4321, groups: { alpha: "s3cr3t" } });
+  const cfg = await loadConfig();
+  expect(cfg.port).toBe(4321);
+  expect(cfg.groups).toEqual({ alpha: "s3cr3t" });
+});
+
+test("loadConfig: a config.json written as UTF-16LE with BOM (PowerShell Out-File default) still loads its values", async () => {
+  writeConfigFileUtf16LEBom({ port: 4321, groups: { alpha: "s3cr3t" } });
+  const cfg = await loadConfig();
+  expect(cfg.port).toBe(4321);
+  expect(cfg.groups).toEqual({ alpha: "s3cr3t" });
+});
+
+test("loadConfig: a UTF-16BE config.json falls back to defaults and traces the failure, not a silent {}", async () => {
+  writeConfigFileUtf16BEBom({ port: 4321 });
+  const cfg = await loadConfig();
+  expect(cfg.port).toBe(7899);
+  expect(readConfigLogContent()).toContain("ignoring malformed config");
+});
+
+test("loadConfig: a UTF-16LE config.json without a BOM falls back to defaults and traces the failure, not a silent {}", async () => {
+  writeConfigFileUtf16LENoBom({ port: 4321 });
+  const cfg = await loadConfig();
+  expect(cfg.port).toBe(7899);
+  expect(readConfigLogContent()).toContain("ignoring malformed config");
+});
+
+test("loadConfig: a config.json path that is a directory falls back to defaults and names the real cause", async () => {
+  writeConfigFileAsDirectory();
+  const cfg = await loadConfig();
+  expect(cfg.port).toBe(7899);
+  expect(readConfigLogContent()).toContain("is a directory, not a file");
 });

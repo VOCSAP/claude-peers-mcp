@@ -10,7 +10,7 @@
 // Node builtins only, unit-testable under `bun test`.
 
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 /** Default tile name of the supervisor session. */
 export const SUPERVISOR_NAME = 'supervisor'
@@ -96,6 +96,19 @@ export const TEAM_LEAD_DECK_TOOLS = [
   'deck_close_session'
 ] as const
 
+/**
+ * Bundled sibling of mcpScriptPath in the same deck-plugin/mcp dir (build:mcp
+ * writes both there) -- derived rather than a new SupervisorMcpConfigInput
+ * field, so both callers (ensureSupervisor, the team-lead spawn path) need no
+ * change to gain the second server.
+ * Exported so both writer call sites in index.ts can existsSync this exact
+ * path before writing the config -- a single source of truth for the
+ * derivation, instead of two independent copies that could drift apart.
+ */
+export function deckLeadScriptPath(mcpScriptPath: string): string {
+  return join(dirname(mcpScriptPath), 'server-deck.mjs')
+}
+
 /** Shared env/args shape for both writers below. */
 function buildDeckControlMcpConfig(
   input: SupervisorMcpConfigInput,
@@ -113,7 +126,22 @@ function buildDeckControlMcpConfig(
   if (toolsAllowlist) env.DECK_CONTROL_TOOLS = toolsAllowlist.join(',')
   return {
     mcpServers: {
-      'deck-control': { command: input.execPath, args: [input.mcpScriptPath], env }
+      'deck-control': { command: input.execPath, args: [input.mcpScriptPath], env },
+      // Reserved for the supervisor and team-lead tiles only:
+      // the 5 Kory-only claude-peers tools (ask_operator[_wait],
+      // graph_draft_prepare/send, roadmap_dispatch). No DECK_CONTROL_* here --
+      // server-deck.ts talks to the core broker the same way server.ts does
+      // (loadConfig() off disk), not through the deck-control HTTP endpoint.
+      // CLAUDE_PEERS_DESK_SESSION is deliberately absent from this env block:
+      // it reaches the child by inheritance from the tile's own process env
+      // (confirmed on disk via session-identity-*.json), the same route
+      // server.ts itself relies on -- posing it here explicitly would be a
+      // second, divergent mechanism for the same value.
+      'deck-lead': {
+        command: input.execPath,
+        args: [deckLeadScriptPath(input.mcpScriptPath)],
+        env: { ELECTRON_RUN_AS_NODE: '1' }
+      }
     }
   }
 }

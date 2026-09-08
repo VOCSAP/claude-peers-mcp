@@ -27,7 +27,7 @@ import {
 import type { CreateSessionInput, SessionRuntime } from "../desktop/src/shared/types.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { extractBracedBody } from "./_braced-body";
 import {
   arbitrateSpawnApproval,
@@ -1141,6 +1141,58 @@ test("writeTeamLeadMcpConfig writes its OWN file, scoped to TEAM_LEAD_DECK_TOOLS
     mcpServers: Record<string, { env: Record<string, string> }>;
   };
   expect(supParsed.mcpServers["deck-control"]!.env.DECK_CONTROL_TOOLS).toBeUndefined();
+});
+
+test("writeSupervisorMcpConfig also writes the deck-lead key, deck-control untouched", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cp-sup-lead-"));
+  tmpDirs.push(dir);
+  const mcpScriptPath = "/res/deck-plugin/mcp/deck-control-mcp.mjs";
+  const file = writeSupervisorMcpConfig({
+    dir,
+    mcpScriptPath,
+    execPath: "/usr/bin/electron",
+    controlUrl: "http://127.0.0.1:1234",
+    controlToken: "tok"
+  });
+  const parsed = JSON.parse(readFileSync(file, "utf-8")) as {
+    mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  };
+  // Exact key set: adding deck-lead must not silently drop or rename deck-control.
+  expect(Object.keys(parsed.mcpServers).sort()).toEqual(["deck-control", "deck-lead"]);
+  const deckControl = parsed.mcpServers["deck-control"]!;
+  expect(deckControl.command).toBe("/usr/bin/electron");
+  expect(deckControl.args).toEqual([mcpScriptPath]);
+  const deckLead = parsed.mcpServers["deck-lead"]!;
+  expect(deckLead.command).toBe("/usr/bin/electron");
+  expect(deckLead.args).toEqual([join(dirname(mcpScriptPath), "server-deck.mjs")]);
+  expect(deckLead.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+});
+
+test("writeTeamLeadMcpConfig also writes the deck-lead key, same shape as the supervisor's", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cp-lead-lead-"));
+  tmpDirs.push(dir);
+  const mcpScriptPath = "/res/deck-plugin/mcp/deck-control-mcp.mjs";
+  const file = writeTeamLeadMcpConfig(
+    {
+      dir,
+      mcpScriptPath,
+      execPath: "/usr/bin/electron",
+      controlUrl: "http://127.0.0.1:1234",
+      controlToken: "tok"
+    },
+    "team-lead-mcp-deck-lead-test.json",
+    TEAM_LEAD_DECK_TOOLS
+  );
+  const parsed = JSON.parse(readFileSync(file, "utf-8")) as {
+    mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  };
+  expect(Object.keys(parsed.mcpServers).sort()).toEqual(["deck-control", "deck-lead"]);
+  const deckLead = parsed.mcpServers["deck-lead"]!;
+  expect(deckLead.command).toBe("/usr/bin/electron");
+  expect(deckLead.args).toEqual([join(dirname(mcpScriptPath), "server-deck.mjs")]);
+  expect(deckLead.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+  // deck-control keeps its own scoped tool allowlist, unaffected by deck-lead's presence.
+  expect(parsed.mcpServers["deck-control"]!.env.DECK_CONTROL_TOOLS).toBe(TEAM_LEAD_DECK_TOOLS.join(","));
 });
 
 test("writeSupervisorSystemPrompt regenerates the role anchor from the code constant", () => {

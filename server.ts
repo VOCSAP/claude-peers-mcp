@@ -105,6 +105,7 @@ import { formatPeer, renderSendAck } from "./shared/peer-render.ts";
 import { resolveProjectKey } from "./shared/project-key.ts";
 import { tmpdir } from "node:os";
 import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { spawn as spawnChildProcess } from "node:child_process";
 // Cross-boundary import (server.ts lives at repo root, workflow.ts under
 // desktop/): verified legal card 7defe381 LOT 1 -- `bunx tsc --noEmit -p
 // tsconfig.json` produces the identical error count (338) with and without
@@ -2230,34 +2231,66 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 /**
  * Run the read-only pinned-haiku one-shot that compiles a graph draft
  * (system prompt = CODE CONSTANT, array-argv spawn: no shell quoting).
+ * node:child_process, not Bun.spawn: this module is bundled for node, where
+ * Bun is undefined.
  */
 async function runDraftOneShot(userMessage: string): Promise<string> {
   const dir = join(tmpdir(), "claude-peers-graph-draft");
-  mkdirSync(dir, { recursive: true });
   const file = join(dir, `system-${process.pid}-${Date.now()}.md`);
-  writeFileSync(file, GRAPH_DRAFT_SYSTEM_PROMPT, "utf-8");
-  const proc = Bun.spawn({
-    cmd: buildDraftPrepareArgs({ userMessage, systemPromptFile: file }),
-    cwd: myCwd,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const timer = setTimeout(() => proc.kill(), GRAPH_DRAFT_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, GRAPH_DRAFT_SYSTEM_PROMPT, "utf-8");
+    const [cmd, ...args] = buildDraftPrepareArgs({ userMessage, systemPromptFile: file });
+    let proc: ReturnType<typeof spawnChildProcess>;
+    try {
+      proc = spawnChildProcess(cmd!, args, { cwd: myCwd, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      // node's spawn (unlike Bun.spawn) throws SYNCHRONOUSLY for an argv[0]
+      // with no PATHEXT-recognized extension on win32 (CVE-2024-27980
+      // mitigation) -- name the likely cause instead of surfacing a bare
+      // EINVAL. Never shell:true here: that would string-glue untrusted
+      // input into a command line.
+      const msg = e instanceof Error ? e.message : String(e);
+      const hint =
+        process.platform === "win32" && cmd && !/\.[a-z]+$/i.test(cmd)
+          ? ` -- on win32 an argv[0] with no file extension (e.g. a .cmd shim installed by npm) can fail to spawn; verify '${cmd}' resolves to a real executable`
+          : "";
+      throw new Error(`haiku one-shot failed to spawn '${cmd}': ${msg}${hint}`);
+    }
+    proc.stdout?.setEncoding("utf8");
+    proc.stderr?.setEncoding("utf8");
+    timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, GRAPH_DRAFT_TIMEOUT_MS);
+    const { out, err, code, signal } = await new Promise<{
+      out: string;
+      err: string;
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolve, reject) => {
+      let out = "";
+      let err = "";
+      proc.stdout?.on("data", (d: string) => { out += d; });
+      proc.stderr?.on("data", (d: string) => { err += d; });
+      proc.on("error", reject);
+      proc.on("close", (code, signal) => resolve({ out, err, code, signal }));
+    });
     if (code !== 0) {
-      throw new Error(`haiku one-shot failed (exit ${code}): ${(err || out).slice(0, 400)}`);
+      const cause = timedOut
+        ? `timed out after ${GRAPH_DRAFT_TIMEOUT_MS}ms (${signal})`
+        : signal
+          ? `killed by ${signal}`
+          : `exit ${code}`;
+      throw new Error(`haiku one-shot failed (${cause}): ${(err || out).slice(0, 400)}`);
     }
     const text = out.trim();
     if (!text) throw new Error("haiku one-shot returned nothing");
     return text;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     try {
       unlinkSync(file);
     } catch {

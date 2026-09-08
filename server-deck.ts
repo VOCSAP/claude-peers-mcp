@@ -1,8 +1,12 @@
-#!/usr/bin/env bun
 /**
  * Second MCP entrypoint (Card c9269fef), loaded only by supervisor/team-lead
  * tiles. Exposes the five Kory-only tools and imports their
  * definitions/handlers from server.ts rather than redefining them.
+ * No shebang: unlike server.ts/broker.ts/cli.ts, the
+ * shipped artifact is desktop/deck-plugin/mcp/server-deck.mjs run explicitly
+ * via `node <path>` (supervisor.ts), never executed as `./server-deck.ts` --
+ * a `#!/usr/bin/env bun` surviving into that bundle would misdirect a direct
+ * `chmod +x` invocation to bun instead of the node runtime it was built for.
  * Deliberately not a peer (no /register, no heartbeat, no WebSocket): a
  * second registration for the same tile would collide on the same
  * sessionKey(host, cwd, group_id, desk_session) as server.ts and mint a
@@ -14,6 +18,8 @@
  */
 
 import { hostname } from "node:os";
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -76,6 +82,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 async function resolveCompanionIdentity(): Promise<CompanionIdentity> {
   const host = hostname();
   const token = process.env.CLAUDE_PEERS_DESK_SESSION ?? "";
+  if (!token) {
+    log(
+      "CLAUDE_PEERS_DESK_SESSION is unset -- falling back to an unproven identity; " +
+      "graph_draft_send and roadmap_dispatch will be refused by the broker, " +
+      "ask_operator[_wait] will fall back to a pty reply"
+    );
+  }
   const identity = token ? await readSessionIdentityFile(token) : null;
   if (token && !identity) {
     log(`No usable session-identity file for desk_session '${token}' -- falling back to an unproven identity`);
@@ -127,7 +140,28 @@ async function main() {
   log(`MCP connected, ${DECK_TOOLS.length} tools`);
 }
 
-if (import.meta.main) {
+/**
+ * Not `import.meta.main` -- `bun build --target=node`
+ * compiles it to `__require.main == __require.module`, a Bun-runtime-only
+ * construct that throws a ReferenceError under plain node (the shipped
+ * entrypoint), before main() ever runs. Both sides are realpath'd before
+ * comparing: node resolves import.meta.url through a symlinked entry (its
+ * default --preserve-symlinks-main is off) while leaving process.argv[1] as
+ * invoked, so an uncanonicalized compare can read false for the real entry
+ * module -- the same silent-death failure this guard exists to prevent.
+ * A missing path (either side) resolves to false, never throws.
+ */
+function isEntryModule(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryModule()) {
   main().catch((e) => {
     log(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);

@@ -14,7 +14,7 @@
 import { join, dirname, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 import type { GroupId } from "./types.ts";
 import type { SummaryProviderConfig } from "./summarize.ts";
@@ -96,21 +96,37 @@ function settingsFilePath(): string {
   return join(homedir(), ".config", "claude-peers", "config.json");
 }
 
+// node:fs, not Bun.file: this module is bundled for node, where Bun is
+// undefined. Only the FF FE (UTF-16LE) BOM is sniffed, matching the one
+// non-UTF-8 encoding Bun.file().json() itself decodes.
+function decodeConfigBuffer(buf: Buffer): string {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.subarray(2).toString("utf16le");
+  }
+  return buf.toString("utf-8");
+}
+
 async function readFileConfig(): Promise<FileConfig> {
   const path = settingsFilePath();
   try {
-    const file = Bun.file(path);
-    if (!(await file.exists())) {
+    if (!existsSync(path)) {
       return {};
     }
-    const data = (await file.json()) as FileConfig;
+    const raw = decodeConfigBuffer(readFileSync(path)).replace(/^\uFEFF/, "");
+    const data = JSON.parse(raw) as FileConfig;
     return data ?? {};
   } catch (e) {
-    // Still boot on defaults (tolerant loader), but never silently: a malformed
-    // config.json would otherwise mis-target the whole deployment (port,
-    // broker_url, token) with no trace.
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[claude-peers] ignoring malformed config ${path}: ${msg} (using defaults)`);
+    let isDir = false;
+    try {
+      isDir = statSync(path).isDirectory();
+    } catch {
+      // path vanished between existsSync and here, or is unreadable -- not
+      // a directory, fall through to the generic message.
+    }
+    const reason = isDir ? `${path} is a directory, not a file` : e instanceof Error ? e.message : String(e);
+    const msg = `ignoring malformed config ${path}: ${reason} (using defaults)`;
+    console.error(`[claude-peers] ${msg}`);
+    createLogger({ dir: coreLogDir(), name: "config", mirrorToConsole: false }).child("config").error(msg);
     return {};
   }
 }

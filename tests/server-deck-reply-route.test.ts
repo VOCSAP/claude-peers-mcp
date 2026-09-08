@@ -288,6 +288,29 @@ describe("server-deck.ts ask_operator reply routing", () => {
     expect(h.stderr.text).toContain("No usable session-identity file for desk_session 'probe-traced'");
   }, 30_000);
 
+  test("an entirely absent desk_session token logs its own distinct trace naming the tools that will refuse", async () => {
+    const b = await startBroker();
+    brokers.push(b);
+
+    const h = await bootDeck(b, { deskSession: "", identity: null });
+    h.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "ask_operator", arguments: { title: "t", question: "q" } },
+    });
+    await firstApproval(b, h.opCred);
+
+    expect(h.stderr.text).toContain("CLAUDE_PEERS_DESK_SESSION is unset");
+    expect(h.stderr.text).toContain("graph_draft_send");
+    expect(h.stderr.text).toContain("roadmap_dispatch");
+    // Distinct trace from the "token present but file missing" case above --
+    // an empty token must never fire that other branch's message.
+    expect(h.stderr.text).not.toContain("No usable session-identity file");
+    // instanceToken is a credential: never named in any trace, in either branch.
+    expect(h.stderr.text).not.toContain("instanceToken");
+  }, 30_000);
+
   test("MEASURE: a stale identity file pointing at a dormant peer still resolves to pty (no file deletion needed on cleanup for this lot)", async () => {
     const b = await startBroker();
     brokers.push(b);

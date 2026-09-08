@@ -191,6 +191,7 @@ import { CompanionServer } from './companion-server'
 import {
   SUPERVISOR_BRIEFING,
   SUPERVISOR_NAME,
+  deckLeadScriptPath,
   writeSupervisorMcpConfig,
   writeSupervisorSystemPrompt,
   writeTeamLeadMcpConfig
@@ -2729,6 +2730,12 @@ const controlDeps: DeckControlDeps = {
     if (!existsSync(mcpScript)) {
       throw new Error('deck-control MCP script missing -- run `npm run build:mcp`')
     }
+    // Same guard as above, for the sibling deck-lead bundle: a missing one
+    // would otherwise fail silently on the Deck side (the agent's own MCP
+    // client just reports the server as unreachable).
+    if (!existsSync(deckLeadScriptPath(mcpScript))) {
+      throw new Error('deck-lead MCP script missing -- run `npm run build:mcp`')
+    }
     return writeTeamLeadMcpConfig(
       {
         dir: join(app.getPath('userData'), APP_STATE_SUBDIR),
@@ -2812,6 +2819,9 @@ const ensureSupervisor = async (): Promise<SessionRuntime> => {
   if (!existsSync(mcpScript)) {
     throw new Error('deck-control MCP script missing -- run `npm run build:mcp`')
   }
+  if (!existsSync(deckLeadScriptPath(mcpScript))) {
+    throw new Error('deck-lead MCP script missing -- run `npm run build:mcp`')
+  }
   const server = await ensureControlServer()
   const stateDir = appStateDir()
   // The control URL and token are THIS window's: a per-group file, never the
@@ -2892,8 +2902,7 @@ service.on('changed', syncExportTemplateEnabled)
 // user acts). Must count the same population WorkspaceService.saveAuto() itself
 // snapshots (captureSessions(), which excludes the supervisor): list() here
 // includes it, so a naive length check would pass on a supervisor-only moment
-// and race the guard now living in saveAuto() -- redundant with it, but this is
-// the site whose own comment used to claim the opposite.
+// and race the guard now living in saveAuto() -- redundant with it.
 let autoSaveTimer: NodeJS.Timeout | null = null
 service.on('changed', (sessions: SessionRuntime[]) => {
   if (!Array.isArray(sessions) || !sessions.some((s) => !s.supervisor)) return
