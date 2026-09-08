@@ -105,10 +105,27 @@ test("the node-bundled server-deck.mjs starts under node, answers initialize, an
     },
   });
   const initResponse = (await readUntil(reader, 0, buffer)) as {
-    result?: { serverInfo?: { name?: string }; capabilities?: unknown };
+    result?: { serverInfo?: { name?: string }; capabilities?: unknown; instructions?: string };
   };
   expect(initResponse.result?.serverInfo?.name).toBe("claude-peers-deck");
   expect(initResponse.result?.capabilities).toEqual({ tools: {} });
+
+  // The instructions block escapes every guard that looks at tools/list, so
+  // it gets its own. The whole clause is pinned, not the words it is made
+  // of: a text reusing "directive" and "roadmap_dispatch" to say the
+  // OPPOSITE ("roadmap_dispatch is disabled here") satisfies both tokens
+  // separately. Pinning a literal is right here because that sentence IS
+  // the deliverable, nothing downstream reads it, and a future rewording
+  // must go through this test on purpose. The cap bounds THIS block only:
+  // the client charges every connected server's instructions to a single
+  // budget and truncates silently, and that SUM is guarded nowhere today
+  // (card d77f6e4a).
+  const instructions = initResponse.result?.instructions ?? "";
+  expect(instructions.length).toBeGreaterThan(0);
+  expect(instructions.length).toBeLessThan(400);
+  expect(instructions).toContain(
+    "kind='directive' card filed and queued with the core server's roadmap tools is executed here, by roadmap_dispatch"
+  );
 
   // R2's control: this line is only ever emitted by the config loader's
   // catch branch (a Bun-only API throwing under node) -- must be silent now

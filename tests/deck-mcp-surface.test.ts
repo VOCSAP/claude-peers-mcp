@@ -1,5 +1,8 @@
-// Surface test for the second MCP entrypoint (Card c9269fef, lots L2/L3):
-// exactly the five Kory-only tools, and no `instructions` block.
+// Surface test for the second MCP entrypoint: exactly the five Kory-only
+// tools, and an instructions block that is served at all. What that block
+// must SAY is pinned once, against the node bundle the Deck actually
+// spawns; splitting it that way keeps the sentence from living in two
+// files that drift apart.
 
 import { test, expect, describe, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -84,9 +87,11 @@ async function boot() {
 }
 
 describe("server-deck.ts surface", () => {
-  test("carries no instructions block", async () => {
+  test("serves a non-empty instructions block", async () => {
     const { initRes } = await boot();
-    expect(initRes.result?.instructions).toBeUndefined();
+    // `?? ""` on purpose: an absent field is the likeliest degradation and
+    // must fail the same way an empty one does.
+    expect((initRes.result?.instructions ?? "").length).toBeGreaterThan(0);
   }, 30_000);
 
   test("exposes exactly the five Kory-only tools", async () => {

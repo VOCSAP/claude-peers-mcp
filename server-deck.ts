@@ -12,9 +12,12 @@
  * sessionKey(host, cwd, group_id, desk_session) as server.ts and mint a
  * fantom duplicate peer sharing its role -- no fallback self-registration
  * exists anywhere in this file, by construction, not by discipline.
- * No `instructions` block: Claude Code concatenates every connected
- * server's instructions into one shared budget and silently truncates
- * whichever connects last.
+ * Its `instructions` block carries ONLY what neither the core server's own
+ * block nor the five tool descriptions already state, and stays under 400
+ * characters: Claude Code concatenates every connected server's
+ * instructions into one shared budget and silently truncates whichever
+ * connects last, so a sentence written on both sides is paid twice and can
+ * cost the core block its tail.
  */
 
 import { hostname } from "node:os";
@@ -64,6 +67,8 @@ const mcp = new Server(
   { name: "claude-peers-deck", version: "0.9.0" },
   {
     capabilities: { tools: {} },
+    instructions:
+      "Kory-only tools, provided only to a Koryphaios lead or supervisor tile. A kind='directive' card filed and queued with the core server's roadmap tools is executed here, by roadmap_dispatch.",
   }
 );
 
