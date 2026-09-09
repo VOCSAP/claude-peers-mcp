@@ -81,12 +81,10 @@ export function queuedItems(items: RoadmapItem[]): RoadmapItem[] {
  * consecutive items sharing the same non-null `queue` value is one wave.
  * Single source of truth for "the wave grouping a WRITE must preserve" --
  * mirrors queuedItems' earlier role for flat order (phase 0 of 42edc88b).
- * Any write that sends `ids` to roadmap:reorder without a `waves` argument
- * built from this (or an equivalent grouping) silently flattens every
- * existing tie into 1..N, because the broker's legacy no-waves branch stamps
- * sequential queue numbers -- phase 2's finding: 4 non-lane call sites
- * (saveDraft, queueItem desktop+mobile, stackItem) wrote ids-only and so
- * destroyed any tie the lane had just created the moment any of them ran.
+ * roadmap:reorder requires a `waves` argument built from this (or an
+ * equivalent grouping): the broker rejects `ids` sent without one. Deriving
+ * the grouping approximately is the dangerous case, not omitting it -- an
+ * all-singleton grouping is accepted and destroys every tie the lane holds.
  */
 export function wavesOf(ordered: RoadmapItem[]): string[][] {
   const waves: string[][] = []

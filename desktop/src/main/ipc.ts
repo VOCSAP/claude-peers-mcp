@@ -830,14 +830,14 @@ export function registerIpc({
   })
   // Workflow lane: atomic queue rewrite (insert/reorder in the middle without
   // N racy per-item upserts). ids come from the renderer's derived lane order.
-  // `waves` (roadmap card 42edc88b phase 1) is optional and re-validated here
-  // -- this channel is companion/MCP-exposed at tier 1, and a tier is a
-  // declaration, not an access gate, so a malformed nested array must never
-  // reach the broker.
+  // `waves` (roadmap card 42edc88b phase 1; required at the broker since
+  // card f12e34f1 lot 1) is re-validated here -- this channel is
+  // companion/MCP-exposed at tier 1, and a tier is a declaration, not an
+  // access gate, so a malformed nested array must never reach the broker.
   regHandle('roadmap:reorder', (_e, ids: string[], waves?: string[][]) => {
     const { endpoint, key } = roadmapCtx()
     const cleanIds = Array.isArray(ids) ? ids : []
-    if (waves === undefined) return reorderRoadmap(endpoint, key, cleanIds)
+    if (waves === undefined) throw new Error('waves is required')
     const validated = validateReorderWaves(cleanIds, waves)
     if (!validated.ok) throw new Error(validated.error)
     return reorderRoadmap(endpoint, key, cleanIds, validated.waves)

@@ -527,10 +527,10 @@ test('joinAnchorAt: the heads column never resolves to an anchor', () => {
 })
 
 // A non-lane append (queueItem/saveDraft-style) must preserve an existing wave
-// tie rather than flatten it to 1..N: call sites sending ids alone to
-// roadmap:reorder destroyed any tie because the broker's legacy no-waves branch
-// stamps sequential queue numbers. Composing wavesOf + insertSoloWaves avoids
-// that.
+// tie rather than flatten it to 1..N: the broker requires a `waves` argument
+// on every roadmap:reorder call, so a call site sending `ids` alone is
+// refused outright. Composing wavesOf + insertSoloWaves derives that argument
+// from the existing queue order instead.
 test('wavesOf + insertSoloWaves: a non-lane append preserves an existing wave tie', () => {
   const items = [item('a', { queue: 1 }), item('b', { queue: 1 }), item('c')]
   const queued = queuedItems(items)

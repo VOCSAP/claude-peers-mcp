@@ -350,9 +350,10 @@ export function RoadmapView(): React.JSX.Element {
 
   // ----- workflow lane (graphical dispatch queue) -----
 
-  // waves is optional -- WorkflowLane's own onReorder computes its join-aware
-  // grouping and passes it through; callers with no wave opinion (a plain
-  // clear, or a caller that already merged waves into `ids` itself) omit it.
+  // waves is required at the broker (card f12e34f1 lot 1); every call site
+  // here already computes it (wavesOf-based builders, or WorkflowLane's own
+  // join-aware grouping), so the parameter stays optional only to keep this
+  // helper usable from a bare clear (`reorderQueue([], [])`).
   const reorderQueue = async (ids: string[], waves?: string[][]): Promise<void> => {
     try {
       await window.api.roadmapReorder(ids, waves)

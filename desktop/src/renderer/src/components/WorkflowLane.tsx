@@ -68,12 +68,12 @@ interface WorkflowLaneProps {
   onOpen: (id: string) => void
   onMenu: (item: RoadmapItem, x: number, y: number) => void
   /**
-   * Commit a full new queue order (id list of queued items), plus an
-   * optional wave grouping (see shared/workflow.ts SlotHit/layoutLane):
-   * `waves` must flatten to exactly `ids`, in order. Omitted entirely on a
-   * plain reorder that has no wave opinion (e.g. clearing the queue).
+   * Commit a full new queue order (id list of queued items), plus the wave
+   * grouping (see shared/workflow.ts SlotHit/layoutLane): `waves` must
+   * flatten to exactly `ids`, in order. Mandatory at the broker (card
+   * f12e34f1 lot 1) -- pass `[]` alongside an empty `ids` to clear the queue.
    */
-  onReorder: (ids: string[], waves?: string[][]) => void
+  onReorder: (ids: string[], waves: string[][]) => void
   /** Open the create form for a new item inserted at this queue slot. */
   onCreateAt: (queueIndex: number, dependsOn: string[]) => void
   onAddDep: (childId: string, parentId: string) => void
@@ -965,7 +965,9 @@ export function WorkflowLane({
           onCancel={() => setConfirmClear(false)}
           onConfirm={() => {
             setConfirmClear(false)
-            onReorder([])
+            // waves is required at the broker (card f12e34f1 lot 1): an
+            // empty ids alone is refused as a malformed request.
+            onReorder([], [])
           }}
         />
       )}
