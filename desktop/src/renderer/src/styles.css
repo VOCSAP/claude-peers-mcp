@@ -3190,6 +3190,25 @@ svg.glyph {
   padding: 0 7px;
 }
 
+/* Mass-archive of the "done" column, same head slot as the fleet stop controls
+   below. Sized on the .rm-count pill's 17px box: that pill is the tallest
+   occupant of a plain column head, so anything taller here grows this head
+   alone and puts the whole board row out of alignment. Scoped class carries
+   SIZE and TONE only; fill, border, hover swap and disabled opacity stay the
+   .icon-btn archetype's. --fg-dim is the head's secondary weight: archiving is
+   a lifecycle end-state, not a destructive action. */
+.rm-archive-all-btn {
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 15px;
+  color: var(--fg-dim);
+}
+
+.rm-archive-all-btn:hover:not(:disabled) {
+  color: var(--fg);
+}
+
 /* ---------- Fleet stop controls (card aaf4537d) ----------
    The three fleet gestures (pause / soft stop / hard stop) sit IN the head of
    the "in progress" column: the operator halts what they are looking at, not
@@ -3208,11 +3227,13 @@ svg.glyph {
 /* Scoped class carries SIZE only (DESIGN.md §4): the .icon-btn archetype keeps
    its fill, border, hover swap and disabled opacity. font-size 12px matches the
    head's own, and svg.glyph renders at 1em, so the glyph lands on the label's
-   optical size instead of towering over it. */
+   optical size instead of towering over it. The 17px box is the .rm-count
+   pill's, the tallest occupant of every other column head: any taller and THIS
+   head alone grows, which is the whole column row out of alignment. */
 .rm-stop-btn {
-  padding: 2px 6px;
+  padding: 0 6px;
   font-size: 12px;
-  line-height: 1;
+  line-height: 15px;
   color: var(--fg-dim);
 }
 
@@ -3246,7 +3267,7 @@ svg.glyph {
 .rm-stop-flip {
   border-radius: 0 6px 6px 0;
   margin-left: -1px;
-  padding: 2px 4px;
+  padding: 0 4px;
 }
 
 /* Post-action report. Amber is the "still busy" tone (DESIGN.md §2, transient
