@@ -6072,6 +6072,18 @@ function foreignContested(contested: readonly string[] | undefined): string[] {
   return contested.filter((entry) => !entry.endsWith(ownSuffix));
 }
 
+/** Adopts the upstream's revision numbers without touching content: the pulled change is the stale-lock sweep and nothing else. */
+function keepLocalAgainstSweep(remote: RoadmapSyncRow): void {
+  db.run(`UPDATE roadmap_items SET sync_base_rev = ?, sync_base = ? WHERE id = ?`, [
+    remote.content_rev,
+    JSON.stringify(pickSyncContent(remote)),
+    remote.id,
+  ]);
+  log.info(
+    `roadmap sync: card ${remote.id} kept local, the upstream change came from the lock sweep`
+  );
+}
+
 /**
  * Applies one pulled row. Returns true when a local queue position was
  * replaced, so the pass can report how much local ordering the upstream order
@@ -6117,12 +6129,38 @@ function applyPulledRow(remote: RoadmapSyncRow): boolean {
 
   const queueReplaced = local.queue !== null && local.queue !== remote.queue;
   const dirty = local.sync_dirty === 1;
+  // Hoisted: the clean branch below needs it too. heldLocally is a SCOPE
+  // predicate (locked/lock_scope on this row), never a liveness check: a
+  // dead holder's lock is released only by this replica's OWN stale-lock
+  // sweep against its own peers table, on that sweep's own schedule -- a
+  // pulled row is never the release path for it.
+  const localScope = readLockScope(local.lock_scope);
+  const heldLocally =
+    local.locked === 1 &&
+    (localScope === "local" ||
+      localScope === "global" ||
+      localScope === "contested" ||
+      localScope === "release_pending");
   if (readSyncState(local.sync_state) === "conflict") {
     // Already waiting on the operator: keep the arbitration material current.
     db.run("UPDATE roadmap_items SET sync_remote = ? WHERE id = ?", [
       JSON.stringify(remote),
       remote.id,
     ]);
+  } else if (
+    // A lock replicated without a hitch leaves this row CLEAN, so without
+    // this branch the sweep protection below is unreachable for it: the
+    // upstream's stale-lock sweep would overwrite status in silence while
+    // `locked` stays 1 (card 8d74c669). Gated on heldLocally, a SCOPE test: a
+    // lock abandoned here still reads as held until this replica's own sweep
+    // clears it, so the sweep's status change is deferred, never applied
+    // behind the lock.
+    !dirty &&
+    heldLocally &&
+    remote.updated_by === SWEEP_AUTHOR &&
+    isSweepOnlyStatusChange(pickSyncContent(rowToRoadmapItem(local)), content)
+  ) {
+    keepLocalAgainstSweep(remote);
   } else if (!dirty) {
     writeSyncContent(remote.id, content, updatedBy, remote.updated_at);
     db.run(
@@ -6143,13 +6181,7 @@ function applyPulledRow(remote: RoadmapSyncRow): boolean {
     // and nothing else: resolved as 'local' with no operator arbitration. The
     // content check is what makes that safe -- the sweep's name alone would
     // also cover a human edit it happens to have written after.
-    db.run(
-      `UPDATE roadmap_items SET sync_base_rev = ?, sync_base = ? WHERE id = ?`,
-      [remote.content_rev, JSON.stringify(pickSyncContent(remote)), remote.id]
-    );
-    log.info(
-      `roadmap sync: card ${remote.id} kept local, the upstream change came from the lock sweep`
-    );
+    keepLocalAgainstSweep(remote);
   } else {
     db.run("UPDATE roadmap_items SET sync_state = 'conflict', sync_remote = ? WHERE id = ?", [
       JSON.stringify(remote),
@@ -6160,13 +6192,6 @@ function applyPulledRow(remote: RoadmapSyncRow): boolean {
 
   // Queue and locks travel outside the content protocol and are applied on
   // every branch, conflict included.
-  const localScope = readLockScope(local.lock_scope);
-  const heldLocally =
-    local.locked === 1 &&
-    (localScope === "local" ||
-      localScope === "global" ||
-      localScope === "contested" ||
-      localScope === "release_pending");
   if (heldLocally) {
     // A card held HERE still shows who else wants it upstream: the local holder
     // is the one who most needs to know the lock is disputed across machines.
