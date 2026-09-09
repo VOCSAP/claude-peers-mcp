@@ -83,6 +83,23 @@ Read only the file/skill matching the area you touch:
   "may this caller act on THAT object", never "who does this caller belong
   to". Precedents: `ARCHITECTURE.md`, "What happens when there are two?".
 
+- **A Deck session's group is the Kory RUN, not the directory.** Kory forces
+  its sessions into a group at top precedence (`CLAUDE_PEERS_FORCE_GROUP*`,
+  ahead of `.claude-peers.json` and any env), so the host+cwd base of
+  `deriveDefaultId` never decides it: two Kory instances in the same directory
+  are isolated. That isolation is a DEFAULT, not a guarantee -- launched with
+  `--scope <id>`, or restoring a saved workspace, the secret IS the scope id
+  and the group is identical across runs. Anything keyed on "a new run means a
+  new group" (lock TTLs, stale-owner detection) must say which of the two
+  cases it assumes.
+
+- **Lot, Workflow, Vague: three levels, one name each.** A LOT is the shared
+  object persisted broker-side (operator decision, card `011d3547`); a
+  WORKFLOW is the view presenting one lot, so several lots means several
+  workflows; a VAGUE is the PARALLEL execution unit INSIDE a lot, a name
+  already taken and shipped by card `42edc88b`. Never spend one on another
+  concept: the drift starts the day a fourth word describes one of the three.
+
 - **Five hostile inputs, never trusted.** Decide which one a new
   config/template field, shell-interpolated arg, broker response field,
   path/dir IPC arg, agent-facing tool arg, or sandbox mount/projection is
