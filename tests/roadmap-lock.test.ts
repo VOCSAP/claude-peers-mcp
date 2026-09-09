@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import {
   resolveRoadmapLock,
   matchesLockOwner,
+  refusesForeignGroupReorder,
   resolveLockedGroup,
   resolveLockedByToken,
   resolveKeptLockedAt,
@@ -187,6 +188,36 @@ test.each([
   "matchesLockOwner: %s",
   (_name, existingLockedBy, existingLockedGroup, by, byLockedGroup, expected) => {
     expect(matchesLockOwner(existingLockedBy, existingLockedGroup, by, byLockedGroup)).toBe(expected);
+  }
+);
+
+// V-A (roadmap card f12e34f1 lot 1): refusesForeignGroupReorder answers a
+// coarser question than matchesLockOwner -- whether the caller's GROUP may
+// touch the row at all, not who its exact peer owner is. The 'deck' bypass
+// is the CALLER's job (broker.ts checks `by !== "deck"` before consulting
+// this predicate), not this pure function's -- it has no notion of 'deck'.
+test.each([
+  ["an unlocked card is never refused, group aside", false, "g1", "g2", false],
+  [
+    "legacy row (locked_group NULL, pre-migration) fails OPEN, same convention as matchesLockOwner",
+    true,
+    null,
+    "g2",
+    false,
+  ],
+  ["same group as the caller: allowed", true, "g1", "g1", false],
+  ["different group than the caller: refused", true, "g1", "g2", true],
+  [
+    "different group, and the caller's own group could not be resolved (unproven claim / operator-signed write): refused",
+    true,
+    "g1",
+    null,
+    true,
+  ],
+] as const)(
+  "refusesForeignGroupReorder: %s",
+  (_name, locked, lockedGroup, callerGroup, expected) => {
+    expect(refusesForeignGroupReorder(locked, lockedGroup, callerGroup)).toBe(expected);
   }
 );
 

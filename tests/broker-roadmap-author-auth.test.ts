@@ -211,7 +211,7 @@ test("an author matching no peer row stays accepted (cli.ts and fixtures)", asyn
 const DECK_WRITE_ROUTES = [
   { route: "/roadmap/upsert", body: (id: string) => ({ project_key: PK, id, description: "operator edit" }) },
   { route: "/roadmap/archive", body: (id: string) => ({ id }) },
-  { route: "/roadmap/reorder", body: (id: string) => ({ project_key: PK, ids: [id] }) },
+  { route: "/roadmap/reorder", body: (id: string) => ({ project_key: PK, ids: [id], waves: [[id]] }) },
   {
     route: "/roadmap/import",
     body: (id: string) => ({

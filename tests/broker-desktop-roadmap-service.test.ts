@@ -176,8 +176,8 @@ test("broker errors surface as thrown messages", async () => {
 });
 
 // Waves (roadmap card 42edc88b phase 1): the optional param threads through
-// end to end, and omitting it stays byte-identical (no `waves` key on the
-// wire) to the pre-phase-1 request shape.
+// to the broker, byte-identical wire shape (no `waves` key) when omitted --
+// but the broker requires the field, so omitting it is refused.
 test("reorderRoadmap threads an optional waves param through to the broker", async () => {
   const endpoint = { url: broker.url, token: null };
   const key = "github.com/acme/deck-waves-test";
@@ -190,11 +190,8 @@ test("reorderRoadmap threads an optional waves param through to the broker", asy
   expect(byId.get(a.id)?.queue).toBe(1);
   expect(byId.get(b.id)?.queue).toBe(1);
 
-  // Omitting waves keeps the flat 1..N stamping.
-  const flat = await reorderRoadmap(endpoint, key, [a.id, b.id]);
-  const flatById = new Map(flat.map((i) => [i.id, i]));
-  expect(flatById.get(a.id)?.queue).toBe(1);
-  expect(flatById.get(b.id)?.queue).toBe(2);
+  // Omitting waves is refused by the broker (D1), not silently flattened.
+  await expect(reorderRoadmap(endpoint, key, [a.id, b.id])).rejects.toThrow(/waves/);
 });
 
 // Card 39c40571 layer 2, DECK-SIDE negative control.

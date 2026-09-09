@@ -53,6 +53,7 @@ import {
   refusesParkedArchive,
   isParked,
   matchesLockOwner,
+  refusesForeignGroupReorder,
   resolveLockedGroup,
   resolveLockedByToken,
   resolveKeptLockedAt,
@@ -4142,6 +4143,10 @@ function handleRoadmapReorder(
   const author = resolveRoadmapAuthor(body, "/roadmap/reorder");
   if ("error" in author) return author;
   const by = author.by;
+  // V-A (card f12e34f1 lot 1): the caller's own resolved group, same source
+  // handleRoadmapUpsert's lock guard reads -- undefined (operator/deck-signed
+  // or an unproven claim) compares as null, never a wildcard match.
+  const authorLockedGroup = author.group_id ?? null;
   const rawReorderProjectKey = typeof body.project_key === "string" ? body.project_key : "";
   if (!rawReorderProjectKey) return { error: "project_key is required", status: 400 };
   // Refused, not trimmed: this handler selects items by project_key and writes
@@ -4175,65 +4180,112 @@ function handleRoadmapReorder(
     if (item.inactive) {
       return { error: `item '${id}' is inactive -- clear inactive before queuing it`, status: 403 };
     }
+    // V-A (card f12e34f1 lot 1): a reorder rewrites N rows in one write, so a
+    // card locked by a DIFFERENT group is off-limits to it -- 'deck' keeps the
+    // same cross-group authority the lock guard already grants it elsewhere.
+    // Whole-batch refusal, same discipline as the inactive check above.
+    if (by !== "deck" && refusesForeignGroupReorder(item.locked, item.locked_group, authorLockedGroup)) {
+      return {
+        error: `item '${id}' is locked by group '${item.locked_group}' -- pick another item, or reorder as the operator`,
+        status: 409,
+      };
+    }
     itemById.set(id, item);
   }
 
-  // Waves (roadmap card 42edc88b phase 1): additive optional grouping of
-  // `ids` into queue-position ties. `ids` stays the authoritative flat order
-  // -- waves must flatten back to it exactly, so a mismatched or stale
-  // `waves` payload can never desync the queue it groups.
-  let waves: string[][] | null = null;
-  if (body.waves !== undefined) {
-    if (!Array.isArray(body.waves) || !body.waves.every((w) => Array.isArray(w))) {
-      return { error: "waves must be an array of arrays of ids", status: 400 };
+  // D2 (card f12e34f1 lot 1): the transaction below unqueues the WHOLE
+  // project before restamping `ids`, so an incomplete `ids` desenfiles the
+  // difference without a trace. `ids` must cover every row this project
+  // currently has queued -- except when it is empty: the Deck's own
+  // Clear-queue gesture sends ids: [] on purpose (RoadmapReorderRequest.ids:
+  // "Empty clears the queue"), and that shape is indistinguishable from a
+  // caller whose view of the queue is accidentally empty. Every non-empty
+  // partial list is refused below.
+  const currentlyQueued = db
+    .query("SELECT id, locked, locked_group FROM roadmap_items WHERE project_key = ? AND queue IS NOT NULL")
+    .all(projectKey) as { id: string; locked: number; locked_group: string | null }[];
+  if (ids.length > 0) {
+    const provided = new Set(ids);
+    const missing = currentlyQueued.map((r) => r.id).filter((qid) => !provided.has(qid));
+    if (missing.length > 0) {
+      return {
+        error: `ids is missing ${missing.length} currently queued item(s): ${missing.join(", ")}`,
+        status: 400,
+      };
     }
-    if (body.waves.some((w) => w.length === 0)) {
-      return { error: "waves cannot contain an empty wave", status: 400 };
+  } else if (by !== "deck") {
+    // V-A composes with D2's empty-ids exemption: an empty `ids` skips the
+    // per-id loop above entirely (nothing to iterate), yet the transaction
+    // below still unqueues every one of these rows -- the same rank-moving
+    // act V-A refuses above, on rows the loop never saw.
+    const foreign = currentlyQueued.find((r) =>
+      refusesForeignGroupReorder(r.locked === 1, r.locked_group, authorLockedGroup)
+    );
+    if (foreign) {
+      return {
+        error: `item '${foreign.id}' is locked by group '${foreign.locked_group}' -- pick another item, or reorder as the operator`,
+        status: 409,
+      };
     }
-    // Trim discipline: at both boundaries (here, and desktop's
-    // roadmap-reorder-validate.ts), `ids` and `waves` are trimmed before any
-    // comparison between them. A shared broker also serves clients other
-    // than this Deck (a different Deck version, a script, MCP), and one that
-    // pads ids and waves identically must not be rejected because only one
-    // side got trimmed here. Reject rather than silently drop a malformed
-    // entry, since the wave shape is otherwise structurally validated and a
-    // silent drop would change membership under the caller without a trace.
-    const trimmedWaves: string[][] = [];
-    for (const wave of body.waves) {
-      const trimmed: string[] = [];
-      for (const item of wave) {
-        if (typeof item !== "string" || item.trim() === "") {
-          return { error: "waves must contain only non-empty string ids", status: 400 };
-        }
-        trimmed.push(item.trim());
-      }
-      trimmedWaves.push(trimmed);
-    }
-    const flat = trimmedWaves.flat();
-    if (flat.length !== ids.length || flat.some((id, i) => id !== ids[i])) {
-      return { error: "waves must flatten to exactly ids, in the same order", status: 400 };
-    }
-    for (const wave of trimmedWaves) {
-      if (wave.length <= 1) continue;
-      const directiveId = wave.find((id) => itemById.get(id)?.kind === "directive");
-      if (directiveId) {
-        return {
-          error: `directive item '${directiveId}' must be in a singleton wave`,
-          status: 400,
-        };
-      }
-    }
-    waves = trimmedWaves;
   }
 
-  // Card edefff05: none of the three UPDATEs below touch operator_id, and
+  // Waves (roadmap card 42edc88b phase 1): grouping of `ids` into
+  // queue-position ties. `ids` stays the authoritative flat order -- waves
+  // must flatten back to it exactly, so a mismatched or stale `waves`
+  // payload can never desync the queue it groups. Required: it is the only
+  // way to express a tie, and a flat order cannot express one.
+  if (body.waves === undefined) {
+    return { error: "waves is required", status: 400 };
+  }
+  if (!Array.isArray(body.waves) || !body.waves.every((w) => Array.isArray(w))) {
+    return { error: "waves must be an array of arrays of ids", status: 400 };
+  }
+  if (body.waves.some((w) => w.length === 0)) {
+    return { error: "waves cannot contain an empty wave", status: 400 };
+  }
+  // Trim discipline: at both boundaries (here, and desktop's
+  // roadmap-reorder-validate.ts), `ids` and `waves` are trimmed before any
+  // comparison between them. A shared broker also serves clients other
+  // than this Deck (a different Deck version, a script, MCP), and one that
+  // pads ids and waves identically must not be rejected because only one
+  // side got trimmed here. Reject rather than silently drop a malformed
+  // entry, since the wave shape is otherwise structurally validated and a
+  // silent drop would change membership under the caller without a trace.
+  const trimmedWaves: string[][] = [];
+  for (const wave of body.waves) {
+    const trimmed: string[] = [];
+    for (const item of wave) {
+      if (typeof item !== "string" || item.trim() === "") {
+        return { error: "waves must contain only non-empty string ids", status: 400 };
+      }
+      trimmed.push(item.trim());
+    }
+    trimmedWaves.push(trimmed);
+  }
+  const flat = trimmedWaves.flat();
+  if (flat.length !== ids.length || flat.some((id, i) => id !== ids[i])) {
+    return { error: "waves must flatten to exactly ids, in the same order", status: 400 };
+  }
+  for (const wave of trimmedWaves) {
+    if (wave.length <= 1) continue;
+    const directiveId = wave.find((id) => itemById.get(id)?.kind === "directive");
+    if (directiveId) {
+      return {
+        error: `directive item '${directiveId}' must be in a singleton wave`,
+        status: 400,
+      };
+    }
+  }
+  const waves: string[][] = trimmedWaves;
+
+  // Card edefff05: none of the two UPDATEs below touch operator_id, and
   // that is deliberate, not an oversight. A reorder is a signed write, but
   // it is a write on the QUEUE, not an authorship event on a card -- each
-  // UPDATE here moves N rows at once (unqueue, waves, or flat order), and
-  // stamping operator_id on all of them would mark dozens of cards the
-  // operator never opened with "last operator who signed a write", which
-  // stops meaning anything once everyone carries it. The field tracks the
-  // write that moves a card FORWARD, not its position in a list.
+  // UPDATE here moves N rows at once (unqueue, then waves), and stamping
+  // operator_id on all of them would mark dozens of cards the operator
+  // never opened with "last operator who signed a write", which stops
+  // meaning anything once everyone carries it. The field tracks the write
+  // that moves a card FORWARD, not its position in a list.
   const reorderTx = db.transaction(() => {
     // Unqueue everything first: the per-id UPDATE below re-stamps the kept ones.
     db.run(
@@ -4241,28 +4293,18 @@ function handleRoadmapReorder(
        WHERE project_key = ? AND queue IS NOT NULL`,
       [by, projectKey]
     );
-    if (waves) {
-      // Every id in wave i shares queue = i+1 (a tie): the lane column
-      // becomes the wave, depends_on stays a VALIDATION concern, not a
-      // derivation of order (see the roadmap card's design note).
-      waves.forEach((wave, i) => {
-        for (const id of wave) {
-          db.run(
-            `UPDATE roadmap_items SET queue = ?, updated_by = ?, updated_at = datetime('now')
-             WHERE id = ?`,
-            [i + 1, by, id]
-          );
-        }
-      });
-    } else {
-      ids.forEach((id, i) => {
+    // Every id in wave i shares queue = i+1 (a tie): the lane column
+    // becomes the wave, depends_on stays a VALIDATION concern, not a
+    // derivation of order (see the roadmap card's design note).
+    waves.forEach((wave, i) => {
+      for (const id of wave) {
         db.run(
           `UPDATE roadmap_items SET queue = ?, updated_by = ?, updated_at = datetime('now')
            WHERE id = ?`,
           [i + 1, by, id]
         );
-      });
-    }
+      }
+    });
   });
   reorderTx();
 

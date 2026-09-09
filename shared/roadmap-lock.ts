@@ -215,3 +215,20 @@ export function matchesLockOwner(
   if (existingLockedGroup === null) return true;
   return existingLockedGroup === byLockedGroup;
 }
+
+/**
+ * V-A (roadmap card f12e34f1 lot 1): a reorder moves N rows in one write, so
+ * it answers a coarser question than matchesLockOwner's per-peer ownership --
+ * whether the caller's GROUP may touch this row at all, not who its exact
+ * owner is. A card locked by a peer in the caller's own group stays movable
+ * by anyone in that group. Same fail-open on a null locked_group (migration
+ * state) as matchesLockOwner.
+ */
+export function refusesForeignGroupReorder(
+  locked: boolean,
+  lockedGroup: string | null,
+  callerGroup: string | null
+): boolean {
+  if (!locked || lockedGroup === null) return false;
+  return lockedGroup !== callerGroup;
+}

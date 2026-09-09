@@ -204,7 +204,7 @@ test("reorder: rewriting the queue does not erase a previously signed operator_i
 
   const reordered = await post<ItemsRes>(
     `${broker.url}/roadmap/reorder`,
-    deckAuthored({ project_key: PK, ids: [id] })
+    deckAuthored({ project_key: PK, ids: [id], waves: [[id]] })
   );
   expect(reordered.status).toBe(200);
   const after = reordered.body.items.find((i) => i.id === id)!;

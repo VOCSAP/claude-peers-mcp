@@ -581,6 +581,7 @@ test("the dispatch queue is owned by the upstream: its order arrives, a local re
     project_key: PK,
     by: "agent-upstream",
     ids: [first.id, second.id],
+    waves: [[first.id], [second.id]],
   });
   expect(ordered.status).toBe(200);
 
@@ -591,6 +592,7 @@ test("the dispatch queue is owned by the upstream: its order arrives, a local re
     project_key: PK,
     by: "agent-local",
     ids: [second.id, first.id],
+    waves: [[second.id], [first.id]],
   });
   expect(reordered.status).toBe(200);
 
@@ -732,6 +734,25 @@ test("a contest raised on another replica reaches this one, and its own contest 
 }, 60_000);
 
 test("queue_replaced counts the local positions the upstream order took back, and only those", async () => {
+  // D2 (card f12e34f1 lot 1): `ids` must cover the whole upstream queue, and
+  // an earlier test in this file left its own cards queued there permanently
+  // (first.id/second.id, restored to queue 1/2 at its end). Clear it first
+  // (ids: [] is exempt from D2's coverage check) and wait for the clear to
+  // reach the replica, so it cannot land mid-measurement below and skew the
+  // delta this test asserts.
+  const stale = (await post<ListRes>(`${upstream.url}/roadmap/list`, { project_key: PK })).body.items.filter(
+    (i) => i.queue !== null
+  );
+  await post<{ items: RoadmapItem[] }>(`${upstream.url}/roadmap/reorder`, {
+    project_key: PK,
+    by: "agent-upstream",
+    ids: [],
+    waves: [],
+  });
+  for (const item of stale) {
+    await waitForItem("stale queue positions clear before measuring", replica, item.id, (i) => i.queue === null);
+  }
+
   // The queue is the one field a replica never pushes, so an offline reorder is
   // lost at reconnection. The log line says so once per page; this counter is
   // what lets a poller notice it after the fact, so it must move by exactly the
@@ -751,6 +772,7 @@ test("queue_replaced counts the local positions the upstream order took back, an
         project_key: PK,
         by: "agent-upstream",
         ids: [head.id, tail.id],
+        waves: [[head.id], [tail.id]],
       })
     ).status
   ).toBe(200);
@@ -765,6 +787,7 @@ test("queue_replaced counts the local positions the upstream order took back, an
     project_key: PK,
     by: "agent-local",
     ids: [tail.id, head.id],
+    waves: [[tail.id], [head.id]],
   });
   expect(localOrder.status).toBe(200);
   expect(
