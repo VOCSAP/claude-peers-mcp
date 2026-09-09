@@ -3,6 +3,7 @@ import { inboxAwaitsAction, inboxBadgeCount, roadmapConflictCount, useDeck } fro
 import { useT } from '../i18n'
 import { AmphoraGauge, GLYPHS, PithosGlyph } from './icons'
 import { sessionRemainingFraction, usageTone } from '@shared/usage'
+import { sumDirty } from '@shared/worktree-count'
 import type { DeckView } from '@shared/types'
 
 // Vertical navigation rail (VS Code activity-bar style), left of everything.
@@ -57,7 +58,7 @@ export function NavRail(): React.JSX.Element {
     const tick = async (): Promise<void> => {
       try {
         const rows = await window.api.listWorktrees()
-        if (!stop) setGitDirty(rows.reduce((n, w) => n + w.dirty, 0))
+        if (!stop) setGitDirty(sumDirty(rows))
       } catch {
         if (!stop) setGitDirty(0)
       }

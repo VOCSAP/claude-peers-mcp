@@ -198,6 +198,15 @@ failure shape as a className matching no selector at all, different cause.
   font. Colour = border+text tint, not fill (e.g. `.ws-badge-current` accent,
   `.ws-badge-locked` danger, `.wt-badge-orphan` orange). Counter badges on nav
   icons (`.nav-rail-badge`) are filled accent, 9px bold.
+- **A counter that DECOMPOSES a rail badge** (`.git-count`, Git view left
+  panel): the same filled accent as `.nav-rail-badge`, so the terms visibly
+  belong to that total, on a `.rm-badge` pill placed at the trailing end of the
+  line's label row (`.git-target-head`, a flex row whose label carries
+  `flex: 1; min-width: 0`). At ZERO the pill stays and drops to the neutral
+  `.rm-badge` tint instead of disappearing: an ABSENT counter must keep meaning
+  "outside the total", so "counted and clean" and "not counted" can never
+  render alike. A list mixing counted and uncounted lines therefore needs its
+  groups TITLED, not merely separated.
 - **Toasts** (`.toast`): fixed bottom-center, white text, filled green
   (success) or amber (info). Transient EVENTS only.
 - **Status banner** (`.status-banner`): fixed top, full-width, filled dark red

@@ -18,15 +18,29 @@ interface GitTarget {
   dir: string
   label: string
   isWorktree: boolean
+  /** Uncommitted changes of this worktree — the very term the rail badge sums
+   * (NavRail). `null` marks a target OUTSIDE that sum, so "counted and clean"
+   * and "not counted at all" never render as the same thing. */
+  dirty: number | null
+  detached: boolean
   main: boolean
   sessionName: string | null
+}
+
+/** Last path segment: a detached worktree has no branch to name it, and the
+ * 280px column would show an absolute path cut by its own ellipsis. */
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter((p) => p !== '')
+  return parts[parts.length - 1] ?? path
 }
 
 function toTargets(worktrees: WorktreeRow[], sessions: { cwd: string; name: string; status: string; supervisor?: boolean }[]): GitTarget[] {
   const targets: GitTarget[] = worktrees.map((w) => ({
     dir: w.path,
-    label: w.branch ?? w.path,
+    label: w.branch ?? baseName(w.path),
     isWorktree: true,
+    dirty: w.dirty,
+    detached: w.branch === null,
     main: w.main,
     sessionName: w.sessionName
   }))
@@ -35,7 +49,15 @@ function toTargets(worktrees: WorktreeRow[], sessions: { cwd: string; name: stri
   for (const s of sessions) {
     if (s.status === 'exited' || s.supervisor) continue
     if (!targets.some((t) => t.dir === s.cwd)) {
-      targets.push({ dir: s.cwd, label: s.cwd, isWorktree: false, main: false, sessionName: s.name })
+      targets.push({
+        dir: s.cwd,
+        label: s.cwd,
+        isWorktree: false,
+        dirty: null,
+        detached: false,
+        main: false,
+        sessionName: s.name
+      })
     }
   }
   return targets
@@ -183,6 +205,40 @@ export function GitView(): React.JSX.Element {
     </div>
   )
 
+  const targetRow = (tg: GitTarget): React.JSX.Element => (
+    <button
+      key={tg.dir}
+      className={`git-target${dir === tg.dir ? ' is-active' : ''}`}
+      title={tg.dir}
+      onClick={() => selectDir(tg.dir)}
+    >
+      <span className="git-target-head">
+        <span className="git-target-label">
+          {tg.isWorktree && <>{GLYPHS.git} </>}
+          {tg.label}
+        </span>
+        {typeof tg.dirty === 'number' && Number.isInteger(tg.dirty) && (
+          <span
+            className={`rm-badge git-count${tg.dirty > 0 ? ' is-dirty' : ''}`}
+            title={t('worktrees.dirty', { n: tg.dirty })}
+          >
+            {tg.dirty}
+          </span>
+        )}
+      </span>
+      {tg.main && <span className="rm-badge">{t('worktrees.main')}</span>}
+      {tg.detached && <span className="rm-badge">{t('git.detached')}</span>}
+      {tg.sessionName && (
+        <span className="rm-badge rm-badge-status-in_progress">
+          {t('worktrees.session', { name: tg.sessionName })}
+        </span>
+      )}
+    </button>
+  )
+
+  const worktreeTargets = targets.filter((tg) => tg.isWorktree)
+  const sessionTargets = targets.filter((tg) => !tg.isWorktree)
+
   return (
     <div className="git-view">
       <header className="worktrees-head">
@@ -200,26 +256,18 @@ export function GitView(): React.JSX.Element {
       {error && <div className="roadmap-error">{t('roadmap.error', { error })}</div>}
 
       <div className="git-body">
+        {/* Two GROUPS, each titled: the worktrees are exactly the terms the
+            rail badge adds up, the live sessions running outside one are not.
+            Without the titles a line without a counter would read "clean". */}
         <aside className="git-side">
-          {targets.map((tg) => (
-            <button
-              key={tg.dir}
-              className={`git-target${dir === tg.dir ? ' is-active' : ''}`}
-              title={tg.dir}
-              onClick={() => selectDir(tg.dir)}
-            >
-              <span className="git-target-label">
-                {tg.isWorktree && <>{GLYPHS.git} </>}
-                {tg.label}
-              </span>
-              {tg.main && <span className="rm-badge">{t('worktrees.main')}</span>}
-              {tg.sessionName && (
-                <span className="rm-badge rm-badge-status-in_progress">
-                  {t('worktrees.session', { name: tg.sessionName })}
-                </span>
-              )}
-            </button>
-          ))}
+          {worktreeTargets.length > 0 && (
+            <div className="diff-files-title">{t('git.groupWorktrees')}</div>
+          )}
+          {worktreeTargets.map(targetRow)}
+          {sessionTargets.length > 0 && (
+            <div className="diff-files-title">{t('git.groupSessions')}</div>
+          )}
+          {sessionTargets.map(targetRow)}
           {targets.length === 0 && <div className="diff-files-empty">…</div>}
         </aside>
 

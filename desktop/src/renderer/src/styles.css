@@ -4063,13 +4063,52 @@ svg.glyph {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-2));
 }
 
+/* Label row of a target: the name takes the width, the change counter stays
+   flush right, so the counters line up in a column the eye can add up. */
+.git-target-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
 .git-target-label {
   font-family: var(--mono, monospace);
   font-size: 12px;
+  flex: 1;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The rail counter (.nav-rail-badge), decomposed per worktree: same filled
+   accent so the terms visibly belong to that total. A zero keeps the neutral
+   .rm-badge pill instead of disappearing -- an absent counter means "outside
+   the total", and the two states must not collapse into one. */
+.git-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-count.is-dirty {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.git-side .diff-files-title {
+  margin-bottom: 0;
+  padding-top: 6px;
+}
+
+.git-side .diff-files-title:first-child {
+  padding-top: 0;
 }
 
 .git-detail {
