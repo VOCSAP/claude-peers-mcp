@@ -50,10 +50,8 @@ d'autorisation qui n'etait pas dans le perimetre. C'est le §2.
 ### 1.3 Ce qui change dans la revision 1
 
 - **§3, la fusion.** Le bloquant « nombre de replicas » est LEVE : l'operateur
-  repond UN SEUL poste. F-B devient un non-evenement a l'execution, et son cout
-  tombe a l'enregistrement lui-meme. Recommandation F-B **maintenue**, avec une
-  raison differente : elle ne protege plus cinq postes, elle protege le seul
-  ordre local qui existe, pour quelques lignes.
+  repond UN SEUL poste. Arbitrage operateur (V3) : pas d'enregistrement F-B --
+  l'ordre des postes existants se reclasse a la main.
 - **§5, le decoupage.** Passe de 3 lots a 4, avec l'autorisation en lot 4 et
   non en prerequis. §6 ci-dessous.
 
@@ -321,30 +319,55 @@ non-evenement, et l'option F-A (fusion automatique par report du bloc local) est
 d'autant plus a ecarter -- son risque redhibitoire (avec N replicas, l'ordre
 final depend de l'ordre des montees de version) se paierait pour un benefice nul.
 
-**F-B est maintenue** : l'amont gagne, l'ordre local est ENREGISTRE avant d'etre
-remplace (cle `roadmap_sync_meta`, plus une ligne de log qui NOMME les rangs, en
-enrichissant celle qui existe deja). Cout : quelques lignes. Reversibilite :
-totale. L'ordre local a preserver est consigne dans la carte
-(1=be44867b, 2=25609a47, 3=0bbac537, 4=ba11d756, 5=efbefe7f).
+**Arbitrage operateur (V3) : pas de F-B.** L'amont gagne, sans enregistrement
+prealable de l'ordre local -- l'ordre des postes existants se reclasse a la
+main.
 
-Le point de detail qui mord reste inchange (revision 1 §3.4) : `parseSyncContent`
-(`shared/roadmap-sync.ts:143-151`) rend `null` des qu'un champ du contrat manque,
-donc tous les `sync_base` deja stockes deviennent illisibles apres la montee de
-version, et `isSweepOnlyStatusChange` cesse de fonctionner. **Recommande :
-tolerer l'absence de `queue` dans un blob stocke**, en le lisant `null`.
+Sous V3, `queue` ne rejoint jamais `RoadmapSyncContent` (§6) : le point de
+detail de la revision 1 §3.4 sur `parseSyncContent` et les `sync_base` deja
+stockes est SANS OBJET, aucune tolerance de parseur n'est necessaire.
 
 ---
 
-## 6. Decoupage en lots
+## 6. Decoupage en lots (revision V3)
 
-Quatre lots, ordre obligatoire, les lots 2 et 3 dans la meme livraison.
+Quatre lots, ordre obligatoire, les lots 2 et 3 dans la meme livraison. Le
+lot 2 ne prend plus la forme du §5 ci-dessus : `queue` NE REJOINT PAS
+`ROADMAP_SYNC_CONTENT_FIELDS`. Un changement de rang doit rester SALE sans
+jamais VERSIONNER le contenu -- deux notions que `roadmap_content_rev_au`
+confondait avant V3 -- donc `queue` voyage par un trigger et un chemin de push
+qui lui sont propres, et `ROADMAP_SYNC_CONTENT_FIELDS`, `pickSyncContent`,
+`contentEquals`, `isSweepOnlyStatusChange` et `parseSyncContent` restent
+INTACTS.
 
 | # | Lot | Contenu | Pourquoi ici |
 |---|---|---|---|
 | 1 | **Reparation de `/roadmap/reorder`** | D1 (refuser sans `waves`) ; D2 (refuser un `ids` qui ne couvre pas l'ensemble enfile du projet) ; **V-A** (refuser le deplacement du rang d'une carte verrouillee par un autre groupe) ; appelants corriges AVANT le broker | prerequis du lot 2 : sans D2, un poste qui reordonne son sous-ensemble efface l'ordre des autres des que `queue` est pousse |
-| 2 | **`queue` au contrat de contenu** | les deux listes `ROADMAP_SYNC_CONTENT_FIELDS` (coeur + miroir Deck), `pickSyncContent`, `writeSyncContent`, `SET`/`INSERT` du push, validation de `queue` dans `validatePushItem`, **retrait de `queue` des 4 branches de verrou du pull**, tolerance `parseSyncContent` | apres le 1 |
-| 3 | **Basculement et capteur** | enregistrement F-B de l'ordre pre-bascule (meta + log nomme) ; retrait ou redefinition de `queue_replaced` et de son toast ; cle i18n `roadmap.sync.field.queue` dans les deux locales ; entree de runbook | meme livraison que le 2 : l'enregistrement doit exister avant le premier pull post-bascule, et le toast « N rangs remplaces » devient faux des la premiere passe |
+| 2 | **`queue` synchronise par un chemin separe (V3)** | trigger SQL `roadmap_queue_dirty_au` (`AFTER UPDATE OF queue`, `WHEN old.queue IS NOT new.queue AND NOT applying`, `SET sync_dirty = 1` seul, ne touche jamais `content_rev`) ; `RoadmapSyncPushItem` gagne un champ `queue?: number \| null` OPTIONNEL, hors du pick-list de contenu -- l'optionnalite est ce qui preserve le rang amont sur un push qui omet la cle ; `validatePushItem` valide `queue` (entier positif ou null, rejet de `NaN`) ; `syncPushPass` ajoute `queue: row.queue` a l'item pousse ; le SET et l'INSERT amont de `/roadmap/sync/push` ecrivent la colonne (l'INSERT forcait `NULL` en dur, c'est le trou reel ferme par ce lot) | apres le 1 |
+| 3 | **Capteur** | pas d'instantane de l'ordre local a la bascule : l'ordre des postes existants se reclasse a la main ; `queue_replaced` et son toast restent en l'etat (mecanisme inchange, frequence residuelle -- voir §8bis) | meme livraison que le 2 |
 | 4 | **Liberation par la portee** | champ `release` explicite ; predicat de portee groupe-seul, fail-CLOSED sur `locked_group` null ; re-estampillage a la reprise ; **restriction de `force`** ; clients d'abord, broker en dernier | independant des trois premiers ; c'est une RESTRICTION de ce qui est ouvert aujourd'hui, donc il ne bloque rien |
+
+**Resolu (V6) :** `applyPulledRow` derivait sa branche fast-forward / conflit
+du seul booleen `sync_dirty`, qui sous V3 devient vrai aussi pour un
+changement de RANG seul. Une carte dont le rang etait sale localement et dont
+le CONTENU bougeait independamment en amont (deux changements disjoints)
+tombait alors dans la branche de conflit au lieu du fast-forward. Corrige par
+deux hunks qui comparent le CONTENU au CONTENU, dans le meme espace (jamais
+`content_rev` contre `sync_base_rev`, deux compteurs d'espaces differents qui
+peuvent coincider par hasard sur une paire neuve) : `dirty` compare le
+contenu local a son propre `sync_base` parse ; `recordPushDivergence` laisse
+passer sans conflit un push refuse pour `content` dont le contenu local
+egale deja son `sync_base`.
+
+**Limite acceptee, etendue.** Un rang local peut encore etre perdu : pas
+seulement quand un reorder amont posterieur ecrase le rang local (l'ordre
+GLOBAL fait autorite, §4), mais plus generalement des qu'UNE LIGNE AMONT EST
+LIVREE PAR LE PULL AVANT QUE LE PUSH DU RANG N'AIT ETE ACQUITTE -- y compris
+quand ce push a ete refuse parce que le contenu de la carte avait bouge en
+amont entre-temps. Le contrat reste celui du compteur `queue_replaced`
+existant : toute ligne amont livree par le pull ecrase le rang local, et le
+toast qui l'accompagne informe l'operateur -- la perte n'est donc jamais
+silencieuse.
 
 **Hors de ce decoupage, a porter ailleurs :**
 - Le verrou d'ordre broker (option V-B) part dans le briefing de `011d3547`,
@@ -356,20 +379,33 @@ Quatre lots, ordre obligatoire, les lots 2 et 3 dans la meme livraison.
 
 ### Surfaces a ne pas oublier
 
-- `desktop/src/shared/types.ts:605` duplique la liste des champs de contenu ; le
-  dialogue de conflit affiche une cle i18n **dynamique**
-  `roadmap.sync.field.${field}` (`RoadmapConflictDialog.tsx:106`) -- une cle
-  manquante ne casse pas la compilation.
-- MESURE (`grep -rl "writeSyncContent" tests/` = 0) : les trois listes de
-  colonnes SQL du contrat sont ecrites a la main et **aucun test ne les nomme**.
-  Les deriver de `ROADMAP_SYNC_CONTENT_FIELDS` fait disparaitre la classe
-  entiere pour un cout nul : variante recommandee.
-- `validatePushItem` (`broker.ts:5184`) ne valide pas `queue` : entree hostile de
-  la famille 2 de CLAUDE.md des qu'elle entre dans le `SET`. Entier ou null,
-  rejet de `NaN` et des non-entiers.
+- `validatePushItem` (`broker.ts`) valide desormais `queue` : entier positif
+  ou null, rejet de `NaN` et des non-entiers -- meme predicat que celui de
+  `/roadmap/upsert`, partage via `isValidQueueRank` (`shared/roadmap-queue.ts`).
 - `desktop/src/shared/companion.ts:71` expose `roadmap:reorder` au canal
   companion : sous un ordre global, un client distant reordonne pour tous les
   postes. Le predicat V-A du lot 1 s'applique a ce chemin aussi.
+
+### Sans objet sous V3
+
+Ces points, mesures sous la forme anterieure ou `queue` rejoignait
+`ROADMAP_SYNC_CONTENT_FIELDS`, ne s'appliquent plus : la structure meme qu'ils
+visaient a corriger n'existe pas sous V3.
+
+- **N2** (test `tests/desktop-roadmap-sync-service.test.ts`, assertion
+  `.not.toContain("queue")` sur les cles de la base commune) : reste CORRECTE
+  telle quelle, `queue` n'entre jamais dans `RoadmapSyncContent`.
+- **N3** (les commentaires "fifteen columns" citant `ROADMAP_SYNC_CONTENT_FIELDS`,
+  cote coeur et cote Deck, plus `roadmap_content_rev_au`) : restent VRAIS,
+  aucune edition. Seuls trois commentaires decrivant l'ANCIEN comportement
+  ("queue is never pushed") ont ete reecrits : le SET du push, le compteur
+  `syncQueueReplacedTotal`, le toast du renderer.
+- **N5** (tolerance de `parseSyncContent` aux `sync_base` anterieurs) :
+  `parseSyncContent` n'a pas change de contrat, aucune migration necessaire.
+- **Cle i18n `roadmap.sync.field.queue`** : `conflictFieldDiffs`
+  (`desktop/src/shared/roadmap-sync.ts`) boucle exclusivement sur
+  `ROADMAP_SYNC_CONTENT_FIELDS` ; `field` ne peut structurellement jamais
+  valoir `'queue'`, la cle ne sera jamais demandee.
 
 ---
 

@@ -697,13 +697,14 @@ export const useDeck = create<DeckState>((set, get) => ({
     // signature compare), so this replaces the whole state each time.
     window.api.onRoadmapSync((roadmapSync) => {
       set({ roadmapSync })
-      // A reorder made while the upstream was unreachable is not pushed: the
-      // reconnection overwrites it with the upstream order. Toastable under
-      // the O5 policy despite arriving on a poll -- it reports the outcome of
-      // the operator's OWN reordering, not a background failure, and only they
-      // can decide to redo it. The DELTA since the previous status, never the
-      // broker's lifetime total (the first observation only sets the baseline,
-      // so a Deck restart cannot replay it).
+      // A local reorder is pushed and normally survives; this fires on the
+      // residual race where an upstream reorder lands after this replica's
+      // own push already went out, and the upstream order wins. Toastable
+      // under the O5 policy despite arriving on a poll -- it reports the
+      // outcome of the operator's OWN reordering, not a background failure,
+      // and only they can decide to redo it. The DELTA since the previous
+      // status, never the broker's lifetime total (the first observation only
+      // sets the baseline, so a Deck restart cannot replay it).
       const seen = queueReplacedSeen
       const replaced = roadmapSync.status.queue_replaced
       queueReplacedSeen = nextQueueReplacedSeen(seen, replaced)

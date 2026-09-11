@@ -6,6 +6,8 @@
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   startBroker,
   stopBroker,
@@ -48,6 +50,16 @@ let proxy: ReturnType<typeof Bun.serve>;
 let replicaId: string;
 /** Flipped by the tests: the replica's only route to its upstream goes through here. */
 let upstreamBlocked = false;
+/**
+ * Distinct from `upstreamBlocked`: the replica stays ONLINE (push, lock,
+ * everything else still reaches the real upstream), only `/roadmap/sync/pull`
+ * is answered here with an empty page at the caller's own cursor -- a "the
+ * connection is fine, there is simply nothing new yet" upstream, not a
+ * network cut.
+ */
+let pullSuppressed = false;
+/** Mirrors `pullSuppressed` for the push route: a transport 503, retried later, never a refusal. */
+let pushSuppressed = false;
 
 beforeAll(async () => {
   // The upstream takes the ROLE explicitly (serve_replicas) on top of the token:
@@ -61,6 +73,16 @@ beforeAll(async () => {
     async fetch(req) {
       if (upstreamBlocked) return new Response("upstream unreachable", { status: 503 });
       const url = new URL(req.url);
+      if (pullSuppressed && url.pathname === "/roadmap/sync/pull" && req.method === "POST") {
+        const body = JSON.parse(await req.text()) as { since_rev?: number };
+        return new Response(JSON.stringify({ items: [], next_rev: body.since_rev ?? 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (pushSuppressed && url.pathname === "/roadmap/sync/push" && req.method === "POST") {
+        return new Response("push suppressed for a test", { status: 503 });
+      }
       const headers: Record<string, string> = { "content-type": "application/json" };
       const auth = req.headers.get("authorization");
       if (auth) headers.authorization = auth;
@@ -198,7 +220,7 @@ test("a card written upstream reaches the replica", async () => {
   ]).toEqual(["the replicated card keeps the upstream's attribution", "from the central broker", "agent-upstream"]);
 });
 
-test("a card written on the replica reaches the upstream unqueued, with its attribution kept", async () => {
+test("a card written on the replica reaches the upstream with its rank and its attribution kept", async () => {
   const card = await createOn(replica, {
     by: "agent-local",
     title: "written on the replica",
@@ -208,14 +230,14 @@ test("a card written on the replica reaches the upstream unqueued, with its attr
   expect(card.queue).toBe(4);
   const upstreamCard = await waitForItem("replica card reaches the upstream", upstream, card.id, (i) => i.title === "written on the replica");
   expect([
-    "the queue is a per-broker order and never crosses; the author does",
+    "the rank is pushed, the author already was",
     upstreamCard.queue,
     upstreamCard.created_by,
     upstreamCard.updated_by,
     upstreamCard.description,
   ]).toEqual([
-    "the queue is a per-broker order and never crosses; the author does",
-    null,
+    "the rank is pushed, the author already was",
+    4,
     "agent-local",
     "agent-local",
     "offline work",
@@ -574,7 +596,24 @@ test("a lock-sweep divergence under a lock held upstream is still reported, neve
   ]);
 }, 40_000);
 
-test("the dispatch queue is owned by the upstream: its order arrives, a local reorder never leaves", async () => {
+test("the dispatch queue is GLOBAL: an upstream order arrives, and a live local reorder leaves too", async () => {
+  // D2 (card f12e34f1 lot 1) exempts an empty `ids`: start from a clean slate
+  // rather than composing with whatever earlier tests in this file left
+  // queued, so the ranks asserted below are exact, not relative.
+  const clear = await post<{ ids: string[] }>(`${upstream.url}/roadmap/reorder`, {
+    project_key: PK,
+    by: "agent-upstream",
+    ids: [],
+    waves: [],
+  });
+  expect(clear.status).toBe(200);
+  const wasQueued = (await post<ListRes>(`${replica.url}/roadmap/list`, { project_key: PK })).body.items.filter(
+    (i) => i.queue !== null
+  );
+  for (const item of wasQueued) {
+    await waitForItem("the clear reaches the replica before the scenario starts", replica, item.id, (i) => i.queue === null);
+  }
+
   const first = await createOn(upstream, { by: "agent-upstream", title: "queue head" });
   const second = await createOn(upstream, { by: "agent-upstream", title: "queue tail" });
   const ordered = await post<{ ids: string[] }>(`${upstream.url}/roadmap/reorder`, {
@@ -598,24 +637,17 @@ test("the dispatch queue is owned by the upstream: its order arrives, a local re
 
   const localOrder = await itemOn(replica, first.id);
   expect(localOrder!.queue).toBe(2);
-  const upstreamHead = await itemOn(upstream, first.id);
-  expect([
-    "a queue position never travels upstream",
-    upstreamHead!.queue,
-  ]).toEqual(["a queue position never travels upstream", 1]);
-
-  // The local order survives only until the upstream sends that card again:
-  // the pull carries the upstream position on every row it delivers, so the
-  // next upstream write on this card takes the local order back. Reordering
-  // offline is therefore lost, per card, as the card comes back -- the
-  // assumed consequence of the upstream owning the queue.
-  await createOn(upstream, { id: first.id, by: "agent-upstream", description: "touched upstream" });
+  // A rank change is pushed (roadmap_queue_dirty_au), so the swap made on
+  // the replica reaches the upstream on its own, live connection -- no
+  // offline window, no pull required to carry it.
   await waitForItem(
-    "the upstream order comes back with the row",
-    replica,
+    "the local swap is pushed upstream, unprompted by any further pull",
+    upstream,
     first.id,
-    (i) => i.description === "touched upstream" && i.queue === 1
+    (i) => i.queue === 2
   );
+  const upstreamTail = await itemOn(upstream, second.id);
+  expect(["the swap moved both rows", upstreamTail!.queue]).toEqual(["the swap moved both rows", 1]);
 }, 40_000);
 
 test("a contest raised on another replica reaches this one, and its own contest is not echoed back", async () => {
@@ -753,11 +785,12 @@ test("queue_replaced counts the local positions the upstream order took back, an
     await waitForItem("stale queue positions clear before measuring", replica, item.id, (i) => i.queue === null);
   }
 
-  // The queue is the one field a replica never pushes, so an offline reorder is
-  // lost at reconnection. The log line says so once per page; this counter is
-  // what lets a poller notice it after the fact, so it must move by exactly the
-  // number of rows whose local position differed -- and not move at all on a
-  // pass that changed nothing.
+  // A rank change is pushed, but the pull still owns the last word: an
+  // upstream write on the same card after the offline window carries
+  // whatever rank the upstream has, and this counter tracks exactly the rows
+  // where that differed locally. The log line says so once per page; it must
+  // move by exactly the number of rows whose local position differed -- and
+  // not move at all on a pass that changed nothing.
   const before = (await syncStatus()).queue_replaced;
   expect(
     typeof before,
@@ -1455,3 +1488,251 @@ test("a batch full of rows the upstream refuses never starves the row behind the
     true,
   ]);
 }, 90_000);
+
+test("CREATION: a card born on the replica with a rank keeps that rank through its first push", async () => {
+  // A card never before seen upstream must not lose its rank on arrival.
+  // queue: 7 is arbitrary and distinct from any rank the other tests in this
+  // file leave lying around.
+  const born = await createOn(replica, { by: "agent-local", title: "born with a rank", queue: 7 });
+  expect(born.queue, "the rank exists locally right after creation").toBe(7);
+  const onUpstream = await waitForItem(
+    "the card's first push reaches the upstream",
+    upstream,
+    born.id,
+    (i) => i.title === "born with a rank"
+  );
+  expect([
+    "the INSERT keeps the rank a brand-new card was created with",
+    onUpstream.queue,
+  ]).toEqual(["the INSERT keeps the rank a brand-new card was created with", 7]);
+});
+
+test("reorder-only: a replica's content edit survives an upstream-only reorder of the same card", async () => {
+  // A queue move must never bump content_rev, so it must never look like a
+  // content edit to the push's own-base check. If it did, the upstream's
+  // reorder below would move the card's content_rev out from under this
+  // replica's stale base and turn a clean push into a false 'content'
+  // conflict.
+  const solo = await createOn(upstream, { by: "agent-upstream", title: "reorder-only probe" });
+  await waitForItem("the probe card reaches the replica", replica, solo.id, (i) => i.title === solo.title);
+
+  await goOffline();
+  await createOn(replica, {
+    id: solo.id,
+    by: "agent-local",
+    description: "edited offline, content only",
+  });
+  // D2 (card f12e34f1 lot 1): ids must cover the project's whole queued set,
+  // so this reorder carries forward whatever earlier tests in this file left
+  // queued, with the probe card appended.
+  const alreadyQueued = (await post<ListRes>(`${upstream.url}/roadmap/list`, { project_key: PK })).body.items
+    .filter((i) => i.queue !== null && i.id !== solo.id)
+    .sort((x, y) => x.queue! - y.queue!)
+    .map((i) => i.id);
+  const reorderIds = [...alreadyQueued, solo.id];
+  const reordered = await post<{ ids: string[] }>(`${upstream.url}/roadmap/reorder`, {
+    project_key: PK,
+    by: "agent-upstream",
+    ids: reorderIds,
+    waves: reorderIds.map((id) => [id]),
+  });
+  expect(reordered.status).toBe(200);
+  await goOnline();
+
+  const settled = await waitForItem(
+    "the offline content edit reaches the upstream, unconflicted",
+    upstream,
+    solo.id,
+    (i) => i.description === "edited offline, content only"
+  );
+  expect([
+    "an upstream-only reorder during the outage never turned this into a conflict",
+    settled.description,
+  ]).toEqual(["an upstream-only reorder during the outage never turned this into a conflict", "edited offline, content only"]);
+  const conflicts = await post<RoadmapSyncConflictsResponse>(`${replica.url}/roadmap/sync/conflicts`, {
+    project_key: PK,
+  });
+  expect(
+    conflicts.body.items.some((c) => c.local.id === solo.id),
+    "the card never entered the operator's conflict list"
+  ).toBe(false);
+}, 30_000);
+
+test("local-rank: a live local reorder is pushed and acknowledged, sync_dirty settles back to 0", async () => {
+  const a = await createOn(replica, { by: "agent-local", title: "local-rank a" });
+  const b = await createOn(replica, { by: "agent-local", title: "local-rank b" });
+  // D2 (card f12e34f1 lot 1): ids must cover the replica's whole queued set,
+  // which earlier tests in this file may have left non-empty.
+  const alreadyQueued = (await post<ListRes>(`${replica.url}/roadmap/list`, { project_key: PK })).body.items
+    .filter((i) => i.queue !== null && i.id !== a.id && i.id !== b.id)
+    .sort((x, y) => x.queue! - y.queue!)
+    .map((i) => i.id);
+  const ids = [...alreadyQueued, a.id, b.id];
+  const reordered = await post<{ ids: string[] }>(`${replica.url}/roadmap/reorder`, {
+    project_key: PK,
+    by: "agent-local",
+    ids,
+    waves: ids.map((id) => [id]),
+  });
+  expect(reordered.status).toBe(200);
+  const expectedRank = alreadyQueued.length + 1;
+
+  const onUpstream = await waitForItem(
+    "the connection stays up throughout: the rank travels without an offline window",
+    upstream,
+    a.id,
+    (i) => i.queue === expectedRank
+  );
+  expect([
+    "the rank reached the upstream on its own, not by the pull's unconditional overwrite",
+    onUpstream.queue,
+  ]).toEqual(["the rank reached the upstream on its own, not by the pull's unconditional overwrite", expectedRank]);
+
+  const db = new Database(replica.dbPath);
+  db.run("PRAGMA busy_timeout = 3000");
+  await pollUntil("sync_dirty settles back to 0 once the push is acknowledged", 15_000, async () => {
+    const row = db.query("SELECT sync_dirty FROM roadmap_items WHERE id = ?").get(a.id) as {
+      sync_dirty: number;
+    };
+    return { done: row.sync_dirty === 0, value: row.sync_dirty };
+  });
+  db.close();
+}, 30_000);
+
+test("a rank-only push refused by a stale base does not stick as a permanent conflict", async () => {
+  // D2 (card f12e34f1 lot 1) exempts an empty `ids`: start from a clean slate.
+  // Whatever this clears must reach the replica -- and be counted by
+  // `queue_replaced` -- BEFORE this scenario's own `before` snapshot below, or
+  // that unrelated reconciliation lands inside the delta this test measures.
+  const stale = (await post<ListRes>(`${upstream.url}/roadmap/list`, { project_key: PK })).body.items.filter(
+    (i) => i.queue !== null
+  );
+  await post<{ ids: string[] }>(`${upstream.url}/roadmap/reorder`, {
+    project_key: PK,
+    by: "agent-upstream",
+    ids: [],
+    waves: [],
+  });
+  for (const item of stale) {
+    await waitForItem("stale queue positions clear before measuring", replica, item.id, (i) => i.queue === null);
+  }
+  const card = await createOn(upstream, { by: "agent-upstream", title: "stale pull probe", description: "v1" });
+  await waitForItem("the probe syncs before the scenario starts", replica, card.id, (i) => i.description === "v1");
+
+  // `queue_replaced` is a broker-lifetime total: a delta (after - before) is
+  // what stays exact regardless of whatever unrelated total another test in
+  // this file already accumulated -- now that the clear above has fully
+  // settled first.
+  const before = (await syncStatus()).queue_replaced;
+  const logPath = join(replica.tmpDir, "logs", "broker.log");
+  const logStart = readFileSync(logPath, "utf-8").length;
+
+  // The upstream's own connection stays up (push, lock, everything else keep
+  // reaching the real upstream); only pull is answered with an empty page, so
+  // this replica never learns about the content edit below until told to.
+  pullSuppressed = true;
+  try {
+    await createOn(upstream, { id: card.id, by: "agent-upstream", description: "v2 upstream only" });
+
+    // Rank-only: content is untouched locally, so pushing it carries a base
+    // that mismatches the upstream's moved content_rev -- a refusal on a row
+    // that never actually diverged in content.
+    const reordered = await post<{ ids: string[] }>(`${replica.url}/roadmap/reorder`, {
+      project_key: PK,
+      by: "agent-local",
+      ids: [card.id],
+      waves: [[card.id]],
+    });
+    expect(reordered.status).toBe(200);
+
+    // Poll for the refusal's own journal line rather than sampling once at a
+    // fixed delay: the push cadence is a tick, not a guarantee.
+    await pollUntil("the rank-only refusal is journaled while the pull stays empty", 10_000, async () => {
+      const logged = readFileSync(logPath, "utf-8")
+        .slice(logStart)
+        .split("\n")
+        .some((l) => l.includes(card.id) && l.includes("carried only a rank move"));
+      return { done: logged, value: logged };
+    });
+    const midState = (await itemOn(replica, card.id))!.sync_state;
+    expect([
+      "a rank-only push refusal never becomes a conflict on its own",
+      midState,
+    ]).toEqual(["a rank-only push refusal never becomes a conflict on its own", "clean"]);
+  } finally {
+    pullSuppressed = false;
+  }
+  // The accepted limit (docs/DESIGN-QUEUE-GLOBAL-ORDER.md §6): a rank pushed
+  // before its content base is acknowledged is still lost to the next pull --
+  // the card ends clean, but with the UPSTREAM's rank (null, never queued
+  // there), not the local one this test set.
+  const settled = await waitForItem(
+    "once the pull resumes, the upstream content is fast-forwarded and the local rank is overwritten",
+    replica,
+    card.id,
+    (i) => i.description === "v2 upstream only" && i.sync_state === "clean" && i.queue === null
+  );
+  expect([
+    "the card is clean, not stuck in conflict, and carries the upstream's rank",
+    settled.sync_state,
+    settled.description,
+    settled.queue,
+  ]).toEqual(["the card is clean, not stuck in conflict, and carries the upstream's rank", "clean", "v2 upstream only", null]);
+
+  const after = await pollUntil("queue_replaced accounts for the overwritten local rank", 10_000, async () => {
+    const value = (await syncStatus()).queue_replaced;
+    return { done: value >= (before ?? 0) + 1, value };
+  });
+  expect(
+    after - (before ?? 0),
+    "exactly the one row this scenario overwrote is counted, not more and not less"
+  ).toBe(1);
+}, 30_000);
+
+test("an upstream reorder applied by the pull never re-triggers the queue-dirty trigger locally", async () => {
+  const card = await createOn(upstream, { by: "agent-upstream", title: "pull-only rank probe" });
+  await waitForItem("the probe syncs before the scenario starts", replica, card.id, (i) => i.title === card.title);
+
+  const alreadyQueued = (await post<ListRes>(`${upstream.url}/roadmap/list`, { project_key: PK })).body.items
+    .filter((i) => i.queue !== null && i.id !== card.id)
+    .sort((x, y) => x.queue! - y.queue!)
+    .map((i) => i.id);
+  const ids = [...alreadyQueued, card.id];
+
+  // Push stays blocked (a 503, retried later, never a refusal) through the
+  // whole scenario: without it, a broken guard's echo push can complete and
+  // be acknowledged inside the same sync tick that delivers the pull, well
+  // before this test's own HTTP polling has a chance to observe `sync_dirty`
+  // still at 1.
+  pushSuppressed = true;
+  let row: { sync_dirty: number };
+  try {
+    const reordered = await post<{ ids: string[] }>(`${upstream.url}/roadmap/reorder`, {
+      project_key: PK,
+      by: "agent-upstream",
+      ids,
+      waves: ids.map((id) => [id]),
+    });
+    expect(reordered.status).toBe(200);
+    const expectedRank = alreadyQueued.length + 1;
+    await waitForItem("the upstream rank reaches the replica", replica, card.id, (i) => i.queue === expectedRank);
+
+    // The pull's own write of `queue` runs under `applying`, which is exactly
+    // what the trigger's `NOT (applying)` guard exists to exempt: if it did
+    // not, this row would be marked dirty by a change that came FROM the
+    // upstream, not from a local agent -- and with push still blocked, nothing
+    // can have cleared that flag behind this test's back.
+    const replicaDb = new Database(replica.dbPath);
+    replicaDb.run("PRAGMA busy_timeout = 3000");
+    row = replicaDb.query("SELECT sync_dirty FROM roadmap_items WHERE id = ?").get(card.id) as {
+      sync_dirty: number;
+    };
+    replicaDb.close();
+  } finally {
+    pushSuppressed = false;
+  }
+  expect([
+    "the pull's own write never marks the row dirty",
+    row.sync_dirty,
+  ]).toEqual(["the pull's own write never marks the row dirty", 0]);
+}, 30_000);

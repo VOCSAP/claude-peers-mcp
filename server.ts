@@ -796,6 +796,11 @@ const TOOLS = [
           type: "boolean" as const,
           description: "Usually implicit. false releases your lock while staying in_progress, true re-claims.",
         },
+        release: {
+          type: "boolean" as const,
+          description:
+            "Release or reclaim a card locked by another peer in your OWN group (refused across groups). Distinct from force, which overrides the true owner.",
+        },
         // queue sets only this card's own rank; it never reorders or renumbers
         // the rest of the queue. Global reorder is /roadmap/reorder,
         // deliberately not exposed here.
@@ -1179,6 +1184,18 @@ export function formatRoadmapUpsertAck(opts: {
       continue;
     }
     const spec = ROADMAP_UPSERT_ACK_FIELDS[field];
+    if (spec.category === "intent") {
+      // No landed/requested comparison: this field has no stored column of
+      // its own, and `locked`/`status`/the holder fields already carry the
+      // real outcome. Only the caller's own request is worth echoing, and
+      // only when it was actually asserted.
+      if (args[field] === true) {
+        passed.push(`${field} requested`);
+      } else {
+        untouched.push(field);
+      }
+      continue;
+    }
     const landed = spec.landed(item);
     if (spec.category === "long") {
       const requestedArg = args[field];
@@ -2134,6 +2151,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           directive: a.directive,
           target_peer_ids: a.target_peer_ids,
           locked: typeof a.locked === "boolean" ? a.locked : undefined,
+          // Passed through raw, unlike locked above: the broker validates its
+          // type itself (400 on a non-boolean) and must actually see a bad
+          // value to refuse it, rather than have it silently dropped here.
+          release: a.release,
           queue: a.queue,
         });
         return {

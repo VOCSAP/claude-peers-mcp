@@ -3,6 +3,7 @@ import {
   resolveRoadmapLock,
   matchesLockOwner,
   refusesForeignGroupReorder,
+  matchesLockScope,
   resolveLockedGroup,
   resolveLockedByToken,
   resolveKeptLockedAt,
@@ -220,6 +221,42 @@ test.each([
     expect(refusesForeignGroupReorder(locked, lockedGroup, callerGroup)).toBe(expected);
   }
 );
+
+// matchesLockScope is the OPPOSITE polarity from
+// refusesForeignGroupReorder/matchesLockOwner on a null existingLockedGroup --
+// this table exists specifically to pin that reversal, not just the
+// same-group/different-group cases the other two already cover.
+test.each([
+  ["unlocked row (no group) never matches", null, "g1", false],
+  ["same group: matches", "g1", "g1", true],
+  ["different group: refused", "g1", "g2", false],
+  [
+    "legacy row (locked_group NULL, pre-migration) fails CLOSED -- the reversal from matchesLockOwner/refusesForeignGroupReorder",
+    null,
+    "g1",
+    false,
+  ],
+  [
+    "existing group known, caller's own group unresolved: refused, no wildcard on either null",
+    "g1",
+    null,
+    false,
+  ],
+] as const)("matchesLockScope: %s", (_name, existingLockedGroup, byLockedGroup, expected) => {
+  expect(matchesLockScope(existingLockedGroup, byLockedGroup)).toBe(expected);
+});
+
+// Negative control: a fail-OPEN predicate (existingLockedGroup === null
+// treated as a wildcard match, the shape matchesLockOwner/refusesForeignGroupReorder
+// use) would pass this exact legacy-row case with `true` instead of `false`.
+// Pinning that here proves the assertion above actually discriminates the two
+// polarities rather than happening to pass either way.
+test("matchesLockScope: the fail-OPEN shape this predicate deliberately rejects would answer true on the same input", () => {
+  const failOpenShape = (existingLockedGroup: string | null, byLockedGroup: string | null): boolean =>
+    existingLockedGroup === null ? true : existingLockedGroup === byLockedGroup;
+  expect(failOpenShape(null, "g1")).toBe(true);
+  expect(matchesLockScope(null, "g1")).toBe(false);
+});
 
 // Card e344fa79, review round 2: resolveLockedGroup's own truth table.
 // The FIRST fix at this call site (`existing.locked_by ===

@@ -39,6 +39,7 @@ import {
   type GraphDraftPeerRow,
 } from "./shared/graph-draft-scope.ts";
 import { planRoadmapAppendText, ROADMAP_APPEND_RESULT_MAX_CHARS } from "./shared/roadmap-append.ts";
+import { isValidQueueRank } from "./shared/roadmap-queue.ts";
 import {
   contentEquals,
   isSweepOnlyStatusChange,
@@ -54,6 +55,7 @@ import {
   isParked,
   matchesLockOwner,
   refusesForeignGroupReorder,
+  matchesLockScope,
   resolveLockedGroup,
   resolveLockedByToken,
   resolveKeptLockedAt,
@@ -998,6 +1000,7 @@ for (const name of [
   "roadmap_rev_ai",
   "roadmap_rev_au",
   "roadmap_content_rev_au",
+  "roadmap_queue_dirty_au",
   "roadmap_lock_scope_ai",
   "roadmap_lock_scope_au",
   "roadmap_lock_release_au",
@@ -1035,6 +1038,17 @@ db.run(`
        SET content_rev = ${NEXT_REV},
            sync_dirty = CASE WHEN ${IS_APPLYING} THEN sync_dirty ELSE 1 END
      WHERE rowid = new.rowid;
+  END
+`);
+
+// A rank move is worth pushing but must never version the content: dirty and
+// versioned are two different things, so this trigger is deliberately
+// SEPARATE from roadmap_content_rev_au above and never touches content_rev.
+db.run(`
+  CREATE TRIGGER roadmap_queue_dirty_au AFTER UPDATE OF queue ON roadmap_items
+  WHEN old.queue IS NOT new.queue AND NOT (${IS_APPLYING})
+  BEGIN
+    UPDATE roadmap_items SET sync_dirty = 1 WHERE rowid = new.rowid;
   END
 `);
 
@@ -3427,11 +3441,7 @@ function handleRoadmapUpsert(
     }
   }
   // Queue position (PLAN C15): positive integer or null (= unqueued).
-  if (
-    body.queue !== undefined &&
-    body.queue !== null &&
-    (!Number.isInteger(body.queue) || body.queue < 1)
-  ) {
+  if (body.queue !== undefined && body.queue !== null && !isValidQueueRank(body.queue)) {
     return { error: "queue must be a positive integer or null", status: 400 };
   }
   if (body.locked !== undefined && typeof body.locked !== "boolean") {
@@ -3439,6 +3449,9 @@ function handleRoadmapUpsert(
   }
   if (body.inactive !== undefined && typeof body.inactive !== "boolean") {
     return { error: "inactive must be a boolean", status: 400 };
+  }
+  if (body.release !== undefined && typeof body.release !== "boolean") {
+    return { error: "release must be a boolean", status: 400 };
   }
 
   if (body.id) {
@@ -3456,7 +3469,15 @@ function handleRoadmapUpsert(
     // guard and the DB write below read the same answer instead of two
     // independent computations that can drift (card e7b364dc's original bug
     // shape). Pure function: shared/roadmap-lock.ts, no I/O, no Date.now().
-    const nextStatus: RoadmapStatus = body.status ?? existing.status;
+    // release:true alone on a locked card (no explicit status, and not paired
+    // with an explicit locked:true reclaim) means "let go" -- without this,
+    // resolveRoadmapLock sees no status/locked delta at all and the release is
+    // a silent no-op instead of an honoured one. Gated on existing.locked so
+    // an unlocked, already-settled card (done, archived...) is never dragged
+    // back to planned by a bystander's release:true.
+    const releaseAlone =
+      body.release === true && existing.locked && body.status === undefined && body.locked === undefined;
+    const nextStatus: RoadmapStatus = releaseAlone ? "planned" : body.status ?? existing.status;
     const resolvedLock = resolveRoadmapLock(existing, nextStatus, body, by);
 
     // Inactive guards (card c33a5968), resolved right after the lock so both
@@ -3501,6 +3522,11 @@ function handleRoadmapUpsert(
     // in_progress resolves `nextStatus !== "in_progress"` to true even from a
     // body with neither `status` nor `locked` set, so an unrelated-field
     // write from a third party would otherwise silently clear the lock.
+    // Card e344fa79: the OWNER check is a (peer_id, group) pair, not a bare
+    // peer_id -- `by !== existing.locked_by` alone let a legitimately-
+    // registered homonym peer in a DIFFERENT group satisfy this guard,
+    // since peer_id is unique only per group. See matchesLockOwner.
+    const ownerMatches = matchesLockOwner(existing.locked_by, existing.locked_group, by, authorLockedGroup);
     if (
       existing.locked &&
       // Checks whether the resolved lock outcome actually differs from the
@@ -3509,26 +3535,57 @@ function handleRoadmapUpsert(
       // and silently misses one.
       // The status field must survive on its own: a same-status write from an
       // intruder resolves to zero delta yet is still an attempted claim.
+      // A same-string peer_id homonym sending a bare `locked: true` resolves
+      // lockedBy to the SAME string as the existing row (identical peer_id,
+      // different group), so the two string comparisons above see zero delta
+      // -- `claimed` combined with the group-aware owner check catches the
+      // identity change they miss.
       (body.status !== undefined ||
         resolvedLock.locked !== existing.locked ||
-        resolvedLock.lockedBy !== existing.locked_by) &&
-      // Card e344fa79: the OWNER check is a (peer_id, group) pair, not a bare
-      // peer_id -- `by !== existing.locked_by` alone let a legitimately-
-      // registered homonym peer in a DIFFERENT group satisfy this guard,
-      // since peer_id is unique only per group. See matchesLockOwner.
-      !matchesLockOwner(existing.locked_by, existing.locked_group, by, authorLockedGroup) &&
-      by !== "deck" &&
-      // `force` is a claim of certainty, honoured only for a proven caller --
-      // an anonymous body could otherwise steal any locked item by adding one
-      // field.
-      // The reserved-name clause beside it is closed separately, upstream: an
-      // unproven claim to it is already refused before this guard runs.
-      !(body.force === true && author.proven)
+        resolvedLock.lockedBy !== existing.locked_by ||
+        (resolvedLock.claimed && !ownerMatches)) &&
+      !ownerMatches &&
+      by !== "deck"
     ) {
-      return {
-        error: `item is locked by '${existing.locked_by}' (actively working on it) -- pick another item, or pass force:true if you are certain`,
-        status: 409,
-      };
+      // force and release share matchesLockScope (same group only, fail-
+      // closed on a null locked_group): neither crosses a group boundary by
+      // adding one field. force keeps its full reach inside the group (any
+      // status); release is additionally restricted to a target status of
+      // planned or in_progress, checked below.
+      const sameGroupScope = matchesLockScope(existing.locked_group, authorLockedGroup);
+      const defaultLockedMessage = `item is locked by '${existing.locked_by}' (actively working on it) -- pick another item, or pass force:true if you are certain`;
+      // A row with no locked_group recorded is not known to be in a
+      // "different" group -- matchesLockScope only fails closed on it, it
+      // never confirms a mismatch, so the message must not claim one.
+      const groupBoundaryMessage =
+        existing.locked_group === null
+          ? `item is locked by '${existing.locked_by}' with no group recorded -- force and release cannot verify a match and are refused`
+          : `item is locked by '${existing.locked_by}' in a different group -- force and release do not cross groups`;
+      if (body.release === true) {
+        if (!sameGroupScope) {
+          return { error: groupBoundaryMessage, status: 409 };
+        }
+        // A release changes custody, never a card's fate -- it may hand the
+        // card back (planned) or on (in_progress), never close or archive it
+        // out from under its owner.
+        if (nextStatus !== "planned" && nextStatus !== "in_progress") {
+          return {
+            error: `release only accepts a target status of planned or in_progress, not '${nextStatus}' -- a release changes custody, it never closes or archives the card`,
+            status: 409,
+          };
+        }
+      } else if (body.force === true) {
+        // An operator credential carries no group to compare, so force is not scope-restricted for it.
+        if (author.operator_id !== undefined) {
+          // bypassed
+        } else if (!author.proven) {
+          return { error: defaultLockedMessage, status: 409 };
+        } else if (!sameGroupScope) {
+          return { error: groupBoundaryMessage, status: 409 };
+        }
+      } else {
+        return { error: defaultLockedMessage, status: 409 };
+      }
     }
 
     // Card bc0ccb17: same parked-archive guard as handleRoadmapArchive. Upsert
@@ -5255,6 +5312,9 @@ function validatePushItem(
   if (it.kind === "directive" && !it.directive) {
     return { error: "item of kind 'directive' carries no directive", status: 400 };
   }
+  if (it.queue !== undefined && it.queue !== null && !isValidQueueRank(it.queue)) {
+    return { error: "item.queue must be a positive integer or null", status: 400 };
+  }
   const title = typeof it.title === "string" ? it.title.trim() : "";
   if (!title) return { error: "item.title is required", status: 400 };
   for (const field of ["description", "rationale", "context"] as const) {
@@ -5303,6 +5363,9 @@ function validatePushItem(
       tags: cleanList(it.tags) ?? [],
       depends_on: cleanList(it.depends_on) ?? [],
       deleted_at: typeof it.deleted_at === "string" ? it.deleted_at : null,
+      // Absence PRESERVED, not mapped to null: an older replica omitting the
+      // key must leave the upstream rank untouched, not clear it.
+      queue: it.queue === undefined ? undefined : (typeof it.queue === "number" ? it.queue : null),
       directive: (it.directive as RoadmapDirective | undefined) ?? null,
       target_peer_ids: it.kind === "directive" ? cleanPeerIds(it.target_peer_ids) : [],
       inactive: it.inactive,
@@ -5457,14 +5520,20 @@ function handleRoadmapSyncPush(body: RoadmapSyncPushRequest): SyncPushResult {
         conflict: { error: "conflict", reason: "content", item: rowToSyncRow(existing) },
       };
     }
-    // Content plus the columns that ride with it. `queue` (the upstream owns
-    // the order), every lock column (their own protocol) and `operator_id`
-    // (a local signature proof) are deliberately absent from this SET list.
+    // Content plus the columns that ride with it. `queue` is pushed here (a
+    // dedicated trigger keeps it from versioning the content, see
+    // roadmap_queue_dirty_au above), but only when the pushed item actually
+    // carries the key: a replica older than this contract omits it entirely,
+    // and that omission must leave the upstream rank alone, never clear it --
+    // the CASE guards on presence, not on the value being non-null. Every
+    // lock column (their own protocol) and `operator_id` (a local signature
+    // proof) stay deliberately absent from this SET list.
     db.run(
       `UPDATE roadmap_items SET
          kind = ?, title = ?, description = ?, rationale = ?, context = ?, priority = ?,
          value = ?, effort = ?, status = ?, tags = ?, depends_on = ?, deleted_at = ?,
          directive = ?, target_peer_ids = ?, inactive = ?,
+         queue = CASE WHEN ? = 1 THEN ? ELSE queue END,
          updated_by = ?, updated_at = ?
        WHERE id = ?`,
       [
@@ -5472,6 +5541,7 @@ function handleRoadmapSyncPush(body: RoadmapSyncPushRequest): SyncPushResult {
         item.value, item.effort, item.status, JSON.stringify(item.tags),
         JSON.stringify(item.depends_on), item.deleted_at, item.directive,
         JSON.stringify(item.target_peer_ids), item.inactive ? 1 : 0,
+        item.queue !== undefined ? 1 : 0, item.queue ?? null,
         item.updated_by, item.updated_at, item.id,
       ]
     );
@@ -5486,13 +5556,17 @@ function handleRoadmapSyncPush(body: RoadmapSyncPushRequest): SyncPushResult {
          (id, project_key, kind, title, description, rationale, context, priority, value,
           effort, status, tags, depends_on, created_by, updated_by, created_at, updated_at,
           deleted_at, queue, directive, target_peer_ids, locked, inactive)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [
         item.id, item.project_key, item.kind, item.title, item.description, item.rationale,
         item.context, item.priority, item.value, item.effort, item.status,
         JSON.stringify(item.tags), JSON.stringify(item.depends_on), item.created_by,
-        item.updated_by, item.created_at, item.updated_at, item.deleted_at, item.directive,
-        JSON.stringify(item.target_peer_ids), item.inactive ? 1 : 0,
+        item.updated_by, item.created_at, item.updated_at, item.deleted_at,
+        // A brand-new card has no upstream rank to lose, so an omitted key
+        // and an explicit null are the same NULL here -- unlike the SET
+        // above, presence does not need to be distinguished on the INSERT.
+        item.queue ?? null,
+        item.directive, JSON.stringify(item.target_peer_ids), item.inactive ? 1 : 0,
       ]
     );
   }
@@ -5928,10 +6002,13 @@ let syncPublished: SyncPublishedState = {
 };
 /**
  * Broker-lifetime tally of the local queue positions the upstream order has
- * overwritten -- the queue itself is never pushed. Monotonic and never reset
- * while the process lives, so a poller that remembers the last value it read
- * can tell "an offline reorder was just lost" from "one was lost an hour ago";
- * a per-pass count would read as zero again on the very next tick.
+ * overwritten: it fires whenever a pulled row carries a rank that differs
+ * from the local one, whatever the reason the local rank never made it
+ * upstream first (an unpushed offline reorder, or a push refused because the
+ * card's content had moved). Monotonic and never reset while the process
+ * lives, so a poller that remembers the last value it read can tell "an
+ * offline reorder was just lost" from "one was lost an hour ago"; a per-pass
+ * count would read as zero again on the very next tick.
  */
 let syncQueueReplacedTotal = 0;
 let syncInFlight = false;
@@ -6128,7 +6205,10 @@ function applyPulledRow(remote: RoadmapSyncRow): boolean {
   }
 
   const queueReplaced = local.queue !== null && local.queue !== remote.queue;
-  const dirty = local.sync_dirty === 1;
+  const syncBaseContent = local.sync_base === null ? null : parseSyncContent(local.sync_base);
+  const dirty =
+    local.sync_dirty === 1 &&
+    (syncBaseContent === null || !contentEquals(pickSyncContent(rowToRoadmapItem(local)), syncBaseContent));
   // Hoisted: the clean branch below needs it too. heldLocally is a SCOPE
   // predicate (locked/lock_scope on this row), never a liveness check: a
   // dead holder's lock is released only by this replica's OWN stale-lock
@@ -6346,6 +6426,9 @@ async function syncPushPass(): Promise<void> {
       updated_by: row.updated_by,
       created_at: row.created_at,
       updated_at: row.updated_at,
+      // Named explicitly, never by the spread below: `queue` is outside the
+      // content pick-list on purpose (see RoadmapSyncPushItem).
+      queue: row.queue,
       // Spread of a pick-list result, whose type is exactly the fifteen
       // content fields -- no table column can ride along.
       ...content,
@@ -6409,6 +6492,17 @@ function recordPushDivergence(
     withApplying(() => {
       db.run("UPDATE roadmap_items SET sync_base_rev = NULL, sync_base = NULL WHERE id = ?", [row.id]);
     });
+    return;
+  }
+  const pushedBase = row.sync_base === null ? null : parseSyncContent(row.sync_base);
+  if (
+    reason === "content" &&
+    pushedBase !== null &&
+    contentEquals(pickSyncContent(rowToRoadmapItem(row)), pushedBase)
+  ) {
+    log.info(
+      `roadmap sync: card ${row.id} carried only a rank move refused by moved upstream content -- the next pull will overwrite the local rank with the upstream's`
+    );
     return;
   }
   if (

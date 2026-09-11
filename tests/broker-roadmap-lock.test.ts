@@ -155,6 +155,10 @@ test("another peer's status write on a locked item is refused with 409", async (
   const steal = await patch(item.id, "intruder", { status: "done" });
   expect(steal.status).toBe(409);
   expect(steal.error).toContain("locked by 'test-peer'");
+  // Pins the ORDINARY message specifically: a regression that swapped in the
+  // group-boundary wording would still 409 here (this row's locked_group is
+  // null, "test-peer" never registered) but for the wrong reason.
+  expect(steal.error).toContain("pass force:true");
 
   const claim = await patch(item.id, "intruder", { status: "in_progress" });
   expect(claim.status).toBe(409);
@@ -233,6 +237,23 @@ test("owner, deck and force:true bypass the guard", async () => {
   const anonymous = await patch(c.id, "intruder", { status: "planned", force: true });
   expect(anonymous.status).toBe(409);
 
+  // force shares matchesLockScope with release: the row's own locked_group
+  // must be resolved AND match the forcing caller's -- the original claim
+  // below is made by a registered, grouped peer for that reason, not by the
+  // bare "test-peer" string the rest of this file uses (which stamps a null
+  // locked_group and would make ANY force refused, group aside).
+  const claimant = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/forcer-claimant", git_root: null, tty: null,
+    summary: "", host: "h-force-claimant", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: "default", group_secret_hash: null,
+  });
+  const claimed = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: claimant.body.peer_id,
+    instance_token: claimant.body.instance_token,
+    title: "forced, claimed by a resolved-group peer",
+    status: "in_progress",
+  });
   const reg = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
     pid: livePid(), cwd: "/tmp/forcer", git_root: null, tty: null,
     summary: "", host: "h-force", client_pid: livePid(), claude_cli_pid: 1,
@@ -240,7 +261,7 @@ test("owner, deck and force:true bypass the guard", async () => {
   });
   expect(reg.status).toBe(200);
   const forced = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
-    id: c.id,
+    id: claimed.body.item.id,
     by: reg.body.peer_id,
     instance_token: reg.body.instance_token,
     status: "planned",
@@ -866,10 +887,11 @@ test("the same accident, on /roadmap/archive: a same-peer_id homonym in a differ
 // isSameOwnerReclaim's bare locked_by === resolvedLock.lockedBy comparison also
 // decides whether locked_group is preserved from the row's prior owner or
 // stamped fresh from the write's actual author.
-// A force:true steal by a proven homonym in a different group passes the upsert
-// guard on its own terms, but this comparison read same peer_id string as same
-// owner and kept the victim's locked_group on a row now held by the intruder.
-test("force:true steal by a proven homonym in a DIFFERENT group stamps the NEW owner's locked_group, not the victim's (card e344fa79, isSameOwnerReclaim)", async () => {
+// force shares matchesLockScope with release, so it is confined to the
+// caller's own group -- a cross-group force-steal is refused before
+// isSameOwnerReclaim's peer_id comparison is ever reached, closing the whole
+// class this homonym scenario exercises.
+test("force:true steal by a proven homonym in a DIFFERENT group is refused: force never crosses a group boundary", async () => {
   const host = "h-e344fa79-force";
   const cwd = "/tmp/e344fa79-force-repo";
 
@@ -889,32 +911,489 @@ test("force:true steal by a proven homonym in a DIFFERENT group stamps the NEW o
     project_key: PK,
     by: victim.body.peer_id,
     instance_token: victim.body.instance_token,
-    title: "victim's card, about to be force-stolen by its own homonym",
+    title: "victim's card, unreachable by its cross-group homonym",
     status: "in_progress",
   });
   expect(item.body.item.locked).toBe(true);
   expect(item.body.item.locked_group).toBe("e344fa79-force-group-victim");
 
-  // force:true + a PROVEN author (real instance_token) legitimately passes
-  // the guard -- this is exactly what force exists for, and is not itself
-  // the defect. `locked: true` makes resolveRoadmapLock set
-  // lockedBy = intruder.peer_id (== victim.peer_id, same string).
+  // force + a PROVEN author is not enough on its own: the caller's own group
+  // must also match the row's locked_group, and the intruder's does not.
   const forced = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
     id: item.body.item.id,
+    status: "planned",
     by: intruder.body.peer_id,
     instance_token: intruder.body.instance_token,
     locked: true,
     force: true,
   });
-  expect(forced.status).toBe(200);
-  expect(forced.body.item.locked).toBe(true);
-  expect(forced.body.item.locked_by).toBe(intruder.body.peer_id);
+  expect(forced.status).toBe(409);
+  expect(forced.body.error).toContain("locked by");
+  // Pins the group-boundary message specifically: a regression that fell
+  // back to the ordinary message would still 409 here for the wrong reason.
+  expect(forced.body.error).toContain("do not cross groups");
 
-  // THE ASSERTION THAT MATTERS: locked_group must follow the intruder (the
-  // actual new holder), never stay the victim's. Red without the fix
-  // (isSameOwnerReclaim wrongly true on the bare peer_id match, preserving
-  // "e344fa79-force-group-victim"); green with matchesLockOwner in place.
-  expect(forced.body.item.locked_group).toBe("e344fa79-force-group-intruder");
+  // Untouched: the victim's ownership survives the refused attempt.
+  const stillOwned = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: victim.body.peer_id,
+    instance_token: victim.body.instance_token,
+    context: "victim confirms it still holds the card",
+  });
+  expect(stillOwned.status).toBe(200);
+  expect(stillOwned.body.item.locked_by).toBe(victim.body.peer_id);
+  expect(stillOwned.body.item.locked_group).toBe("e344fa79-force-group-victim");
+});
+
+// A bare `locked: true` from a cross-group homonym resolves to the SAME
+// peer_id string as the existing owner, so the string-level delta checks
+// alone see no move -- `claimed` combined with the group-aware owner check
+// is what makes the guard's entry condition fire on this shape too, with
+// neither `status` nor `force` set.
+test("a cross-group homonym's bare locked:true (no status, no force) is REFUSED, and the victim's identity survives", async () => {
+  const host = "h-da246282-homonym";
+  const cwd = "/tmp/da246282-homonym-repo";
+
+  const victim = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd, git_root: null, tty: null,
+    summary: "", host, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: "da246282-homonym-victim", group_secret_hash: null,
+  });
+  const intruder = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd, git_root: null, tty: null,
+    summary: "", host, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: "da246282-homonym-intruder", group_secret_hash: null,
+  });
+  expect(intruder.body.peer_id).toBe(victim.body.peer_id); // the homonym setup
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: victim.body.peer_id,
+    instance_token: victim.body.instance_token,
+    title: "victim's card, unreachable by a bare locked:true from its homonym",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+  expect(item.body.item.locked_group).toBe("da246282-homonym-victim");
+
+  // No status, no force -- only the identity-aware `claimed && !ownerMatches`
+  // term catches this shape.
+  const stolen = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: intruder.body.peer_id,
+    instance_token: intruder.body.instance_token,
+    locked: true,
+  });
+  expect(stolen.status).toBe(409);
+  expect(stolen.body.error).toContain("locked by");
+
+  const stillOwned = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: victim.body.peer_id,
+    instance_token: victim.body.instance_token,
+    context: "victim confirms it still holds the card",
+  });
+  expect(stillOwned.status).toBe(200);
+  expect(stillOwned.body.item.locked_by).toBe(victim.body.peer_id);
+  expect(stillOwned.body.item.locked_group).toBe("da246282-homonym-victim");
+});
+
+// force's group restriction confines its REACH to the caller's own group, not
+// its existence -- it keeps its ordinary meaning inside one.
+test("force:true steal by a proven peer in the SAME group still succeeds and stamps the new owner's identity", async () => {
+  const host = "h-force-samegroup";
+  const cwd = "/tmp/force-samegroup-repo";
+  const groupId = "force-samegroup";
+
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd, git_root: null, tty: null,
+    summary: "", host, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+  const teammate = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: `${cwd}-2`, git_root: null, tty: null,
+    summary: "", host: `${host}-2`, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+  expect(teammate.body.peer_id).not.toBe(owner.body.peer_id);
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "locked by its owner, about to be force-taken by a same-group teammate",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+
+  const forced = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: teammate.body.peer_id,
+    instance_token: teammate.body.instance_token,
+    locked: true,
+    force: true,
+  });
+  expect(forced.status).toBe(200);
+  expect(forced.body.item.locked_by).toBe(teammate.body.peer_id);
+  expect(forced.body.item.locked_group).toBe(groupId);
+  expect(forced.body.item.locked_by_token).toBe(teammate.body.instance_token);
+});
+
+// A signed operator is not a peer and carries no group to compare against
+// (RoadmapAuthor.group_id is set only on the instance_token branch) -- the
+// human signs for authority over every scope, so force bypasses the lock
+// guard for them regardless of the row's own group.
+test("force:true by a signed operator bypasses the lock guard on a card locked in ANOTHER group", async () => {
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/operator-force-crossgroup-owner", git_root: null, tty: null,
+    summary: "", host: "h-operator-force-crossgroup-owner", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: "operator-force-crossgroup-owner", group_secret_hash: null,
+  });
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "locked by its owner, about to be force-taken by a signed operator",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+
+  const credential = generateCredential();
+  const operatorId = deriveOperatorId(credential.publicKey);
+  const body = {
+    id: item.body.item.id,
+    by: "operator",
+    status: "planned",
+    force: true,
+    public_key: credential.publicKey,
+  };
+  const forced = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    ...body,
+    auth: buildAuthProof(credential.privateKey, body, { kind: "operator", operator_id: operatorId }),
+  });
+  expect(forced.status).toBe(200);
+  expect(forced.body.item.status).toBe("planned");
+});
+
+// release/reclaim under matchesLockScope (same group only, fail-closed on
+// null). Negative control included per each polarity so a fail-open
+// regression on either predicate would be caught.
+test("release:true from a peer in the SAME group releases a card it does not own", async () => {
+  const host = "h-lot4-release-samegroup";
+  const cwd = "/tmp/lot4-release-samegroup-repo";
+  const groupId = "lot4-release-samegroup";
+
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd, git_root: null, tty: null,
+    summary: "", host, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+  const teammate = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: `${cwd}-2`, git_root: null, tty: null,
+    summary: "", host: `${host}-2`, client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "locked by its owner, released by a same-group teammate",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+
+  const released = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: teammate.body.peer_id,
+    instance_token: teammate.body.instance_token,
+    status: "planned",
+    release: true,
+  });
+  expect(released.status).toBe(200);
+  expect(released.body.item.locked).toBe(false);
+  expect(released.body.item.locked_by).toBeNull();
+});
+
+test("release:true from a peer in a DIFFERENT group is refused with the release-specific message, and ownership survives", async () => {
+  const item = await (async () => {
+    const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+      pid: livePid(), cwd: "/tmp/lot4-release-crossgroup-owner", git_root: null, tty: null,
+      summary: "", host: "h-lot4-release-crossgroup-owner", client_pid: livePid(), claude_cli_pid: 1,
+      project_key: PK, group_id: "lot4-release-crossgroup-owner", group_secret_hash: null,
+    });
+    const stranger = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+      pid: livePid(), cwd: "/tmp/lot4-release-crossgroup-stranger", git_root: null, tty: null,
+      summary: "", host: "h-lot4-release-crossgroup-stranger", client_pid: livePid(), claude_cli_pid: 1,
+      project_key: PK, group_id: "lot4-release-crossgroup-stranger", group_secret_hash: null,
+    });
+    const created = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+      project_key: PK,
+      by: owner.body.peer_id,
+      instance_token: owner.body.instance_token,
+      title: "locked by its owner, release attempted from a foreign group",
+      status: "in_progress",
+    });
+    return { owner, stranger, item: created.body.item };
+  })();
+
+  const refused = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.item.id,
+    by: item.stranger.body.peer_id,
+    instance_token: item.stranger.body.instance_token,
+    status: "planned",
+    release: true,
+  });
+  expect(refused.status).toBe(409);
+  // Negative control: this is the RELEASE-specific message, not the ordinary
+  // lock message -- a regression that merged the two branches back into one
+  // would still refuse (status 409) but lose this distinction silently.
+  expect(refused.body.error).toContain("different group");
+  expect(refused.body.error).not.toContain("force:true");
+
+  const stillOwned = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    id: item.item.id,
+    by: item.owner.body.peer_id,
+    instance_token: item.owner.body.instance_token,
+    context: "owner confirms the refused cross-group release changed nothing",
+  });
+  expect(stillOwned.status).toBe(200);
+  expect(stillOwned.body.item.locked).toBe(true);
+  expect(stillOwned.body.item.locked_by).toBe(item.owner.body.peer_id);
+});
+
+// A row with no locked_group recorded (a bare, unregistered "by" string, as
+// the add()/patch() helpers use) is not KNOWN to differ from the caller's
+// group -- matchesLockScope only fails closed on it. The message must say so
+// rather than assert a mismatch it never confirmed.
+test("release:true on a card with no locked_group recorded gets the no-group message, never 'different group'", async () => {
+  const item = await add({ title: "locked with no group on record", status: "in_progress" });
+  expect(item.locked_group).toBeNull();
+
+  const registered = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/release-no-group-recorded", git_root: null, tty: null,
+    summary: "", host: "h-release-no-group-recorded", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: "release-no-group-recorded", group_secret_hash: null,
+  });
+
+  const refused = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.id,
+    by: registered.body.peer_id,
+    instance_token: registered.body.instance_token,
+    status: "planned",
+    release: true,
+  });
+  expect(refused.status).toBe(409);
+  expect(refused.body.error).toContain("no group recorded");
+  expect(refused.body.error).not.toContain("different group");
+});
+
+// release:true ALONE (no status, no locked) must actually release -- not a
+// silent no-op. Without the implicit nextStatus synthesis, resolveRoadmapLock
+// sees zero delta and the write goes through leaving the card locked, which
+// is worse than a refusal: the caller believes it acted.
+test("release:true alone (no status field) actually releases: locked drops and status returns to planned", async () => {
+  const groupId = "release-alone";
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/release-alone-owner", git_root: null, tty: null,
+    summary: "", host: "h-release-alone-owner", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+  const teammate = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/release-alone-teammate", git_root: null, tty: null,
+    summary: "", host: "h-release-alone-teammate", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "locked by its owner, released bare by a same-group teammate",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+
+  const released = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: teammate.body.peer_id,
+    instance_token: teammate.body.instance_token,
+    release: true,
+  });
+  expect(released.status).toBe(200);
+  expect(released.body.item.locked).toBe(false);
+  expect(released.body.item.locked_by).toBeNull();
+  // THE MUTANT THIS PINS: drop the implicit nextStatus synthesis and this
+  // reads "in_progress" (the write becomes a genuine silent no-op).
+  expect(released.body.item.status).toBe("planned");
+});
+
+// The implicit nextStatus synthesis above is gated on existing.locked and on
+// body.locked being fully absent -- without either gate it would reach far
+// past a genuine "let go": an unproven bystander's bare release:true could
+// reopen a settled card, or an owner's own explicit locked:false (documented
+// to release while STAYING in_progress) would be silently overridden.
+test("release:true alone on a DONE, unlocked card from an unproven author changes nothing", async () => {
+  const item = await add({ title: "settled work, not locked", status: "in_progress" });
+  const done = await patch(item.id, "test-peer", { status: "done" });
+  expect(done.item!.locked).toBe(false);
+  expect(done.item!.status).toBe("done");
+
+  const attempt = await patch(item.id, "unproven-bystander", { release: true });
+  expect(attempt.status).toBe(200);
+  expect(attempt.item!.status).toBe("done");
+});
+
+test("release:true alone on an ARCHIVED, unlocked card does not restore it", async () => {
+  const item = await add({ title: "archived work, not locked", status: "in_progress" });
+  const archived = await patch(item.id, "test-peer", { status: "archived" });
+  expect(archived.item!.locked).toBe(false);
+  expect(archived.item!.status).toBe("archived");
+  expect(archived.item!.deleted_at).not.toBeNull();
+
+  const attempt = await patch(item.id, "unproven-bystander", { release: true });
+  expect(attempt.status).toBe(200);
+  expect(attempt.item!.status).toBe("archived");
+  expect(attempt.item!.deleted_at).not.toBeNull();
+});
+
+test("release:true + locked:false from the owner stays in_progress, matching locked:false's own documented meaning", async () => {
+  const groupId = "release-locked-false";
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/release-locked-false-owner", git_root: null, tty: null,
+    summary: "", host: "h-release-locked-false-owner", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "owner releases its own lock while staying in_progress",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked).toBe(true);
+
+  const released = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    locked: false,
+    release: true,
+  });
+  expect(released.status).toBe(200);
+  expect(released.body.item.locked).toBe(false);
+  // THE MUTANT THIS PINS: a releaseAlone that ignores body.locked === false
+  // would force this to "planned" instead.
+  expect(released.body.item.status).toBe("in_progress");
+});
+
+// Under the release bypass, only a target status of planned or in_progress
+// is admitted -- release changes custody, it never closes or archives a card
+// out from under its owner. force keeps its full reach (any status) as long
+// as it stays inside the group.
+test.each(["done", "archived"] as const)(
+  "release:true + status:%s from a same-group teammate is REFUSED with the release-specific message",
+  async (targetStatus) => {
+    const groupId = `release-refuses-${targetStatus}`;
+    const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+      pid: livePid(), cwd: `/tmp/release-refuses-${targetStatus}-owner`, git_root: null, tty: null,
+      summary: "", host: `h-release-refuses-${targetStatus}-owner`, client_pid: livePid(), claude_cli_pid: 1,
+      project_key: PK, group_id: groupId, group_secret_hash: null,
+    });
+    const teammate = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+      pid: livePid(), cwd: `/tmp/release-refuses-${targetStatus}-teammate`, git_root: null, tty: null,
+      summary: "", host: `h-release-refuses-${targetStatus}-teammate`, client_pid: livePid(), claude_cli_pid: 1,
+      project_key: PK, group_id: groupId, group_secret_hash: null,
+    });
+
+    const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+      project_key: PK,
+      by: owner.body.peer_id,
+      instance_token: owner.body.instance_token,
+      title: `locked by its owner, a same-group teammate tries to ${targetStatus} it via release`,
+      status: "in_progress",
+    });
+    expect(item.body.item.locked).toBe(true);
+
+    const refused = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+      id: item.body.item.id,
+      by: teammate.body.peer_id,
+      instance_token: teammate.body.instance_token,
+      status: targetStatus,
+      release: true,
+    });
+    expect(refused.status).toBe(409);
+    // THE MUTANT THIS PINS: admitting the target status under release would
+    // still return 409 from a DIFFERENT cause only by accident -- pin the
+    // release-specific wording, not just the status code.
+    expect(refused.body.error).toContain("release");
+    expect(refused.body.error).toContain("custody");
+
+    const stillOwned = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+      id: item.body.item.id,
+      by: owner.body.peer_id,
+      instance_token: owner.body.instance_token,
+      context: `owner confirms the refused release-to-${targetStatus} changed nothing`,
+    });
+    expect(stillOwned.status).toBe(200);
+    expect(stillOwned.body.item.status).toBe("in_progress");
+    expect(stillOwned.body.item.locked).toBe(true);
+  }
+);
+
+// release + an explicit claim (`locked: true`) in the SAME call is a
+// reprise, not a disguised steal -- allowed under matchesLockScope, on the
+// condition that all three lock-identity columns re-stamp to the new holder.
+// Asserting on all three, not just one, is what would catch a mutant that
+// stamps locked_by but forgets locked_group or locked_by_token.
+test("release:true + locked:true from a same-group teammate is a reprise: re-stamps locked_by/locked_group/locked_by_token, and the ousted owner's next write 409s", async () => {
+  const groupId = "reprise-samegroup";
+  const owner = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/lot4-reprise-owner", git_root: null, tty: null,
+    summary: "", host: "h-lot4-reprise-owner", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+  const successor = await post<{ instance_token: string; peer_id: string }>(`${broker.url}/register`, {
+    pid: livePid(), cwd: "/tmp/lot4-reprise-successor", git_root: null, tty: null,
+    summary: "", host: "h-lot4-reprise-successor", client_pid: livePid(), claude_cli_pid: 1,
+    project_key: PK, group_id: groupId, group_secret_hash: null,
+  });
+
+  const item = await post<UpsertRes>(`${broker.url}/roadmap/upsert`, {
+    project_key: PK,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    title: "locked by its owner, about to be reclaimed by a same-group successor",
+    status: "in_progress",
+  });
+  expect(item.body.item.locked_by_token).toBe(owner.body.instance_token);
+
+  const reprise = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: successor.body.peer_id,
+    instance_token: successor.body.instance_token,
+    locked: true,
+    release: true,
+  });
+  expect(reprise.status).toBe(200);
+  expect(reprise.body.item.locked).toBe(true);
+  expect(reprise.body.item.locked_by).toBe(successor.body.peer_id);
+  expect(reprise.body.item.locked_group).toBe(groupId);
+  expect(reprise.body.item.locked_by_token).toBe(successor.body.instance_token);
+
+  // The loud 409 that makes this safe: a bare context edit stays open to
+  // everyone by design (guard fires on status/lock moves only), so the
+  // ousted owner must be caught on an actual status write -- the shape an
+  // agent unaware of the reprise would genuinely send to close its own card.
+  const ousted = await post<UpsertRes & { error?: string }>(`${broker.url}/roadmap/upsert`, {
+    id: item.body.item.id,
+    by: owner.body.peer_id,
+    instance_token: owner.body.instance_token,
+    status: "done",
+  });
+  expect(ousted.status).toBe(409);
 });
 
 test("card e344fa79, review round 3 (ROUTE-LEVEL): the Deck's ORDINARY signed write on a locked card preserves locked_by/locked_group -- the routine path, and the one review measured most expensive to break", async () => {

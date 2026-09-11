@@ -74,6 +74,7 @@ function pushItem(overrides: Partial<RoadmapSyncPushItem> & { id: string }): Roa
     tags: [],
     depends_on: [],
     deleted_at: null,
+    queue: null,
     directive: null,
     target_peer_ids: [],
     inactive: false,
@@ -437,13 +438,12 @@ test("push is refused on a card the upstream work-locks for a holder this replic
   }
 }, 30_000);
 
-test("push never writes the queue, the lock columns or operator_id", async () => {
+test("push writes the queue but never the lock columns or operator_id", async () => {
   const b = await startBroker();
   try {
-    // Signed by the operator so the row carries an operator_id, and queued so
-    // the row carries a position: the two columns a push must leave alone.
-    // Its lock is the one this replica relays, the only kind a push may land
-    // behind at all.
+    // Signed by the operator so the row carries an operator_id: a column a
+    // push must leave alone. Its lock is the one this replica relays, the
+    // only kind a push may land behind at all.
     const signed = await post<UpsertRes>(
       `${b.url}/roadmap/upsert`,
       deckAuthored({ project_key: PK, title: "queued and signed upstream", queue: 3 })
@@ -481,7 +481,7 @@ test("push never writes the queue, the lock columns or operator_id", async () =>
     };
     db.close();
     expect([
-      "a push carries content only: the queue, the lock and the operator proof stay as the upstream had them",
+      "a push carries the rank it sent; the lock and the operator proof stay as the upstream had them",
       stored.queue,
       stored.locked,
       stored.locked_by,
@@ -489,8 +489,8 @@ test("push never writes the queue, the lock columns or operator_id", async () =>
       stored.locked_by_token,
       stored.operator_id,
     ]).toEqual([
-      "a push carries content only: the queue, the lock and the operator proof stay as the upstream had them",
-      3,
+      "a push carries the rank it sent; the lock and the operator proof stay as the upstream had them",
+      99,
       1,
       "agent-remote",
       R1,
@@ -501,6 +501,103 @@ test("push never writes the queue, the lock columns or operator_id", async () =>
     await stopBroker(b);
   }
 }, 20_000);
+
+test("a push omitting queue entirely leaves the upstream rank untouched", async () => {
+  const b = await startBroker();
+  try {
+    const signed = await post<UpsertRes>(
+      `${b.url}/roadmap/upsert`,
+      deckAuthored({ project_key: PK, title: "already ranked upstream", queue: 5 })
+    );
+    expect(signed.status).toBe(200);
+    const id = signed.body.item.id;
+    const preDb = new Database(b.dbPath);
+    const contentRev = (
+      preDb.query("SELECT content_rev FROM roadmap_items WHERE id = ?").get(id) as { content_rev: number }
+    ).content_rev;
+    preDb.close();
+
+    // An older replica's push body simply never had this key: build one the
+    // same way as every other test here, then drop it before sending.
+    const item = pushItem({ id, title: "edited without touching the rank" } as Partial<RoadmapSyncPushItem> & {
+      id: string;
+    });
+    delete item.queue;
+
+    const pushed = await post<RoadmapSyncPushResponse>(`${b.url}/roadmap/sync/push`, {
+      replica_id: R1,
+      item,
+      expected_content_rev: contentRev,
+    });
+    expect(pushed.status).toBe(200);
+
+    const db = new Database(b.dbPath);
+    const stored = db.query("SELECT queue FROM roadmap_items WHERE id = ?").get(id) as { queue: number | null };
+    db.close();
+    expect([
+      "an omitted queue key never clears the upstream rank",
+      stored.queue,
+    ]).toEqual(["an omitted queue key never clears the upstream rank", 5]);
+  } finally {
+    await stopBroker(b);
+  }
+}, 20_000);
+
+test("a push with queue: null explicitly clears the upstream rank", async () => {
+  const b = await startBroker();
+  try {
+    const signed = await post<UpsertRes>(
+      `${b.url}/roadmap/upsert`,
+      deckAuthored({ project_key: PK, title: "already ranked upstream", queue: 5 })
+    );
+    expect(signed.status).toBe(200);
+    const id = signed.body.item.id;
+    const preDb = new Database(b.dbPath);
+    const contentRev = (
+      preDb.query("SELECT content_rev FROM roadmap_items WHERE id = ?").get(id) as { content_rev: number }
+    ).content_rev;
+    preDb.close();
+
+    const pushed = await post<RoadmapSyncPushResponse>(`${b.url}/roadmap/sync/push`, {
+      replica_id: R1,
+      item: pushItem({ id, title: "unranked on the replica", queue: null } as Partial<RoadmapSyncPushItem> & {
+        id: string;
+      }),
+      expected_content_rev: contentRev,
+    });
+    expect(pushed.status).toBe(200);
+
+    const db = new Database(b.dbPath);
+    const stored = db.query("SELECT queue FROM roadmap_items WHERE id = ?").get(id) as { queue: number | null };
+    db.close();
+    expect([
+      "an explicit null clears the upstream rank, unlike a merely absent key",
+      stored.queue,
+    ]).toEqual(["an explicit null clears the upstream rank, unlike a merely absent key", null]);
+  } finally {
+    await stopBroker(b);
+  }
+}, 20_000);
+
+test.each([0, -1, 1.5, "3"])("push refuses an invalid queue rank: %p", async (badQueue) => {
+  const b = await startBroker();
+  try {
+    const item = {
+      ...pushItem({ id: "11111111-1111-4111-8111-111111111111", title: "invalid rank probe" } as Partial<RoadmapSyncPushItem> & {
+        id: string;
+      }),
+      queue: badQueue,
+    } as unknown as RoadmapSyncPushItem;
+    const pushed = await post<{ error: string }>(`${b.url}/roadmap/sync/push`, {
+      replica_id: R1,
+      item,
+      expected_content_rev: null,
+    });
+    expect([badQueue, pushed.status]).toEqual([badQueue, 400]);
+  } finally {
+    await stopBroker(b);
+  }
+});
 
 test("push never stores an author this upstream reads as one of its own: it stamps the relay instead", async () => {
   const b = await startBroker();

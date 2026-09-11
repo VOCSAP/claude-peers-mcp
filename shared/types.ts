@@ -569,9 +569,19 @@ export interface RoadmapSyncPullResponse {
   next_rev: number;
 }
 
-/** What a replica pushes: content plus the attribution/timestamp columns that ride along. */
+/**
+ * What a replica pushes: content plus the attribution/timestamp columns that
+ * ride along, plus `queue` itself -- deliberately OUTSIDE `RoadmapSyncContent`
+ * (a rank change must never version the content), so it is named here rather
+ * than picked up by the spread. Optional, not just nullable: a replica older
+ * than this contract omits the key entirely, and that MUST NOT be read as
+ * "clear the rank" -- the upstream SET only touches the column when the key
+ * is present.
+ */
 export type RoadmapSyncPushItem = RoadmapSyncContent &
-  Pick<RoadmapItem, "id" | "project_key" | "created_by" | "updated_by" | "created_at" | "updated_at">;
+  Pick<RoadmapItem, "id" | "project_key" | "created_by" | "updated_by" | "created_at" | "updated_at"> & {
+    queue?: number | null;
+  };
 
 export interface RoadmapSyncPushRequest {
   replica_id: string;
@@ -919,14 +929,21 @@ export type RoadmapUpsertAckField =
   | "status"
   | "directive"
   | "locked"
+  | "release"
   | "queue"
   | "tags"
   | "depends_on"
   | "target_peer_ids";
 
 export interface RoadmapUpsertAckFieldSpec {
-  category: "long" | "short" | "list";
-  /** Reads the LANDED value off the item the broker actually wrote. */
+  /**
+   * "intent" is for a field with no stored counterpart on RoadmapItem: it
+   * prints only when the caller actually requested it (=== true), never a
+   * landed/requested comparison -- `locked`, `status` and the holder fields
+   * already carry the real outcome.
+   */
+  category: "long" | "short" | "list" | "intent";
+  /** Reads the LANDED value off the item the broker actually wrote. Unused for "intent". */
   landed: (item: RoadmapItem) => unknown;
 }
 
@@ -942,6 +959,9 @@ export const ROADMAP_UPSERT_ACK_FIELDS: Record<RoadmapUpsertAckField, RoadmapUps
   status: { category: "short", landed: (i) => i.status },
   directive: { category: "short", landed: (i) => i.directive },
   locked: { category: "short", landed: (i) => i.locked },
+  // `release` is an intention, not a stored column: `locked`/`status`/the
+  // holder fields already carry the real outcome.
+  release: { category: "intent", landed: () => undefined },
   queue: { category: "short", landed: (i) => i.queue },
   tags: { category: "list", landed: (i) => i.tags },
   depends_on: { category: "list", landed: (i) => i.depends_on },
@@ -975,6 +995,7 @@ export const ROADMAP_ADD_ACK_FIELDS: readonly RoadmapUpsertAckField[] = [
 export const ROADMAP_UPDATE_ACK_FIELDS: readonly RoadmapUpsertAckField[] = [
   ...ROADMAP_ADD_ACK_FIELDS,
   "locked",
+  "release",
   "queue",
 ] as const;
 
@@ -1114,6 +1135,14 @@ export interface RoadmapUpsertRequest {
    * by someone else. 'deck' never needs it (the operator always bypasses).
    */
   force?: boolean;
+  /**
+   * Release or reclaim a card locked by another peer in the caller's OWN
+   * group, refused across groups. A release also only accepts a target
+   * status of planned or in_progress -- it changes custody, never a card's
+   * fate. Distinct from `force`, which overrides the true owner and is
+   * restricted to the same group but keeps its full status reach.
+   */
+  release?: boolean;
   /**
    * Card c33a5968: set/clear the operator-only "inactive" flag. Requires
    * `author.operator_id` (resolved from `instance_token`, never trusted from

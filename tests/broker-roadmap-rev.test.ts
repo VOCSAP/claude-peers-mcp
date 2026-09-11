@@ -122,15 +122,15 @@ test("a write that changes no content column bumps rev alone: queue move, lock c
     expect(queued.status).toBe(200);
     const afterQueue = readRow(db, id);
     expect([
-      "a queue move is not a content change: rev moves, content_rev and the dirty flag do not",
+      "a queue move marks the card dirty to be pushed, but never versions its content",
       readSeq(db) - seqBeforeQueue,
       afterQueue.content_rev,
       afterQueue.sync_dirty,
     ]).toEqual([
-      "a queue move is not a content change: rev moves, content_rev and the dirty flag do not",
+      "a queue move marks the card dirty to be pushed, but never versions its content",
       1,
       beforeQueue.content_rev,
-      0,
+      1,
     ]);
     expect(afterQueue.rev).toBeGreaterThan(beforeQueue.rev);
 

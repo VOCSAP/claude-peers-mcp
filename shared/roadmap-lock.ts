@@ -232,3 +232,19 @@ export function refusesForeignGroupReorder(
   if (!locked || lockedGroup === null) return false;
   return lockedGroup !== callerGroup;
 }
+
+/**
+ * "May this caller release/reclaim a card held by someone else in their own
+ * group" -- opposite polarity from matchesLockOwner
+ * and refusesForeignGroupReorder on a null existingLockedGroup. Those two fail
+ * OPEN because each has a named victim (the true owner, or a legitimate
+ * reorder); a scope-only release has none -- a missed one costs nothing (the
+ * TTL sweep backstops it), a wrongly-granted one lets a stranger group seize a
+ * live lock -- so this fails CLOSED instead, with no fallback: a real MCP
+ * agent is always proven and grouped, so a null existingLockedGroup only
+ * ever reaches a bare HTTP caller or a pre-migration row.
+ */
+export function matchesLockScope(existingLockedGroup: string | null, byLockedGroup: string | null): boolean {
+  if (existingLockedGroup === null) return false;
+  return existingLockedGroup === byLockedGroup;
+}

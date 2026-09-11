@@ -339,7 +339,7 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
     expect(line).toContain("target_peer_ids -> 3 item(s)");
   }, 60_000);
 
-  test("roadmap_update's ack names all 15 fields in its domain, each with its own distinct value", async () => {
+  test("roadmap_update's ack names every field in its domain, each with its own distinct value", async () => {
     const h = await boot();
     const created = await callTool(h, "roadmap_add", { title: "base card for update coverage" });
     const id = ackText(created).match(/Roadmap item created: ([0-9a-f]{8})/)![1]!;
@@ -361,6 +361,7 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
       depends_on: ["33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444"], // 2
       target_peer_ids: ["probe-upd-a", "probe-upd-b", "probe-upd-c"], // 3
       locked: true,
+      release: true,
       queue: 5,
     });
     expect(updated.result?.isError).toBeFalsy();
@@ -368,7 +369,7 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
     const line = passedFieldsLine(text);
     expect(line).not.toBe("");
 
-    expect(ROADMAP_UPDATE_ACK_FIELDS.length).toBe(15);
+    expect(ROADMAP_UPDATE_ACK_FIELDS.length).toBe(16);
     for (const field of ROADMAP_UPDATE_ACK_FIELDS) {
       expect(line).toContain(field);
     }
@@ -384,6 +385,7 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
     expect(line).toContain("status -> in_progress");
     expect(line).toContain("directive -> compact");
     expect(line).toContain("locked -> true");
+    expect(line).toContain("release requested");
     expect(line).toContain("queue -> 5");
     expect(line).toContain("tags -> 1 item(s)");
     expect(line).toContain("depends_on -> 2 item(s)");
@@ -510,6 +512,86 @@ describe("roadmap_add/roadmap_update MCP ack", () => {
     const ack = ackText(edited);
     expect(ack).not.toContain(WORK_LOCK_TRAILER_FRAGMENT);
     expect(ack).not.toContain("work-lock");
+  }, 60_000);
+
+  test("roadmap_update forwards release to the broker's /roadmap/upsert body", async () => {
+    const owner = await boot();
+    const created = await callTool(owner, "roadmap_add", {
+      title: "release-wiring: locked by the owner session, released by a same-group teammate",
+      status: "in_progress",
+    });
+    expect(created.result?.isError).toBeFalsy();
+    const id = ackText(created).match(/Roadmap item created: ([0-9a-f]{8})/)![1]!;
+
+    // A genuinely different session against the SAME broker, in the SAME
+    // (default) group as the owner -- release only reaches within a group.
+    const teammate = await bootOnBroker(owner.b);
+    // THE MUTANT THIS PINS: if the tool handler dropped `release` (a
+    // rewritten object literal, a typo'd key), the broker never sees it and
+    // this non-owner write is refused 409/isError -- the same shape as
+    // Trou B2's negative control above, but this time refusal would be the
+    // WRONG outcome.
+    const released = await callTool(teammate, "roadmap_update", {
+      id,
+      status: "planned",
+      release: true,
+    });
+    expect(released.result?.isError).toBeFalsy();
+    const ack = ackText(released);
+    expect(ack).toContain("status -> planned");
+    // THE MUTANT THIS ALSO PINS: comparing `release` against a landed column
+    // (locked or otherwise) would either invert or fabricate an outcome this
+    // field has no business claiming -- only the request is echoed.
+    expect(ack).toContain("release requested");
+    expect(ack).not.toContain("release -> true");
+    expect(ack).not.toContain("release -> false");
+  }, 60_000);
+
+  test("release:false is never announced as requested", async () => {
+    const h = await boot();
+    const created = await callTool(h, "roadmap_add", { title: "release:false probe" });
+    const id = ackText(created).match(/Roadmap item created: ([0-9a-f]{8})/)![1]!;
+
+    // THE MUTANT THIS PINS: a landed comparison (e.g. `landed: () => true`)
+    // would print "release -> true (requested false)" -- a field the caller
+    // explicitly did NOT ask for, announced as if it had been.
+    const res = await callTool(h, "roadmap_update", { id, release: false, context: "unrelated edit" });
+    expect(res.result?.isError).toBeFalsy();
+    const ack = ackText(res);
+    expect(ack).not.toContain("release requested");
+    expect(ack).not.toContain("release -> true");
+  }, 60_000);
+
+  test("release:true on an unlocked card is echoed as a request, never as a claimed outcome", async () => {
+    const h = await boot();
+    // A fresh, unlocked card: the guard never fires, release has nothing to
+    // do -- the ack must not read as though a release actually took place.
+    const created = await callTool(h, "roadmap_add", { title: "release:true, nothing to release" });
+    const id = ackText(created).match(/Roadmap item created: ([0-9a-f]{8})/)![1]!;
+
+    // THE MUTANT THIS PINS: `landed: () => true` (or any landed comparison)
+    // would print "release -> true", reading as an announced release when
+    // nothing was released -- only "release requested" is honest here.
+    const res = await callTool(h, "roadmap_update", { id, release: true });
+    expect(res.result?.isError).toBeFalsy();
+    const ack = ackText(res);
+    expect(ack).toContain("release requested");
+    expect(ack).not.toContain("release -> true");
+    expect(ack).not.toContain("release -> false");
+  }, 60_000);
+
+  test("roadmap_update with a non-boolean release is refused, not silently dropped", async () => {
+    const h = await boot();
+    const created = await callTool(h, "roadmap_add", { title: "release type-check probe" });
+    const id = ackText(created).match(/Roadmap item created: ([0-9a-f]{8})/)![1]!;
+
+    // THE MUTANT THIS PINS, both shapes measured: a handler that coerces
+    // (`Boolean(a.release)`), re-adds the drop-on-bad-type guard, or deletes
+    // the forwarding line entirely all see this call succeed instead of
+    // refused -- the raw value never reaches the broker's own type check.
+    const res = await callTool(h, "roadmap_update", { id, release: "yes" });
+    expect(res.result?.isError).toBe(true);
+    expect(res.result?.content?.[0]?.text).toContain("release must be a boolean");
   }, 60_000);
 });
 
